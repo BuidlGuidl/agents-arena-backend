@@ -41,9 +41,8 @@ function App() {
     enabled: runId !== null,
     queryFn: async () => {
       const fetched = await fetchJson<{ run: RunSnapshot }>(`/runs/${runId}`).then((body) => body.run);
-      // A refetch that started before a live score.flag landed would overwrite the
-      // projected chip, and the event is already consumed so it never comes back.
-      // Whichever view covers more of the journal wins.
+      // The SSE projection can be ahead of this response, and score.flag events are
+      // consumed once, so the higher lastEventId wins.
       const projected = cache.getQueryData<RunSnapshot>(['run', runId]);
       return projected !== undefined && projected.lastEventId > fetched.lastEventId ? projected : fetched;
     },

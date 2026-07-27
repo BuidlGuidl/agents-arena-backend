@@ -179,10 +179,8 @@ export class RunManager {
     return { run: this.snapshot(id), created: true };
   }
 
-  // One transaction, because solves and lastEventId must describe the same moment.
-  // A writer landing between those two reads yields a snapshot whose lastEventId
-  // already covers a solve its solves array is missing — and the client skips
-  // events at or below lastEventId, so that flag would never arrive.
+  // One transaction so solves and lastEventId describe the same moment. Clients
+  // skip events at or below lastEventId, so the two must not come from separate reads.
   snapshot(runId: string): RunSnapshot {
     return this.journal.database.transaction(() => {
       const run = this.requireRun(runId);

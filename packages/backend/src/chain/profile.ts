@@ -11,6 +11,9 @@ export interface ChainProfile {
   nftFlags: Address;
   challenge1: Address;
   identityRegistry: Address;
+  // Set when the chain has a public briefing the entrant can fetch. Absent means
+  // the arena mounts a challenge pack instead (ADR-0009).
+  briefingUrl?: string;
 }
 
 interface RawChainProfile extends Omit<ChainProfile, 'nftFlags' | 'challenge1' | 'identityRegistry'> {
@@ -48,6 +51,7 @@ function parseProfile(name: string, value: RawChainProfile): ChainProfile {
     nftFlags: parseAddress(value.nftFlags, `${name}.nftFlags`),
     challenge1: parseAddress(value.challenge1, `${name}.challenge1`),
     identityRegistry: parseAddress(value.identityRegistry, `${name}.identityRegistry`),
+    ...(value.briefingUrl === undefined ? {} : { briefingUrl: value.briefingUrl }),
   };
 }
 

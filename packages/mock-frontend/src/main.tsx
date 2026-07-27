@@ -39,7 +39,14 @@ function App() {
   const snapshot = useQuery({
     queryKey: ['run', runId],
     enabled: runId !== null,
-    queryFn: async () => fetchJson<{ run: RunSnapshot }>(`/runs/${runId}`).then((body) => body.run),
+    queryFn: async () => {
+      const fetched = await fetchJson<{ run: RunSnapshot }>(`/runs/${runId}`).then((body) => body.run);
+      // A refetch that started before a live score.flag landed would overwrite the
+      // projected chip, and the event is already consumed so it never comes back.
+      // Whichever view covers more of the journal wins.
+      const projected = cache.getQueryData<RunSnapshot>(['run', runId]);
+      return projected !== undefined && projected.lastEventId > fetched.lastEventId ? projected : fetched;
+    },
   });
   const createRun = useMutation({
     mutationFn: async () => fetchJson<{ run: RunSnapshot }>('/runs', {

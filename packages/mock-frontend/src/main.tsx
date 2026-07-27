@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ArenaEvent, EntrantSummary, RunSnapshot, RunState } from '../../../contract/arena-types';
+import type { ArenaEvent, EntrantSolve, EntrantSummary, RunSnapshot, RunState } from '../../../contract/arena-types';
 import { projectSnapshot } from './project-snapshot';
 import {
   deriveLaneWallet,
@@ -39,7 +39,13 @@ function App() {
   const snapshot = useQuery({
     queryKey: ['run', runId],
     enabled: runId !== null,
-    queryFn: async () => fetchJson<{ run: RunSnapshot }>(`/runs/${runId}`).then((body) => body.run),
+    queryFn: async () => {
+      const fetched = await fetchJson<{ run: RunSnapshot }>(`/runs/${runId}`).then((body) => body.run);
+      // The SSE projection can be ahead of this response, and score.flag events are
+      // consumed once, so the higher lastEventId wins.
+      const projected = cache.getQueryData<RunSnapshot>(['run', runId]);
+      return projected !== undefined && projected.lastEventId > fetched.lastEventId ? projected : fetched;
+    },
   });
   const createRun = useMutation({
     mutationFn: async () => fetchJson<{ run: RunSnapshot }>('/runs', {
@@ -149,13 +155,13 @@ function App() {
         </div>
       ) : (
         <section className="scoreboard">
-          <EntrantLane runId={run.id} entrant={entrants[0]} feed={feed} runState={run.state} side="left" />
+          <EntrantLane runId={run.id} entrant={entrants[0]} feed={feed} runState={run.state} startedAt={run.startedAt} side="left" />
           <div className="rail">
             <span className="vs">vs</span>
             <span className="lead">{leadLabel(entrants)}</span>
             <span className="rail-line" />
           </div>
-          <EntrantLane runId={run.id} entrant={entrants[1]} feed={feed} runState={run.state} side="right" />
+          <EntrantLane runId={run.id} entrant={entrants[1]} feed={feed} runState={run.state} startedAt={run.startedAt} side="right" />
         </section>
       )}
 
@@ -214,11 +220,26 @@ function WalletAddress({ address }: { address: string }) {
   );
 }
 
-function EntrantLane({ runId, entrant, feed, runState, side }: {
+function solveTitle(solve: EntrantSolve, startedAt: string | null): string {
+  const at = startedAt !== null
+    ? `+${formatElapsed(startedAt, solve.ts)}`
+    : new Date(solve.ts).toLocaleTimeString();
+  return `challenge ${solve.challengeId} · ${at} · ${truncateAddress(solve.txHash)}`;
+}
+
+function formatElapsed(startedAt: string, ts: string): string {
+  const totalSeconds = Math.max(0, Math.floor((new Date(ts).getTime() - new Date(startedAt).getTime()) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function EntrantLane({ runId, entrant, feed, runState, startedAt, side }: {
   runId: string;
   entrant: EntrantSummary | undefined;
   feed: FeedState;
   runState: RunState;
+  startedAt: string | null;
   side: 'left' | 'right';
 }) {
   const [text, setText] = useState('');
@@ -287,6 +308,16 @@ function EntrantLane({ runId, entrant, feed, runState, side }: {
           tokens <b>{usage.input}</b> in / <b>{usage.output}</b> out
         </span>
       </div>
+
+      {entrant.solves.length > 0 ? (
+        <ul className="lane-solves" data-testid={`lane-solves-${entrant.id}`}>
+          {entrant.solves.map((solve) => (
+            <li key={solve.challengeId} className="solve-chip" title={solveTitle(solve, startedAt)}>
+              #{solve.challengeId}
+            </li>
+          ))}
+        </ul>
+      ) : null}
 
       {laneGaps.length > 0 ? (
         <p className="lane-gap" data-testid={`lane-gap-${entrant.id}`}>

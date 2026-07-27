@@ -1,5 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 
+import { recordSolve } from '../chain/storage.js';
 import type { EntrantStatus } from '../contract.js';
 import { entrants } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
@@ -41,6 +42,20 @@ export class FakeDriver implements EntrantDriver {
         detail: 'challenge files inspected',
       })],
       [100, () => this.setStatus(run.id, entrant.id, 'idle')],
+      // Scripted captures through the real dual-write path, so a fake duel
+      // exercises the solves UI (event and snapshot alike) without a chain.
+      ...(entrant.harness === 'codex' ? [3, 11] : [7, 2]).map((challengeId, index) => [
+        3_000 + index * 5_000,
+        () => recordSolve(this.journal.database, this.journal, {
+          runId: run.id,
+          entrantId: entrant.id,
+          entrantAddress: entrant.address ?? entrant.id,
+          challengeId,
+          tokenId: String(challengeId),
+          txHash: `0x${challengeId.toString(16).padStart(64, '0')}`,
+          blockNumber: 0,
+        }),
+      ] as const),
     ];
 
     for (const [delay, emit] of script) {

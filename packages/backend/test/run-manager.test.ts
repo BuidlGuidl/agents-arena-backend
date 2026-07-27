@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { EntrantDriver } from '../src/adapters/types.js';
+import { recordSolve } from '../src/chain/storage.js';
 import { EventJournal } from '../src/journal.js';
 import {
   InvalidTransitionError,
@@ -78,6 +79,68 @@ describe('RunManager state machine', () => {
       }
     },
   );
+});
+
+describe('RunManager snapshot solves', () => {
+  it('derives solves and flag counts from scores rows', async () => {
+    const { journal, manager, runId } = await createManager();
+    try {
+      const solves = [
+        { entrantId: 'codex-1', entrantAddress: '0xA1', challengeId: 3, txHash: '0xaaa', tokenId: '1' },
+        { entrantId: 'codex-1', entrantAddress: '0xA1', challengeId: 7, txHash: '0xbbb', tokenId: '2' },
+        { entrantId: 'opencode-1', entrantAddress: '0xB2', challengeId: 3, txHash: '0xccc', tokenId: '3' },
+      ];
+      for (const solve of solves) {
+        expect(recordSolve(journal.database, journal, { runId, blockNumber: 1, ...solve })).toBe(true);
+      }
+
+      const flagEvents = journal.after(runId, 0).filter((event) => event.type === 'score.flag');
+      expect(flagEvents).toHaveLength(3);
+
+      const { entrants } = manager.snapshot(runId);
+      const codex = entrants.find((entrant) => entrant.id === 'codex-1');
+      const opencode = entrants.find((entrant) => entrant.id === 'opencode-1');
+
+      expect(codex?.flags).toBe(2);
+      expect(codex?.solves.map((solve) => solve.challengeId)).toEqual([3, 7]);
+      expect(codex?.solves.map((solve) => solve.txHash)).toEqual(['0xaaa', '0xbbb']);
+      expect(codex?.solves.every((solve) => typeof solve.ts === 'string')).toBe(true);
+      expect(opencode?.flags).toBe(1);
+      expect(opencode?.solves).toMatchObject([{ challengeId: 3, txHash: '0xccc' }]);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('ignores a duplicate capture of the same challenge', async () => {
+    const { journal, manager, runId } = await createManager();
+    try {
+      const solve = {
+        runId, entrantId: 'codex-1', entrantAddress: '0xA1', challengeId: 3,
+        txHash: '0xaaa', tokenId: '1', blockNumber: 1,
+      };
+      expect(recordSolve(journal.database, journal, solve)).toBe(true);
+      expect(recordSolve(journal.database, journal, { ...solve, tokenId: '2', txHash: '0xbbb' })).toBe(false);
+
+      const codex = manager.snapshot(runId).entrants.find((entrant) => entrant.id === 'codex-1');
+      expect(codex?.flags).toBe(1);
+      expect(journal.after(runId, 0).filter((event) => event.type === 'score.flag')).toHaveLength(1);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('returns empty solves and zero flags before any capture', async () => {
+    const { journal, manager, runId } = await createManager();
+    try {
+      for (const entrant of manager.snapshot(runId).entrants) {
+        expect(entrant.flags).toBe(0);
+        expect(entrant.solves).toEqual([]);
+      }
+    } finally {
+      journal.close();
+    }
+  });
 });
 
 describe('RunManager idempotency', () => {

@@ -12,6 +12,12 @@ export type EntrantStatus = 'working' | 'idle' | 'blocked' | 'done';
 
 export type HarnessId = 'codex' | 'opencode' | 'claude';
 
+export interface EntrantSolve {
+  challengeId: number;
+  ts: string;
+  txHash: string;
+}
+
 export interface EntrantSummary {
   id: string;
   harness: HarnessId;
@@ -19,6 +25,7 @@ export interface EntrantSummary {
   address: string | null;
   status: EntrantStatus;
   flags: number;
+  solves: EntrantSolve[];
 }
 
 export interface RunSnapshot {

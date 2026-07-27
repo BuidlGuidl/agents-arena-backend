@@ -84,6 +84,7 @@ export const scores = sqliteTable('scores', {
   tokenId: text('token_id').notNull(),
   txHash: text('tx_hash').notNull(),
   blockNumber: integer('block_number').notNull(),
+  solvedAt: text('solved_at').notNull(),
 }, (table) => [
   uniqueIndex('scores_run_id_address_challenge_id').on(
     table.runId,

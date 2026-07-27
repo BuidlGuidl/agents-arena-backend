@@ -11,7 +11,7 @@ import { chainCursors, scores, wallets } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
 import { flagMintedEvent } from './abi.js';
 import type { ChainProfile } from './profile.js';
-import { ensureChainTables } from './storage.js';
+import { ensureChainTables, recordSolve } from './storage.js';
 
 const defaultBatchSize = 2_000n;
 const maxBackoffMs = 30_000;
@@ -163,34 +163,14 @@ export class FlagWatcher {
     txHash: string,
     blockNumber: bigint,
   ): boolean {
-    const numericChallengeId = toSqliteInteger(challengeId, 'challengeId');
-    return this.database.transaction((transaction) => {
-      const inserted = transaction
-        .insert(scores)
-        .values({
-          runId: this.options.runId,
-          entrantId,
-          entrantAddress: entrantAddress.toLowerCase(),
-          challengeId: numericChallengeId,
-          tokenId: tokenId.toString(),
-          txHash,
-          blockNumber: toSqliteInteger(blockNumber, 'blockNumber'),
-        })
-        .onConflictDoNothing()
-        .returning({ id: scores.id })
-        .get();
-
-      if (!inserted) {
-        return false;
-      }
-
-      this.options.journal.append(this.options.runId, 'chain:flags', 'score.flag', {
-        entrantId,
-        challengeId: numericChallengeId,
-        txHash,
-        tokenId: tokenId.toString(),
-      });
-      return true;
+    return recordSolve(this.database, this.options.journal, {
+      runId: this.options.runId,
+      entrantId,
+      entrantAddress,
+      challengeId: toSqliteInteger(challengeId, 'challengeId'),
+      tokenId: tokenId.toString(),
+      txHash,
+      blockNumber: toSqliteInteger(blockNumber, 'blockNumber'),
     });
   }
 

@@ -24,6 +24,12 @@ The service supports one preset in this slice. An unknown preset returns status 
 
 Returns the current `RunSnapshot`. A missing run returns status `404`.
 
+Each entrant carries its confirmed solves in journal order, and `flags` equals `solves.length`, so a reload can repaint the board without replaying events.
+
+```json
+{"id":"codex-1","harness":"codex","model":"...","address":"0x...","status":"working","flags":2,"solves":[{"challengeId":3,"ts":"...","txHash":"0x..."},{"challengeId":7,"ts":"...","txHash":"0x..."}]}
+```
+
 ### `POST /runs/:id/start`
 
 Prepares a new run, advances it to `ready`, and starts each entrant. A run already at `ready` starts without preparation.

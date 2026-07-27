@@ -1,7 +1,7 @@
 import {
-  chmodSync,
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -199,22 +199,16 @@ describe('assembleChallengePack', () => {
     expect(() => assembleChallengePack({ aiCtfRepo, outDir })).toThrow(/Challenge7/);
   });
 
-  it('leaves a previously built pack intact when assembly fails partway', () => {
-    assembleChallengePack({ aiCtfRepo, outDir });
-    const before = readdirSync(outDir).sort();
-    const briefingBefore = readFileSync(join(outDir, 'BRIEFING.md'), 'utf8');
-
-    // Unreadable source: the copy loop throws after staging has started.
+  // A directory or symlink in place of a .sol never reaches the copy — the
+  // entry.isFile() filter drops it first. Failure has to be injected at
+  // copyFileSync, which pack-atomicity.test.ts does.
+  it('skips a contracts entry that is not a regular file', () => {
     const contractPath = join(aiCtfRepo, 'packages', 'hardhat', 'contracts', 'NFTFlags.sol');
-    chmodSync(contractPath, 0o000);
-    try {
-      expect(() => assembleChallengePack({ aiCtfRepo, outDir })).toThrow();
-    } finally {
-      chmodSync(contractPath, 0o644);
-    }
+    rmSync(contractPath);
+    mkdirSync(contractPath);
 
-    expect(readdirSync(outDir).sort()).toEqual(before);
-    expect(readFileSync(join(outDir, 'BRIEFING.md'), 'utf8')).toBe(briefingBefore);
-    expect(readdirSync(tempDir).filter((name) => name.includes('.incoming-'))).toEqual([]);
+    assembleChallengePack({ aiCtfRepo, outDir });
+
+    expect(readdirSync(join(outDir, 'contracts'))).not.toContain('NFTFlags.sol');
   });
 });

@@ -1,3 +1,4 @@
+import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,6 +10,12 @@ import { assembleChallengePack, type ChallengePack } from './pack.js';
 export type ChallengePackResolver = (runId: string) => string;
 
 const PACK_ROOT = 'arena-challenge-pack';
+
+// Packs are kept per run because assembling one wipes and renames its directory,
+// which must not happen under a container that already has it bind-mounted. This
+// bound is what stops a long-lived backend accumulating them; it sits far above
+// the number of races the arena runs at once.
+const MAX_RETAINED_PACKS = 8;
 
 // The local addresses in chains.json are derived from the deploy order, so a
 // stray transaction before a later deployment shifts them. The pack reads what
@@ -60,6 +67,16 @@ export function createChallengePackResolver(
     const pack = assembleChallengePack({ aiCtfRepo, outDir: join(tmpdir(), PACK_ROOT, runId) });
     assertPackMatchesProfile(pack, profile);
     built.set(runId, pack.dir);
+
+    // A Map iterates in insertion order, so the first entry is the oldest run.
+    while (built.size > MAX_RETAINED_PACKS) {
+      const oldest = built.entries().next();
+      if (oldest.done === true) break;
+      const [oldestRunId, oldestDir] = oldest.value;
+      built.delete(oldestRunId);
+      rmSync(oldestDir, { recursive: true, force: true });
+    }
+
     return pack.dir;
   };
 }

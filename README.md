@@ -81,7 +81,7 @@ Credentials come from the host: `codex` reads `~/.codex/auth.json`, `opencode` r
 
 `POST /runs/:id/start`:
 
-1. Prepare each entrant — build a fresh container, seed its credentials, mount the challenge pack read-only at `/ctf`, run preflight (`forge`, `cast`, the CLI version).
+1. Prepare each entrant — build a fresh container, seed its credentials, mount the challenge pack read-only at `/ctf` on a local chain (Base mounts nothing), run preflight (`forge`, `cast`, the CLI version).
 2. Hold at the ready barrier until both report ready.
 3. Record one start time and release both with their opening prompt, which points at `/ctf` on a local chain and at the public CTF site on Base (ADR-0009).
 4. Parse each agent's stdout into `ArenaEvent`s, append them to the journal, and stream them to the browser.

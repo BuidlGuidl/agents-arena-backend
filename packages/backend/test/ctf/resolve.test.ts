@@ -95,6 +95,20 @@ describe('createChallengePackResolver', () => {
     expect(existsSync(join(firstPath, 'BRIEFING.md'))).toBe(true);
     expect(secondPath).toBe(firstPath);
   });
+
+  it('removes the oldest packs once the retention bound is passed', () => {
+    process.env.AI_CTF_REPO = fixtureDir;
+    const resolver = createChallengePackResolver(localProfile);
+    if (resolver === undefined) throw new Error('Expected a local challenge pack resolver');
+
+    const paths = Array.from({ length: 10 }, (_, index) => resolver(`retain-${index}`));
+    generatedPaths.push(...paths);
+
+    expect(existsSync(paths[0] as string)).toBe(false);
+    expect(existsSync(paths[1] as string)).toBe(false);
+    expect(existsSync(paths[2] as string)).toBe(true);
+    expect(existsSync(paths[9] as string)).toBe(true);
+  });
 });
 
 describe('assertPackMatchesProfile', () => {

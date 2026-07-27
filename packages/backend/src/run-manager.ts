@@ -179,36 +179,42 @@ export class RunManager {
     return { run: this.snapshot(id), created: true };
   }
 
+  // One transaction, because solves and lastEventId must describe the same moment.
+  // A writer landing between those two reads yields a snapshot whose lastEventId
+  // already covers a solve its solves array is missing — and the client skips
+  // events at or below lastEventId, so that flag would never arrive.
   snapshot(runId: string): RunSnapshot {
-    const run = this.requireRun(runId);
-    const solvesByEntrant = this.solvesByEntrant(runId);
-    const entrantSummaries = this.entrants(runId).map<EntrantSummary>((entrant) => {
-      const solves = solvesByEntrant.get(entrant.id) ?? [];
+    return this.journal.database.transaction(() => {
+      const run = this.requireRun(runId);
+      const solvesByEntrant = this.solvesByEntrant(runId);
+      const entrantSummaries = this.entrants(runId).map<EntrantSummary>((entrant) => {
+        const solves = solvesByEntrant.get(entrant.id) ?? [];
+        return {
+          id: entrant.id,
+          harness: entrant.harness,
+          model: entrant.model,
+          address: entrant.address,
+          status: entrant.status,
+          flags: solves.length,
+          solves,
+        };
+      });
+      const lastEvent = this.journal.database
+        .select({ id: max(events.id) })
+        .from(events)
+        .where(eq(events.runId, runId))
+        .get();
+
       return {
-        id: entrant.id,
-        harness: entrant.harness,
-        model: entrant.model,
-        address: entrant.address,
-        status: entrant.status,
-        flags: solves.length,
-        solves,
+        id: run.id,
+        state: run.state,
+        preset: run.preset,
+        entrants: entrantSummaries,
+        startedAt: run.startedAt,
+        deadlineAt: run.deadlineAt,
+        lastEventId: lastEvent?.id ?? 0,
       };
     });
-    const lastEvent = this.journal.database
-      .select({ id: max(events.id) })
-      .from(events)
-      .where(eq(events.runId, runId))
-      .get();
-
-    return {
-      id: run.id,
-      state: run.state,
-      preset: run.preset,
-      entrants: entrantSummaries,
-      startedAt: run.startedAt,
-      deadlineAt: run.deadlineAt,
-      lastEventId: lastEvent?.id ?? 0,
-    };
   }
 
   transition(runId: string, nextState: RunState, reason?: string): RunRecord {

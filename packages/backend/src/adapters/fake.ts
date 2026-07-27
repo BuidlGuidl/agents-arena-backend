@@ -52,7 +52,7 @@ export class FakeDriver implements EntrantDriver {
           entrantAddress: entrant.address ?? entrant.id,
           challengeId,
           tokenId: String(challengeId),
-          txHash: `0x${challengeId.toString(16).padStart(40, '0')}`,
+          txHash: `0x${challengeId.toString(16).padStart(64, '0')}`,
           blockNumber: 0,
         }),
       ] as const),

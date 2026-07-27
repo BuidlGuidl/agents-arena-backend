@@ -31,12 +31,6 @@ export function ensureChainTables(database: ArenaDatabase): void {
       solved_at TEXT NOT NULL
     )
   `);
-  // Databases created before solved_at existed miss the column; '' marks rows
-  // recorded back then.
-  const scoreColumns = database.all(sql`PRAGMA table_info(scores)`) as Array<{ name: string }>;
-  if (!scoreColumns.some((column) => column.name === 'solved_at')) {
-    database.run(sql`ALTER TABLE scores ADD COLUMN solved_at TEXT NOT NULL DEFAULT ''`);
-  }
   database.run(sql`
     CREATE UNIQUE INDEX IF NOT EXISTS scores_run_id_address_challenge_id
     ON scores (run_id, entrant_address, challenge_id)

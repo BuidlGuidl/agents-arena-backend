@@ -221,10 +221,6 @@ function WalletAddress({ address }: { address: string }) {
 }
 
 function solveTitle(solve: EntrantSolve, startedAt: string | null): string {
-  // scores rows from before the solved_at column carry '' — skip the time part.
-  if (Number.isNaN(new Date(solve.ts).getTime())) {
-    return `challenge ${solve.challengeId} · ${truncateAddress(solve.txHash)}`;
-  }
   const at = startedAt !== null
     ? `+${formatElapsed(startedAt, solve.ts)}`
     : new Date(solve.ts).toLocaleTimeString();

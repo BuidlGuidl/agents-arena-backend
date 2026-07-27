@@ -145,7 +145,12 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
         });
       }
       const field = issue?.path[0] ?? 'history';
-      return reply.status(400).send({ error: `Invalid ${String(field)} query value` });
+      const received = (request.query as Record<string, unknown>)[String(field)];
+      return reply.status(400).send({
+        error: typeof received === 'string'
+          ? `Invalid ${String(field)} query value: ${clip(received)}`
+          : `Invalid ${String(field)} query value`,
+      });
     }
     const typesResult = parseCsv(queryResult.data.types, 'types');
     if (!typesResult.ok) {
@@ -202,6 +207,11 @@ function parseLastEventId(value: string | string[] | undefined): { ok: true; val
   if (raw === undefined || !/^\d+$/.test(raw)) return { ok: false };
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) ? { ok: true, value: parsed } : { ok: false };
+}
+
+// Error messages echo what the caller sent, so bound it.
+function clip(value: string): string {
+  return value.length <= 40 ? value : `${value.slice(0, 40)}…`;
 }
 
 function parseCsv(

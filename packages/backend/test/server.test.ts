@@ -57,7 +57,7 @@ describe('event history', () => {
     });
 
     expect(invalid.statusCode).toBe(400);
-    expect(invalid.json()).toEqual({ error: 'Invalid limit query value' });
+    expect(invalid.json()).toEqual({ error: 'Invalid limit query value: 201' });
     expect(maximum.statusCode).toBe(200);
     expect((maximum.json() as HistoryPage).events).toHaveLength(56);
     expect((defaulted.json() as HistoryPage).events).toHaveLength(50);
@@ -111,8 +111,17 @@ describe('event history', () => {
       url: `/runs/${created.run.id}/events/history?before=1e20`,
     });
 
+    const long = await server.app.inject({
+      method: 'GET',
+      url: `/runs/${created.run.id}/events/history?limit=${'9'.repeat(80)}`,
+    });
+
     expect(hexadecimal.statusCode).toBe(400);
+    expect(hexadecimal.json()).toEqual({ error: 'Invalid limit query value: 0x10' });
     expect(unsafe.statusCode).toBe(400);
+    expect(unsafe.json()).toEqual({ error: 'Invalid before query value: 1e20' });
+    expect(long.statusCode).toBe(400);
+    expect((long.json() as { error: string }).error).toBe(`Invalid limit query value: ${'9'.repeat(40)}…`);
   });
 
   it('returns 404 for an unknown run', async () => {

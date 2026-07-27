@@ -13,7 +13,7 @@ const runStates = [
 
 const harnessIds = ['codex', 'opencode', 'claude'] as const;
 const entrantStatuses = ['working', 'idle', 'blocked', 'done'] as const;
-const eventTypes = [
+export const eventTypes = [
   'run.state',
   'entrant.status',
   'agent.message',
@@ -61,9 +61,12 @@ export const events = sqliteTable('events', {
   ts: text('ts').notNull(),
   type: text('type', { enum: eventTypes }).notNull(),
   payloadJson: text('payload_json').notNull(),
+  truncatedJson: text('truncated_json'),
 }, (table) => [
   uniqueIndex('events_run_id_source_seq').on(table.runId, table.source, table.seq),
   index('events_run_id_id').on(table.runId, table.id),
+  index('events_run_id_type_id').on(table.runId, table.type, table.id),
+  index('events_run_id_source_id').on(table.runId, table.source, table.id),
 ]);
 
 export const wallets = sqliteTable('wallets', {

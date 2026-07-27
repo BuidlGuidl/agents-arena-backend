@@ -44,6 +44,7 @@ export interface ArenaEventBase {
   source: string;
   seq: number;
   ts: string;
+  truncated?: Record<string, { fullLength: number; lines: number }>;
 }
 
 export type ArenaEvent =
@@ -62,6 +63,14 @@ export type ArenaEvent =
   | (ArenaEventBase & { type: 'entrant.error'; payload: { entrantId: string; message: string } })
   | (ArenaEventBase & { type: 'run.error'; payload: { message: string } })
   | (ArenaEventBase & { type: 'usage'; payload: { entrantId: string; inputTokens: number; outputTokens: number } });
+
+export interface HistoryPage {
+  events: ArenaEvent[];
+  hasMore: boolean;
+  // Absent on immutable pages, whose bodies must never change. Read the SSE
+  // resume cursor from a page without `before`.
+  lastEventId?: number;
+}
 
 export interface CreateRunRequest {
   preset: string;

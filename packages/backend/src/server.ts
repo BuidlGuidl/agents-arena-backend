@@ -5,6 +5,7 @@ import type { ArenaEvent, CreateRunRequest } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
 import type { EntrantDriver } from './adapters/types.js';
+import { eventTypes } from './db/schema.js';
 import { EventJournal } from './journal.js';
 import {
   type FundingGate,
@@ -24,6 +25,16 @@ const createRunSchema = z.object({
 
 const steerSchema = z.object({ text: z.string().min(1) }).strict();
 const eventsQuerySchema = z.object({ after: z.coerce.number().int().nonnegative().optional() });
+const decimalIntegerSchema = z.string()
+  .regex(/^\d+$/)
+  .transform(Number)
+  .refine(Number.isSafeInteger);
+const historyQuerySchema = z.object({
+  limit: decimalIntegerSchema.pipe(z.number().int().min(1).max(200)).default('50'),
+  before: decimalIntegerSchema.pipe(z.number().int().min(1)).optional(),
+  types: z.string().optional(),
+  source: z.string().optional(),
+}).strict();
 
 export interface ServerOptions {
   dbPath?: string;
@@ -119,6 +130,56 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
     openEventStream(request, reply, journal, id, afterId);
   });
 
+  app.get('/runs/:id/events/history', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!manager.hasRun(id)) {
+      throw new RunNotFoundError(`Run not found: ${id}`);
+    }
+    const queryResult = historyQuerySchema.safeParse(request.query);
+    if (!queryResult.success) {
+      const issue = queryResult.error.issues[0];
+      if (issue?.code === 'unrecognized_keys') {
+        const label = issue.keys.length === 1 ? 'parameter' : 'parameters';
+        return reply.status(400).send({
+          error: `Unknown query ${label}: ${issue.keys.join(', ')}`,
+        });
+      }
+      const field = issue?.path[0] ?? 'history';
+      return reply.status(400).send({ error: `Invalid ${String(field)} query value` });
+    }
+    const typesResult = parseCsv(queryResult.data.types, 'types');
+    if (!typesResult.ok) {
+      return reply.status(400).send({ error: typesResult.error });
+    }
+    const sourceResult = parseCsv(queryResult.data.source, 'source');
+    if (!sourceResult.ok) {
+      return reply.status(400).send({ error: sourceResult.error });
+    }
+    const invalidType = typesResult.values?.find((type) => !eventTypes.includes(
+      type as (typeof eventTypes)[number],
+    ));
+    if (invalidType !== undefined) {
+      return reply.status(400).send({ error: `Unknown event type: ${invalidType}` });
+    }
+    const page = journal.history(id, {
+      limit: queryResult.data.limit,
+      ...(queryResult.data.before === undefined ? {} : { before: queryResult.data.before }),
+      ...(typesResult.values === undefined
+        ? {}
+        : { types: typesResult.values as ArenaEvent['type'][] }),
+      ...(sourceResult.values === undefined ? {} : { sources: sourceResult.values }),
+    });
+    // Every id below `before` already exists, so the page can never gain rows.
+    // lastEventId is the live run head, so it goes only on pages we let change.
+    const frozen = queryResult.data.before !== undefined
+      && queryResult.data.before <= page.lastEventId + 1;
+    reply.header(
+      'Cache-Control',
+      frozen ? 'public, max-age=31536000, immutable' : 'public, max-age=1',
+    );
+    return frozen ? { events: page.events, hasMore: page.hasMore } : page;
+  });
+
   app.addHook('onClose', async () => {
     journal.close();
   });
@@ -141,6 +202,18 @@ function parseLastEventId(value: string | string[] | undefined): { ok: true; val
   if (raw === undefined || !/^\d+$/.test(raw)) return { ok: false };
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) ? { ok: true, value: parsed } : { ok: false };
+}
+
+function parseCsv(
+  value: string | undefined,
+  field: 'types' | 'source',
+): { ok: true; values?: string[] } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true };
+  const values = value.split(',');
+  if (values.some((item) => item.length === 0)) {
+    return { ok: false, error: `Invalid ${field} query value: empty CSV item` };
+  }
+  return { ok: true, values };
 }
 
 function openEventStream(

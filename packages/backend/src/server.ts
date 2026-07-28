@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import type { ArenaEvent, BroadcastResponse, CreateRunRequest } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
+import { operatorAuth } from './auth.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
 import { EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
 import { eventTypes } from './db/schema.js';
@@ -40,6 +41,8 @@ const historyQuerySchema = z.object({
 }).strict();
 
 export interface ServerOptions {
+  /** Required: every mutating route rejects a request that does not carry it. */
+  operatorToken: string;
   dbPath?: string;
   schedule?: Schedule;
   driverFactory?: (journal: EventJournal) => EntrantDriver;
@@ -55,8 +58,9 @@ export interface ArenaServer {
   manager: RunManager;
 }
 
-export function createServer(options: ServerOptions = {}): ArenaServer {
+export function createServer(options: ServerOptions): ArenaServer {
   const app = Fastify({ logger: options.logger ?? false });
+  app.addHook('onRequest', operatorAuth(options.operatorToken));
   const journal = new EventJournal(options.dbPath);
   const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(journal, options.schedule);
   const runManagerOptions: RunManagerOptions = {

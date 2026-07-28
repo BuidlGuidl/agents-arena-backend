@@ -52,6 +52,7 @@ Build the entrant image and run the backend:
 
 ```bash
 docker/build.sh                                # -> arena-entrant:dev
+export ARENA_OPERATOR_TOKEN=$(openssl rand -hex 24)   # required; controls are operator-only
 ARENA_DB=:memory: pnpm --filter backend dev    # Fastify on :4177
 ```
 
@@ -60,9 +61,10 @@ Create a run and watch the feed:
 ```bash
 curl -X POST http://127.0.0.1:4177/runs \
   -H 'content-type: application/json' \
+  -H "authorization: Bearer $ARENA_OPERATOR_TOKEN" \
   -d '{"preset":"docker-duel","autoStart":true}'
 
-curl -N http://127.0.0.1:4177/runs/<id>/events # SSE
+curl -N http://127.0.0.1:4177/runs/<id>/events # SSE, no token needed
 ```
 
 Smoke one real agent, or the funding gate, without a full run:
@@ -102,4 +104,4 @@ If either preflight fails, the run fails and both containers are torn down. Neit
 | GET | `/runs/:id` | snapshot: state, entrants, addresses, scores, last event id |
 | GET | `/runs/:id/events` | replayable SSE feed |
 
-Control endpoints are operator-only for v1. The API contract travels as checked-in files (`contract/API.md` + `contract/arena-types.ts`); the frontend fork copies the types.
+Control endpoints are operator-only: the four POSTs need `Authorization: Bearer $ARENA_OPERATOR_TOKEN` and answer `401` without it, while the snapshot and the SSE feed stay open for spectators. The backend refuses to start when `ARENA_OPERATOR_TOKEN` is unset. The API contract travels as checked-in files (`contract/API.md` + `contract/arena-types.ts`); the frontend fork copies the types.

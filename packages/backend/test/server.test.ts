@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { EntrantUnavailableError } from '../src/adapters/types.js';
+import { MissingOperatorTokenError } from '../src/auth.js';
 import type { ArenaEvent, HistoryPage, RunSnapshot } from '../src/contract.js';
 import { capEvent, EVENT_TEXT_LIMIT } from '../src/journal.js';
 import { createServer, type ArenaServer } from '../src/server.js';
 
 const servers: ArenaServer[] = [];
+const OPERATOR_TOKEN = 'test-operator-token';
+const operatorHeaders = { authorization: `Bearer ${OPERATOR_TOKEN}` };
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(async ({ app }) => app.close()));
@@ -407,7 +410,7 @@ describe('event history', () => {
 
 describe('SSE event delivery', () => {
   it('replays missed events and then sends live events without duplicates or gaps', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const runId = created.run.id;
@@ -451,6 +454,7 @@ describe('fake run vertical slice', () => {
   it('creates, streams scripted events, steers, and finishes a run', async () => {
     const server = createServer({
       dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
       schedule: (task) => {
         task();
         return undefined;
@@ -461,6 +465,7 @@ describe('fake run vertical slice', () => {
     const createResponse = await server.app.inject({
       method: 'POST',
       url: '/runs',
+      headers: operatorHeaders,
       payload: { preset: 'fake-duel', autoStart: true },
     });
     expect(createResponse.statusCode).toBe(201);
@@ -488,6 +493,7 @@ describe('fake run vertical slice', () => {
     const steerResponse = await server.app.inject({
       method: 'POST',
       url: `/runs/${run.id}/entrants/codex-1/steer`,
+      headers: operatorHeaders,
       payload: { text: 'Check storage slot zero.' },
     });
     expect(steerResponse.statusCode).toBe(202);
@@ -495,7 +501,11 @@ describe('fake run vertical slice', () => {
       event.type === 'entrant.steered' && event.payload.text === 'Check storage slot zero.',
     )).toBe(true);
 
-    const stopResponse = await server.app.inject({ method: 'POST', url: `/runs/${run.id}/stop` });
+    const stopResponse = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/stop`,
+      headers: operatorHeaders,
+    });
     expect(stopResponse.statusCode).toBe(200);
     expect((stopResponse.json() as { run: RunSnapshot }).run.state).toBe('finished');
     expect(server.manager.snapshot(run.id).entrants.every((entrant) => entrant.status === 'done')).toBe(true);
@@ -506,6 +516,7 @@ describe('director broadcast', () => {
   it('injects one message into every live entrant and emits one broadcast event', async () => {
     const server = createServer({
       dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
       schedule: (task) => {
         task();
         return undefined;
@@ -516,6 +527,7 @@ describe('director broadcast', () => {
     const createResponse = await server.app.inject({
       method: 'POST',
       url: '/runs',
+      headers: operatorHeaders,
       payload: { preset: 'fake-duel', autoStart: true },
     });
     const { run } = createResponse.json() as { run: RunSnapshot };
@@ -523,6 +535,7 @@ describe('director broadcast', () => {
     const broadcastResponse = await server.app.inject({
       method: 'POST',
       url: `/runs/${run.id}/broadcast`,
+      headers: operatorHeaders,
       payload: { text: 'Five minutes left, ship what you have.' },
     });
     expect(broadcastResponse.statusCode).toBe(202);
@@ -543,13 +556,14 @@ describe('director broadcast', () => {
   });
 
   it('rejects an empty body, an unknown run, and a run that is not running', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const { run } = await server.manager.create({ preset: 'fake-duel' });
 
     const empty = await server.app.inject({
       method: 'POST',
       url: `/runs/${run.id}/broadcast`,
+      headers: operatorHeaders,
       payload: { text: '' },
     });
     expect(empty.statusCode).toBe(400);
@@ -557,6 +571,7 @@ describe('director broadcast', () => {
     const missing = await server.app.inject({
       method: 'POST',
       url: '/runs/missing-run/broadcast',
+      headers: operatorHeaders,
       payload: { text: 'anyone there?' },
     });
     expect(missing.statusCode).toBe(404);
@@ -565,6 +580,7 @@ describe('director broadcast', () => {
     const notRunning = await server.app.inject({
       method: 'POST',
       url: `/runs/${run.id}/broadcast`,
+      headers: operatorHeaders,
       payload: { text: 'anyone there?' },
     });
     expect(notRunning.statusCode).toBe(400);
@@ -574,6 +590,7 @@ describe('director broadcast', () => {
   it('answers 409 when an entrant cannot take the turn', async () => {
     const server = createServer({
       dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
       driverFactory: () => ({
         async prepare() {},
         async start() {},
@@ -589,10 +606,87 @@ describe('director broadcast', () => {
     const steer = await server.app.inject({
       method: 'POST',
       url: `/runs/${run.id}/entrants/codex-1/steer`,
+      headers: operatorHeaders,
       payload: { text: 'are you there?' },
     });
     expect(steer.statusCode).toBe(409);
     expect(steer.json()).toEqual({ error: 'Entrant codex-1 is degraded' });
+  });
+});
+
+describe('operator auth', () => {
+  it('rejects every mutating route with a missing or wrong token and leaves reads open', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    const { run } = await server.manager.create({ preset: 'fake-duel' });
+
+    // Every mutating route, once with no credential and once with a wrong one.
+    // Broadcast is here to prove the method-based gate covers a route added later.
+    const routes = [
+      { url: '/runs', payload: { preset: 'fake-duel' } },
+      { url: `/runs/${run.id}/start` },
+      { url: `/runs/${run.id}/stop` },
+      { url: `/runs/${run.id}/entrants/codex-1/steer`, payload: { text: 'no token' } },
+      { url: `/runs/${run.id}/broadcast`, payload: { text: 'no token' } },
+    ];
+    const credentials = [undefined, { authorization: 'Bearer wrong-token' }, { authorization: OPERATOR_TOKEN }];
+    const unauthorized = await Promise.all(routes.flatMap((route) =>
+      credentials.map(async (headers) => server.app.inject({
+        method: 'POST',
+        url: route.url,
+        ...(headers === undefined ? {} : { headers }),
+        ...(route.payload === undefined ? {} : { payload: route.payload }),
+      })),
+    ));
+    for (const response of unauthorized) {
+      expect(response.statusCode).toBe(401);
+      expect(response.json() as { error: string }).toEqual({ error: 'Operator token required' });
+      expect(response.headers['www-authenticate']).toContain('Bearer');
+    }
+    // A rejected request must not have touched the run.
+    expect(server.manager.snapshot(run.id).state).toBe('created');
+
+    const snapshotResponse = await server.app.inject({ method: 'GET', url: `/runs/${run.id}` });
+    expect(snapshotResponse.statusCode).toBe(200);
+    const headResponse = await server.app.inject({ method: 'HEAD', url: `/runs/${run.id}` });
+    expect(headResponse.statusCode).toBe(200);
+    // No OPTIONS route exists; the gate must let it reach the router rather than answer 401.
+    const optionsResponse = await server.app.inject({ method: 'OPTIONS', url: `/runs/${run.id}` });
+    expect(optionsResponse.statusCode).toBe(404);
+
+    const address = await server.app.listen({ port: 0, host: '127.0.0.1' });
+    const abort = new AbortController();
+    const stream = await fetch(`${address}/runs/${run.id}/events`, { signal: abort.signal });
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get('content-type')).toContain('text/event-stream');
+    abort.abort();
+
+    const authorized = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: { preset: 'fake-duel' },
+    });
+    expect(authorized.statusCode).toBe(201);
+  });
+
+  it('refuses to build a server on a token that is empty or only whitespace', () => {
+    for (const operatorToken of ['', '   ', '\t\n']) {
+      expect(() => createServer({ dbPath: ':memory:', operatorToken })).toThrow(MissingOperatorTokenError);
+    }
+  });
+
+  it('ignores surrounding whitespace on both sides of the comparison', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: `  ${OPERATOR_TOKEN}  ` });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: { authorization: `Bearer   ${OPERATOR_TOKEN} ` },
+      payload: { preset: 'fake-duel' },
+    });
+    expect(response.statusCode).toBe(201);
   });
 });
 

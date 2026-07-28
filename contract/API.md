@@ -2,6 +2,18 @@
 
 The backend listens on `PORT`, or port `4177` when `PORT` is unset. JSON request bodies use `Content-Type: application/json`.
 
+## Operator auth
+
+Every mutating route (create, start, stop, steer) requires the shared operator token:
+
+```text
+Authorization: Bearer <ARENA_OPERATOR_TOKEN>
+```
+
+A request without it, or with a wrong token, returns status `401` and `{"error":"Operator token required"}`. The snapshot and the event stream are readable without the token, so spectators need no credential.
+
+The token comes from the `ARENA_OPERATOR_TOKEN` environment variable. The backend refuses to start when it is unset, so a deployment cannot leave the controls open by accident.
+
 ## Runs
 
 ### `POST /runs`

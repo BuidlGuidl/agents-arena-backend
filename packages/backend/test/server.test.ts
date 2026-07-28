@@ -4,6 +4,8 @@ import type { ArenaEvent, RunSnapshot } from '../src/contract.js';
 import { createServer, type ArenaServer } from '../src/server.js';
 
 const servers: ArenaServer[] = [];
+const OPERATOR_TOKEN = 'test-operator-token';
+const operatorHeaders = { authorization: `Bearer ${OPERATOR_TOKEN}` };
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(async ({ app }) => app.close()));
@@ -11,7 +13,7 @@ afterEach(async () => {
 
 describe('SSE event delivery', () => {
   it('replays missed events and then sends live events without duplicates or gaps', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const runId = created.run.id;
@@ -55,6 +57,7 @@ describe('fake run vertical slice', () => {
   it('creates, streams scripted events, steers, and finishes a run', async () => {
     const server = createServer({
       dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
       schedule: (task) => {
         task();
         return undefined;
@@ -65,6 +68,7 @@ describe('fake run vertical slice', () => {
     const createResponse = await server.app.inject({
       method: 'POST',
       url: '/runs',
+      headers: operatorHeaders,
       payload: { preset: 'fake-duel', autoStart: true },
     });
     expect(createResponse.statusCode).toBe(201);
@@ -81,6 +85,7 @@ describe('fake run vertical slice', () => {
     const steerResponse = await server.app.inject({
       method: 'POST',
       url: `/runs/${run.id}/entrants/codex-1/steer`,
+      headers: operatorHeaders,
       payload: { text: 'Check storage slot zero.' },
     });
     expect(steerResponse.statusCode).toBe(202);
@@ -88,10 +93,64 @@ describe('fake run vertical slice', () => {
       event.type === 'entrant.steered' && event.payload.text === 'Check storage slot zero.',
     )).toBe(true);
 
-    const stopResponse = await server.app.inject({ method: 'POST', url: `/runs/${run.id}/stop` });
+    const stopResponse = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/stop`,
+      headers: operatorHeaders,
+    });
     expect(stopResponse.statusCode).toBe(200);
     expect((stopResponse.json() as { run: RunSnapshot }).run.state).toBe('finished');
     expect(server.manager.snapshot(run.id).entrants.every((entrant) => entrant.status === 'done')).toBe(true);
+  });
+});
+
+describe('operator auth', () => {
+  it('rejects mutating requests without a valid token and leaves reads open', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    const { run } = await server.manager.create({ preset: 'fake-duel' });
+
+    const unauthorized = await Promise.all([
+      server.app.inject({ method: 'POST', url: '/runs', payload: { preset: 'fake-duel' } }),
+      server.app.inject({
+        method: 'POST',
+        url: '/runs',
+        headers: { authorization: 'Bearer wrong-token' },
+        payload: { preset: 'fake-duel' },
+      }),
+      server.app.inject({ method: 'POST', url: `/runs/${run.id}/start` }),
+      server.app.inject({ method: 'POST', url: `/runs/${run.id}/stop` }),
+      server.app.inject({
+        method: 'POST',
+        url: `/runs/${run.id}/entrants/codex-1/steer`,
+        payload: { text: 'no token' },
+      }),
+    ]);
+    for (const response of unauthorized) {
+      expect(response.statusCode).toBe(401);
+      expect(response.json() as { error: string }).toEqual({ error: 'Operator token required' });
+      expect(response.headers['www-authenticate']).toContain('Bearer');
+    }
+    // A rejected request must not have touched the run.
+    expect(server.manager.snapshot(run.id).state).toBe('created');
+
+    const snapshotResponse = await server.app.inject({ method: 'GET', url: `/runs/${run.id}` });
+    expect(snapshotResponse.statusCode).toBe(200);
+
+    const address = await server.app.listen({ port: 0, host: '127.0.0.1' });
+    const abort = new AbortController();
+    const stream = await fetch(`${address}/runs/${run.id}/events`, { signal: abort.signal });
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get('content-type')).toContain('text/event-stream');
+    abort.abort();
+
+    const authorized = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: { preset: 'fake-duel' },
+    });
+    expect(authorized.statusCode).toBe(201);
   });
 });
 

@@ -6,6 +6,11 @@ Read the [README](README.md) for the API and project details.
 
 Set `AI_CTF_REPO` to your local checkout of [ai.ctf.buidlguidl.com](https://github.com/BuidlGuidl/ai.ctf.buidlguidl.com).
 
+The control routes are operator-only. The launcher generates a token into
+`.demo/operator-token` (gitignored) and passes it to the backend, the frontend proxy,
+and its own `curl` calls, so nothing extra is needed. Set `ARENA_OPERATOR_TOKEN`
+yourself to use your own; print the active one with `./scripts/demo.sh token`.
+
 - `docker info`
 - `docker image inspect arena-entrant:dev`
 - `fnm exec --using=22.20.0 node --version`
@@ -90,8 +95,12 @@ RUN_ID=<run-id>
 curl -fsS -X POST \
   "http://127.0.0.1:4177/runs/$RUN_ID/entrants/codex-1/steer" \
   -H 'content-type: application/json' \
+  -H "authorization: Bearer $(./scripts/demo.sh token)" \
   -d '{"text":"Check the chain state again and try the next unsolved challenge."}'
 ```
+
+Without that header the backend answers `401`. The SSE feed and `GET /runs/$RUN_ID`
+need no token.
 
 The next Codex turn appears in its lane and in the run log. Stop the launcher-owned
 processes after the demo:
@@ -113,6 +122,15 @@ Run `packages/backend/scripts/fund-drill.sh` in another terminal when the drill 
 addresses. The drill does not start a duel.
 
 Problems seen during setup and their fixes:
+
+**A demo command fails with `401` or "The backend rejected the run".**
+The running backend holds a different operator token than the launcher now reads —
+`ARENA_OPERATOR_TOKEN` changed, or `.demo/operator-token` was removed. Restart the
+services so both sides share one token:
+
+```bash
+./scripts/demo.sh down && ./scripts/demo.sh up
+```
 
 **Backend tests or server crash with a `NODE_MODULE_VERSION` error.**
 better-sqlite3 was rebuilt for a different Node. Rebuild it for the project runtime:

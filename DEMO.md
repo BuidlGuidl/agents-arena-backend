@@ -83,8 +83,19 @@ curl -fsS -X POST \
   -d '{"text":"Check the chain state again and try the next unsolved challenge."}'
 ```
 
-The next Codex turn appears in its lane and in the run log. Stop the launcher-owned
-processes after the demo:
+The next Codex turn appears in its lane and in the run log.
+
+Address both entrants at once, the way a streamer would:
+
+```bash
+curl -fsS -X POST \
+  "http://127.0.0.1:4177/runs/$RUN_ID/broadcast" \
+  -H 'content-type: application/json' \
+  -d '{"text":"Five minutes left, ship what you have."}'
+```
+
+The reply names who took the message. The run log shows one `broadcast` row, then
+each lane takes its own turn. Stop the launcher-owned processes after the demo:
 
 ```bash
 ./scripts/demo.sh down

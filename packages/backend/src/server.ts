@@ -1,7 +1,7 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
-import type { ArenaEvent, CreateRunRequest } from './contract.js';
+import type { ArenaEvent, BroadcastResponse, CreateRunRequest } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
 import type { EntrantDriver } from './adapters/types.js';
@@ -22,7 +22,8 @@ const createRunSchema = z.object({
   idempotencyKey: z.string().min(1).optional(),
 }).strict();
 
-const steerSchema = z.object({ text: z.string().min(1) }).strict();
+// Steer and broadcast carry the same body; only the fan-out differs.
+const textSchema = z.object({ text: z.string().min(1) }).strict();
 const eventsQuerySchema = z.object({ after: z.coerce.number().int().nonnegative().optional() });
 
 export interface ServerOptions {
@@ -95,11 +96,20 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
   });
 
   app.post('/runs/:id/entrants/:entrantId/steer', async (request, reply) => {
-    const body = parseBody(steerSchema, request.body, reply);
+    const body = parseBody(textSchema, request.body, reply);
     if (body === undefined) return;
     const { id, entrantId } = request.params as { id: string; entrantId: string };
     await manager.steer(id, entrantId, body.text);
     return reply.status(202).send({ accepted: true });
+  });
+
+  app.post('/runs/:id/broadcast', async (request, reply) => {
+    const body = parseBody(textSchema, request.body, reply);
+    if (body === undefined) return;
+    const { id } = request.params as { id: string };
+    const result = await manager.broadcast(id, body.text);
+    const response: BroadcastResponse = { accepted: true, ...result };
+    return reply.status(202).send(response);
   });
 
   app.get('/runs/:id/events', async (request, reply) => {

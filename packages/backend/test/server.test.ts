@@ -95,6 +95,67 @@ describe('fake run vertical slice', () => {
   });
 });
 
+describe('director broadcast', () => {
+  it('injects one message into every live entrant and emits one broadcast event', async () => {
+    const server = createServer({
+      dbPath: ':memory:',
+      schedule: (task) => {
+        task();
+        return undefined;
+      },
+    });
+    servers.push(server);
+
+    const createResponse = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      payload: { preset: 'fake-duel', autoStart: true },
+    });
+    const { run } = createResponse.json() as { run: RunSnapshot };
+
+    const broadcastResponse = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/broadcast`,
+      payload: { text: 'Five minutes left, ship what you have.' },
+    });
+    expect(broadcastResponse.statusCode).toBe(202);
+    expect(broadcastResponse.json()).toEqual({
+      accepted: true,
+      delivered: ['codex-1', 'opencode-1'],
+      failed: [],
+    });
+
+    const since = server.journal.after(run.id, run.lastEventId);
+    const broadcasts = since.filter((event) => event.type === 'director.broadcast');
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]?.source).toBe('run');
+    expect(broadcasts[0]?.payload.entrantIds).toEqual(['codex-1', 'opencode-1']);
+    expect(since.filter((event) =>
+      event.type === 'entrant.steered' && event.payload.text === 'Five minutes left, ship what you have.',
+    ).map((event) => event.source)).toEqual(['codex-1', 'opencode-1']);
+  });
+
+  it('rejects an empty body and an unknown run', async () => {
+    const server = createServer({ dbPath: ':memory:' });
+    servers.push(server);
+    const { run } = await server.manager.create({ preset: 'fake-duel' });
+
+    const empty = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/broadcast`,
+      payload: { text: '' },
+    });
+    expect(empty.statusCode).toBe(400);
+
+    const missing = await server.app.inject({
+      method: 'POST',
+      url: '/runs/missing-run/broadcast',
+      payload: { text: 'anyone there?' },
+    });
+    expect(missing.statusCode).toBe(404);
+  });
+});
+
 async function readSseEvents(response: Response, count: number): Promise<ArenaEvent[]> {
   const reader = response.body?.getReader();
   if (reader === undefined) throw new Error('SSE response has no body');

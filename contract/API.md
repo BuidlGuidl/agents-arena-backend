@@ -46,6 +46,20 @@ Sends text to one entrant.
 {"text":"Inspect the contract first."}
 ```
 
+### `POST /runs/:id/broadcast`
+
+Sends one director message to every entrant that is not `done`. Each recipient takes it as a steer turn, and the run emits one `director.broadcast` event so every viewer sees the message once.
+
+```json
+{"text":"Five minutes left, ship what you have."}
+```
+
+The response has status `202`. An entrant that cannot take the turn is named in `failed` and gets an `entrant.error` event; the rest still receive the message.
+
+```json
+{"accepted":true,"delivered":["codex-1"],"failed":[{"entrantId":"opencode-1","message":"Entrant opencode-1 is stopping"}]}
+```
+
 ## Event stream
 
 ### `GET /runs/:id/events`

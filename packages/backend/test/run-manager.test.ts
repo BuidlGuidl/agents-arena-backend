@@ -1,13 +1,16 @@
+import { and, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
 import type { EntrantDriver } from '../src/adapters/types.js';
 import { recordSolve } from '../src/chain/storage.js';
+import { entrants } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import {
   InvalidTransitionError,
   LEGAL_TRANSITIONS,
   passThroughWalletGate,
   RunManager,
+  RunNotFoundError,
   type WalletGate,
 } from '../src/run-manager.js';
 import type { RunState } from '../src/contract.js';
@@ -410,6 +413,81 @@ describe('RunManager lifecycle cancellation', () => {
       }
       expect(stops).toEqual(['codex-1', 'opencode-1']);
       expect(manager.snapshot(run.id).state).toBe('failed');
+    } finally {
+      journal.close();
+    }
+  });
+});
+
+describe('RunManager broadcast', () => {
+  it('fans one message into every live entrant and records a single broadcast event', async () => {
+    const journal = new EventJournal(':memory:');
+    const steers: string[] = [];
+    const driver: EntrantDriver = {
+      ...noopDriver,
+      async steer(_run, entrant, text) {
+        if (entrant.id === 'opencode-1') throw new Error('container is gone');
+        steers.push(`${entrant.id}:${text}`);
+      },
+    };
+    const manager = new RunManager(journal, driver);
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      const result = await manager.broadcast(run.id, 'Ten minutes left.');
+
+      expect(steers).toEqual(['codex-1:Ten minutes left.']);
+      expect(result.delivered).toEqual(['codex-1']);
+      expect(result.failed).toEqual([{ entrantId: 'opencode-1', message: 'container is gone' }]);
+
+      const events = journal.after(run.id, 0);
+      const broadcasts = events.filter((event) => event.type === 'director.broadcast');
+      expect(broadcasts).toHaveLength(1);
+      expect(broadcasts[0]?.source).toBe('run');
+      expect(broadcasts[0]?.payload).toEqual({
+        text: 'Ten minutes left.',
+        entrantIds: ['codex-1', 'opencode-1'],
+      });
+      expect(events.filter((event) => event.type === 'entrant.error').map((event) => event.source))
+        .toEqual(['opencode-1']);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('leaves finished entrants out of the fan-out', async () => {
+    const journal = new EventJournal(':memory:');
+    const steers: string[] = [];
+    const driver: EntrantDriver = {
+      ...noopDriver,
+      async steer(_run, entrant) {
+        steers.push(entrant.id);
+      },
+    };
+    const manager = new RunManager(journal, driver);
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      journal.database
+        .update(entrants)
+        .set({ status: 'done' })
+        .where(and(eq(entrants.runId, run.id), eq(entrants.id, 'codex-1')))
+        .run();
+
+      const result = await manager.broadcast(run.id, 'Wrap up.');
+
+      expect(steers).toEqual(['opencode-1']);
+      expect(result.delivered).toEqual(['opencode-1']);
+      const broadcast = journal.after(run.id, 0).find((event) => event.type === 'director.broadcast');
+      expect(broadcast?.payload.entrantIds).toEqual(['opencode-1']);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('rejects a broadcast to a run that does not exist', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, noopDriver);
+    try {
+      await expect(manager.broadcast('missing-run', 'hello')).rejects.toBeInstanceOf(RunNotFoundError);
     } finally {
       journal.close();
     }

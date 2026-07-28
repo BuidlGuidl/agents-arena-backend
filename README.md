@@ -96,6 +96,7 @@ If either preflight fails, the run fails and both containers are torn down. Neit
 | POST | `/runs/:id/start` | release a prepared run through the ready barrier |
 | POST | `/runs/:id/stop` | stop and tear down |
 | POST | `/runs/:id/entrants/:eid/steer` | inject a turn into one live agent |
+| POST | `/runs/:id/broadcast` | inject one director message into every live agent |
 | GET | `/runs/:id` | snapshot: state, entrants, addresses, scores, last event id |
 | GET | `/runs/:id/events` | replayable SSE feed |
 

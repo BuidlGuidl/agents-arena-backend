@@ -117,7 +117,7 @@ describe('event → lane routing', () => {
   });
 });
 
-describe('describeEvent — all 14 contract types render', () => {
+describe('describeEvent — all 16 contract types render', () => {
   const base = { id: 1, runId: 'run-1', source: 'codex-1', seq: 1, ts: 'now' };
   const samples: ArenaEvent[] = [
     { ...base, source: RUN_SOURCE, type: 'run.state', payload: { state: 'running' } },
@@ -127,7 +127,9 @@ describe('describeEvent — all 14 contract types render', () => {
     { ...base, type: 'tool.call', payload: { entrantId: 'codex-1', tool: 'bash', detail: 'ls' } },
     { ...base, type: 'tool.result', payload: { entrantId: 'codex-1', tool: 'bash', ok: true, detail: 'ok' } },
     { ...base, type: 'entrant.steered', payload: { entrantId: 'codex-1', text: 'go' } },
+    { ...base, type: 'entrant.prompt', payload: { entrantId: 'codex-1', text: 'begin' } },
     { ...base, type: 'entrant.nudged', payload: { entrantId: 'codex-1', text: 'nudge', flags: 1 } },
+    { ...base, source: RUN_SOURCE, type: 'director.broadcast', payload: { text: 'wrap up', entrantIds: ['codex-1', 'opencode-1'] } },
     { ...base, type: 'wallet.assigned', payload: { entrantId: 'codex-1', address: '0xabc' } },
     { ...base, type: 'funding.balance', payload: { entrantId: 'codex-1', address: '0xabc', wei: '100', funded: true } },
     { ...base, type: 'score.flag', payload: { entrantId: 'codex-1', challengeId: 1, txHash: '0xtx', tokenId: '7' } },
@@ -137,7 +139,7 @@ describe('describeEvent — all 14 contract types render', () => {
   ];
 
   it('covers every contract event type', () => {
-    expect(samples).toHaveLength(14);
+    expect(samples).toHaveLength(16);
   });
 
   it('renders a non-empty summary for each without throwing', () => {
@@ -145,6 +147,12 @@ describe('describeEvent — all 14 contract types render', () => {
       const line = describeEvent(event);
       expect(line.length).toBeGreaterThan(0);
     }
+  });
+
+  // A missing case still renders through rawFallback, so assert the shaped line.
+  it('names the entrant count and the text on a director broadcast', () => {
+    const broadcast = samples.find((event) => event.type === 'director.broadcast');
+    expect(broadcast && describeEvent(broadcast)).toBe('broadcast (2 entrants): wrap up');
   });
 
   it('falls back to a raw payload dump for an unknown-to-the-UI type', () => {

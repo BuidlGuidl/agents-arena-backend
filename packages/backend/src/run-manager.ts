@@ -36,6 +36,11 @@ export interface CreateRunResult {
   created: boolean;
 }
 
+export interface BroadcastResult {
+  delivered: string[];
+  failed: { entrantId: string; message: string }[];
+}
+
 interface PresetEntrant {
   id: string;
   harness: HarnessId;
@@ -351,6 +356,43 @@ export class RunManager {
       throw new EntrantNotFoundError(`Entrant ${entrantId} does not exist in run ${runId}`);
     }
     await this.driver.steer(run, entrant, text);
+  }
+
+  // The director speaks once and every entrant still in the fight hears it. The
+  // broadcast event lands before the fan-out so the feed reads message-then-turns,
+  // and a steer that throws is reported back instead of thrown: one wedged entrant
+  // must not swallow the message for the rest.
+  async broadcast(runId: string, text: string): Promise<BroadcastResult> {
+    const run = this.requireRun(runId);
+    const live = this.entrants(runId).filter((entrant) => entrant.status !== 'done');
+    this.journal.append(runId, 'run', 'director.broadcast', {
+      text,
+      entrantIds: live.map((entrant) => entrant.id),
+    });
+
+    const outcomes = await Promise.all(live.map(async (entrant) => {
+      try {
+        await this.driver.steer(run, entrant, text);
+        return { entrantId: entrant.id, message: undefined };
+      } catch (error) {
+        return { entrantId: entrant.id, message: errorMessage(error) };
+      }
+    }));
+
+    const delivered: string[] = [];
+    const failed: BroadcastResult['failed'] = [];
+    for (const outcome of outcomes) {
+      if (outcome.message === undefined) {
+        delivered.push(outcome.entrantId);
+        continue;
+      }
+      failed.push({ entrantId: outcome.entrantId, message: outcome.message });
+      this.journal.append(runId, outcome.entrantId, 'entrant.error', {
+        entrantId: outcome.entrantId,
+        message: `Broadcast not delivered: ${outcome.message}`,
+      });
+    }
+    return { delivered, failed };
   }
 
   hasRun(runId: string): boolean {

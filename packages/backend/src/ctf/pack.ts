@@ -201,8 +201,8 @@ export function assembleChallengePack(options: ChallengePackOptions): ChallengeP
   requireFile(deployPath, 'Deploy script');
   const briefing = buildBriefing(aiCtfRepo, addresses);
 
-  // Staged then renamed: a copy that fails partway must leave the pack a
-  // container is already mounted on exactly as it was.
+  // Staged then renamed so a build that fails partway leaves the previous pack
+  // in place, rather than a half-copied directory that still looks complete.
   const staging = `${outDir}.incoming-${randomUUID().slice(0, 8)}`;
   try {
     const stagedContracts = join(staging, 'contracts');

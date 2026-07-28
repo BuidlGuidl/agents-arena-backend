@@ -34,6 +34,7 @@ const fixturePack: ChallengePack = {
   addresses: {
     NFTFlags: nftFlags,
     Challenge1: challenge1,
+    MockIdentityRegistry: identityRegistry,
   },
 };
 
@@ -112,8 +113,20 @@ describe('createChallengePackResolver', () => {
 });
 
 describe('assertPackMatchesProfile', () => {
-  it('accepts matching NFTFlags and Challenge1 deployments', () => {
+  it('accepts matching NFTFlags, Challenge1 and registry deployments', () => {
     expect(() => assertPackMatchesProfile(fixturePack, localProfile)).not.toThrow();
+  });
+
+  // Registering here gates flag #1, so a drifted registry costs every flag.
+  it('names both registry addresses when they differ', () => {
+    const actual = getAddress('0x0165878A594ca255338adfa4d48449f69242Eb8F');
+    const pack: ChallengePack = {
+      ...fixturePack,
+      addresses: { ...fixturePack.addresses, MockIdentityRegistry: actual },
+    };
+
+    expect(() => assertPackMatchesProfile(pack, localProfile)).toThrow(actual);
+    expect(() => assertPackMatchesProfile(pack, localProfile)).toThrow(identityRegistry);
   });
 
   it('names both Challenge1 addresses when they differ', () => {

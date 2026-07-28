@@ -41,6 +41,11 @@ function parseProfile(name: string, value: RawChainProfile): ChainProfile {
   if (!Number.isSafeInteger(value.confirmations) || value.confirmations < 0) {
     throw new Error(`Invalid confirmation count for profile ${name}`);
   }
+  // Presence of briefingUrl selects a prompt variant, so an empty one would send
+  // the entrant to fetch nothing rather than fall back to the pack.
+  if (value.briefingUrl !== undefined && value.briefingUrl.trim() === '') {
+    throw new Error(`Empty briefingUrl for profile ${name}; remove the key to use a challenge pack`);
+  }
 
   return {
     name,

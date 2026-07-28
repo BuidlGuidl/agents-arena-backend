@@ -1,7 +1,6 @@
 import type { EntrantRecord } from '../adapters/types.js';
 import type { ChainProfile } from '../chain/profile.js';
-
-export const CHALLENGE_PACK_MOUNT = '/ctf';
+import { CHALLENGE_PACK_MOUNT } from '../runtime/container.js';
 
 export type OpeningPromptBuilder = (entrant: EntrantRecord) => string;
 

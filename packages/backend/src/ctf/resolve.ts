@@ -11,20 +11,25 @@ export type ChallengePackResolver = (runId: string) => string;
 
 const PACK_ROOT = 'arena-challenge-pack';
 
-// Packs are kept per run because assembling one wipes and renames its directory,
-// which must not happen under a container that already has it bind-mounted. This
-// bound is what stops a long-lived backend accumulating them; it sits far above
-// the number of races the arena runs at once.
+// Packs are kept per run so a second entrant preparing does not rebuild the
+// directory the first one is already mounted on. This bound is what stops a
+// long-lived backend accumulating them; it sits far above the number of races
+// the arena runs at once.
 const MAX_RETAINED_PACKS = 8;
 
 // The local addresses in chains.json are derived from the deploy order, so a
 // stray transaction before a later deployment shifts them. The pack reads what
 // the deploy actually wrote, which turns that drift into a failed prepare
 // instead of an entrant calling a contract that isn't there.
+//
+// The registry is checked even though the backend never calls it: it reaches the
+// agent through the briefing, and registering there is the gate on flag #1, so a
+// drifted address costs the entrant every flag.
 export function assertPackMatchesProfile(pack: ChallengePack, profile: ChainProfile): void {
   const expected: ReadonlyArray<readonly [string, Address]> = [
     ['NFTFlags', profile.nftFlags],
     ['Challenge1', profile.challenge1],
+    ['MockIdentityRegistry', profile.identityRegistry],
   ];
 
   for (const [name, address] of expected) {

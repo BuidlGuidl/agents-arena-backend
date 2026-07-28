@@ -30,6 +30,9 @@ export interface ContainerOptions {
   readyTimeoutMs?: number;
 }
 
+// The opening prompt names this path, so it has one definition.
+export const CHALLENGE_PACK_MOUNT = '/ctf';
+
 export interface EntrantContainer {
   exec(argv: string[], env?: Record<string, string>): Promise<RuntimeExecution>;
   teardown(): Promise<void>;
@@ -224,7 +227,7 @@ export class DockerEntrantContainer implements EntrantContainer {
         // briefing or the sources its rival reads from the same assembled pack.
         ...(options.challengePackDir === undefined
           ? []
-          : [`${resolve(options.challengePackDir)}:${options.challengePackTarget ?? '/ctf'}:ro`]),
+          : [`${resolve(options.challengePackDir)}:${options.challengePackTarget ?? CHALLENGE_PACK_MOUNT}:ro`]),
       ];
 
       container = await docker.createContainer({

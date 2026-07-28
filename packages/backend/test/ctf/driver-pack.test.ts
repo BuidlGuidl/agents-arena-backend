@@ -72,7 +72,6 @@ const entrant: EntrantRecord = {
   model: 'test-model',
   address: null,
   status: 'idle',
-  flags: 0,
 };
 
 function successfulExecution(id: string): RuntimeExecution {

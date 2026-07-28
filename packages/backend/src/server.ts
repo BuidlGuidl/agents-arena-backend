@@ -11,7 +11,9 @@ import {
   EntrantNotFoundError,
   InvalidTransitionError,
   RunManager,
+  type RunManagerOptions,
   RunNotFoundError,
+  type SolveWatch,
   UnknownPresetError,
   type WalletGate,
 } from './run-manager.js';
@@ -31,6 +33,7 @@ export interface ServerOptions {
   driverFactory?: (journal: EventJournal) => EntrantDriver;
   walletGateFactory?: (journal: EventJournal) => WalletGate;
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
+  solveWatchFactory?: (journal: EventJournal) => SolveWatch;
   logger?: boolean;
 }
 
@@ -44,9 +47,14 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
   const app = Fastify({ logger: options.logger ?? false });
   const journal = new EventJournal(options.dbPath);
   const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(journal, options.schedule);
-  const runManagerOptions = options.walletGateFactory === undefined
-    ? {}
-    : { walletGate: options.walletGateFactory(journal) };
+  const runManagerOptions: RunManagerOptions = {
+    ...(options.walletGateFactory === undefined
+      ? {}
+      : { walletGate: options.walletGateFactory(journal) }),
+    ...(options.solveWatchFactory === undefined
+      ? {}
+      : { solveWatch: options.solveWatchFactory(journal) }),
+  };
   const manager = new RunManager(
     journal,
     driver,

@@ -48,7 +48,6 @@ export const entrants = sqliteTable('entrants', {
   model: text('model').notNull(),
   address: text('address'),
   status: text('status', { enum: entrantStatuses }).notNull(),
-  flags: integer('flags').notNull().default(0),
 }, (table) => [
   uniqueIndex('entrants_run_id_id').on(table.runId, table.id),
 ]);
@@ -94,15 +93,4 @@ export const scores = sqliteTable('scores', {
   index('scores_run_id_entrant_id').on(table.runId, table.entrantId),
 ]);
 
-export const chainCursors = sqliteTable('chain_cursors', {
-  runId: text('run_id').notNull(),
-  contractAddress: text('contract_address').notNull(),
-  lastProcessedBlock: integer('last_processed_block').notNull(),
-}, (table) => [
-  uniqueIndex('chain_cursors_run_id_contract_address').on(
-    table.runId,
-    table.contractAddress,
-  ),
-]);
-
-export const schema = { events, runs, entrants, wallets, scores, chainCursors };
+export const schema = { events, runs, entrants, wallets, scores };

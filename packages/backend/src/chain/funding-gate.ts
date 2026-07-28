@@ -14,7 +14,7 @@ import { entrants } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
 import type { FundingGate, WalletGate } from '../run-manager.js';
 import { awaitFunding, type FundingEntry } from './funding-watcher.js';
-import { getChainProfile } from './profile.js';
+import { activeChainProfile, getChainProfile } from './profile.js';
 import { createWallet, getWallet } from './wallet.js';
 
 const FUNDING_THRESHOLD_WEI = parseEther('0.05');
@@ -54,7 +54,7 @@ export function createLocalFundingGate(
       return;
     }
 
-    const profile = getChainProfile(profileName ?? process.env.ARENA_CHAIN_PROFILE ?? 'local');
+    const profile = profileName === undefined ? activeChainProfile : getChainProfile(profileName);
     const entries = runEntrants.map<FundingEntry>((entrant) => {
       if (entrant.address === null) {
         throw new Error(`Entrant ${entrant.id} has no wallet address`);

@@ -1,5 +1,6 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import { createServer as createHttpServer, type Server } from 'node:http';
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 
@@ -7,12 +8,15 @@ import {
   createPublicClient,
   createWalletClient,
   http,
+  parseEventLogs,
   type Address,
+  type Hash,
   type PublicClient,
   type WalletClient,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
+import { flagMintedEvent } from '../../src/chain/abi.js';
 import type { ChainProfile } from '../../src/chain/profile.js';
 
 // anvil's first pre-funded dev account — deterministic across every run.
@@ -152,13 +156,19 @@ export async function deployFlagFixture(handle: AnvilHandle): Promise<Address> {
   return receipt.contractAddress;
 }
 
+export interface MintResult {
+  txHash: Hash;
+  tokenId: bigint;
+  blockNumber: bigint;
+}
+
 /** Call mint(recipient, challengeId) on the fixture and wait for the receipt. */
 export async function mintFlag(
   handle: AnvilHandle,
   contract: Address,
   recipient: Address,
   challengeId: bigint,
-): Promise<void> {
+): Promise<MintResult> {
   const hash = await handle.walletClient.writeContract({
     address: contract,
     abi: [
@@ -178,7 +188,52 @@ export async function mintFlag(
     account: handle.account,
     chain: null,
   });
-  await handle.publicClient.waitForTransactionReceipt({ hash });
+  const receipt = await handle.publicClient.waitForTransactionReceipt({ hash });
+  const [minted] = parseEventLogs({ abi: [flagMintedEvent], logs: receipt.logs });
+  if (minted === undefined) {
+    throw new Error('mint produced no FlagMinted log');
+  }
+  return { txHash: hash, tokenId: minted.args.tokenId, blockNumber: receipt.blockNumber };
+}
+
+export interface RpcProxy {
+  url: string;
+  /** One entry per HTTP request: the parsed body, an array when the client batched. */
+  bodies: unknown[];
+  stop: () => Promise<void>;
+}
+
+/** A recording JSON-RPC pass-through, so a test can count HTTP requests the client made. */
+export async function startRpcProxy(targetUrl: string): Promise<RpcProxy> {
+  const bodies: unknown[] = [];
+  const server: Server = createHttpServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      const body = Buffer.concat(chunks).toString('utf8');
+      bodies.push(JSON.parse(body));
+      void fetch(targetUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      })
+        .then(async (upstream) => {
+          response.writeHead(upstream.status, { 'content-type': 'application/json' });
+          response.end(await upstream.text());
+        })
+        .catch(() => {
+          response.writeHead(502).end();
+        });
+    });
+  });
+
+  const port = await freePort();
+  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
+  return {
+    url: `http://127.0.0.1:${port}`,
+    bodies,
+    stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
 }
 
 /** A ChainProfile pointed at the test node, with the confirmation depth the test needs. */

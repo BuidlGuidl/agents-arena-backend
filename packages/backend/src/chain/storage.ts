@@ -39,18 +39,6 @@ export function ensureChainTables(database: ArenaDatabase): void {
     CREATE INDEX IF NOT EXISTS scores_run_id_entrant_id
     ON scores (run_id, entrant_id)
   `);
-
-  database.run(sql`
-    CREATE TABLE IF NOT EXISTS chain_cursors (
-      run_id TEXT NOT NULL,
-      contract_address TEXT NOT NULL,
-      last_processed_block INTEGER NOT NULL
-    )
-  `);
-  database.run(sql`
-    CREATE UNIQUE INDEX IF NOT EXISTS chain_cursors_run_id_contract_address
-    ON chain_cursors (run_id, contract_address)
-  `);
 }
 
 export interface SolveInput {

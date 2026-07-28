@@ -75,8 +75,19 @@ describe('fake run vertical slice', () => {
     const beforeSteer = server.journal.after(run.id, 0);
     for (const entrantId of ['codex-1', 'opencode-1']) {
       expect(beforeSteer.filter((event) => event.source === entrantId).map((event) => event.type))
-        .toEqual(['entrant.status', 'agent.message', 'tool.call', 'tool.result', 'entrant.status']);
+        .toEqual([
+          'entrant.status', 'agent.message', 'tool.call', 'tool.result',
+          'usage', 'entrant.status', 'usage',
+        ]);
     }
+
+    // Same totals the live usage events carry, so a reload repaints them. The
+    // fake codex model is in the rate table; the fake opencode model is not.
+    const scripted = server.manager.snapshot(run.id).entrants;
+    expect(scripted.find((entrant) => entrant.id === 'codex-1'))
+      .toMatchObject({ inputTokens: 3_600, outputTokens: 500, costUsd: 0.007475 });
+    expect(scripted.find((entrant) => entrant.id === 'opencode-1'))
+      .toMatchObject({ inputTokens: 3_600, outputTokens: 500, costUsd: null });
 
     const steerResponse = await server.app.inject({
       method: 'POST',

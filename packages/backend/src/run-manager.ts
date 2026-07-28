@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { and, asc, count, eq, max } from 'drizzle-orm';
+import { and, asc, count, eq, max, sql } from 'drizzle-orm';
 
 import type {
   CreateRunRequest,
@@ -12,6 +12,7 @@ import type {
 } from './contract.js';
 import { entrants, events, runs, scores } from './db/schema.js';
 import { ensureChainTables } from './chain/storage.js';
+import { roundUsd } from './pricing.js';
 import type { EventJournal } from './journal.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './adapters/types.js';
 
@@ -102,6 +103,14 @@ export interface RunManagerOptions {
   walletGate?: WalletGate;
 }
 
+interface EntrantUsage {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number | null;
+}
+
+const EMPTY_USAGE: EntrantUsage = { inputTokens: 0, outputTokens: 0, costUsd: null };
+
 const DEFAULT_PREPARE_TIMEOUT_MS = 300_000;
 const DEFAULT_FUNDING_TIMEOUT_MS = 900_000;
 const OPERATOR_STOP_REASON = 'stopped by operator before running';
@@ -179,14 +188,17 @@ export class RunManager {
     return { run: this.snapshot(id), created: true };
   }
 
-  // One transaction so solves and lastEventId describe the same moment. Clients
-  // skip events at or below lastEventId, so the two must not come from separate reads.
+  // One transaction so solves, usage totals, and lastEventId describe the same
+  // moment. Clients skip events at or below lastEventId, so a client that also
+  // folds live usage into its copy must not double-count what the snapshot holds.
   snapshot(runId: string): RunSnapshot {
     return this.journal.database.transaction(() => {
       const run = this.requireRun(runId);
       const solvesByEntrant = this.solvesByEntrant(runId);
+      const usageByEntrant = this.usageByEntrant(runId);
       const entrantSummaries = this.entrants(runId).map<EntrantSummary>((entrant) => {
         const solves = solvesByEntrant.get(entrant.id) ?? [];
+        const usage = usageByEntrant.get(entrant.id) ?? EMPTY_USAGE;
         return {
           id: entrant.id,
           harness: entrant.harness,
@@ -195,6 +207,9 @@ export class RunManager {
           status: entrant.status,
           flags: solves.length,
           solves,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          costUsd: usage.costUsd,
         };
       });
       const lastEvent = this.journal.database
@@ -416,6 +431,31 @@ export class RunManager {
       byEntrant.set(row.entrantId, solves);
     }
     return byEntrant;
+  }
+
+  // Totals come from the journal's usage events, the same rows the live feed
+  // ships, so a reload lands on exactly what the client had already summed.
+  // SUM ignores nulls and returns null when every row is null, which is the
+  // "no entrant turn carried a price" case.
+  private usageByEntrant(runId: string): Map<string, EntrantUsage> {
+    const entrantId = sql<string>`json_extract(${events.payloadJson}, '$.entrantId')`;
+    const rows = this.journal.database
+      .select({
+        entrantId,
+        inputTokens: sql<number>`coalesce(sum(json_extract(${events.payloadJson}, '$.inputTokens')), 0)`,
+        outputTokens: sql<number>`coalesce(sum(json_extract(${events.payloadJson}, '$.outputTokens')), 0)`,
+        costUsd: sql<number | null>`sum(json_extract(${events.payloadJson}, '$.costUsd'))`,
+      })
+      .from(events)
+      .where(and(eq(events.runId, runId), eq(events.type, 'usage')))
+      .groupBy(entrantId)
+      .all();
+
+    return new Map(rows.map((row) => [row.entrantId, {
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      costUsd: row.costUsd === null ? null : roundUsd(row.costUsd),
+    }]));
   }
 
   private entrants(runId: string): EntrantRecord[] {

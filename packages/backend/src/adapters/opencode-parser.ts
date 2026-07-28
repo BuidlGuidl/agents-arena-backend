@@ -45,20 +45,21 @@ export class OpenCodeEventParser {
       ], sessionId);
     }
     if (type === 'step_finish') {
-      const reason = stringValue(part?.reason);
-      if (reason === 'tool-calls') return withSession([], sessionId);
       const tokens = objectValue(part?.tokens);
-      return {
-        ...withSession([{
-          type: 'usage',
-          payload: {
-            entrantId: this.entrantId,
-            inputTokens: numberValue(tokens?.input),
-            outputTokens: numberValue(tokens?.output),
-          },
-        }], sessionId),
-        turnEnded: true,
+      // Tokens and cost are per step, and opencode prices each step itself.
+      const usage: ParsedArenaEvent = {
+        type: 'usage',
+        payload: {
+          entrantId: this.entrantId,
+          inputTokens: numberValue(tokens?.input),
+          outputTokens: numberValue(tokens?.output),
+          cachedInputTokens: numberValue(objectValue(tokens?.cache)?.read),
+          costUsd: nullableNumberValue(part?.cost),
+        },
       };
+      // A tool-calls step is mid-turn: its spend counts, but the turn is not over.
+      if (stringValue(part?.reason) === 'tool-calls') return withSession([usage], sessionId);
+      return { ...withSession([usage], sessionId), turnEnded: true };
     }
     if (type === 'error') {
       return withSession([{
@@ -105,4 +106,8 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function nullableNumberValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }

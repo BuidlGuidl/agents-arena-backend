@@ -45,7 +45,7 @@ describe('CodexEventParser', () => {
       },
       {
         type: 'usage',
-        payload: { entrantId: 'codex-1', inputTokens: 36126, outputTokens: 126 },
+        payload: { entrantId: 'codex-1', inputTokens: 36126, outputTokens: 126, cachedInputTokens: 27136, costUsd: null },
       },
     ]);
     expect(parsed[0]?.sessionId).toBe('019f8878-f894-7dd1-863c-9d91442434b2');
@@ -143,13 +143,18 @@ describe('OpenCodeEventParser', () => {
         type: 'tool.result',
         payload: { entrantId: 'opencode-1', tool: 'bash', ok: true, detail: 'hello arena\n' },
       },
+      // The tool-calls step is mid-turn, but its tokens are real spend.
+      {
+        type: 'usage',
+        payload: { entrantId: 'opencode-1', inputTokens: 15138, outputTokens: 45, cachedInputTokens: 0, costUsd: 0 },
+      },
       {
         type: 'agent.message',
         payload: { entrantId: 'opencode-1', text: 'hello arena' },
       },
       {
         type: 'usage',
-        payload: { entrantId: 'opencode-1', inputTokens: 109, outputTokens: 3 },
+        payload: { entrantId: 'opencode-1', inputTokens: 109, outputTokens: 3, cachedInputTokens: 15104, costUsd: 0 },
       },
     ]);
     expect(parsed.every((result) => result.sessionId === 'ses_077870ef7ffeaZ3Asz0lQdr92M')).toBe(true);
@@ -178,11 +183,26 @@ describe('OpenCodeEventParser', () => {
     expect(parsed).toEqual({
       events: [{
         type: 'usage',
-        payload: { entrantId: 'opencode-1', inputTokens: 321, outputTokens: 45 },
+        payload: { entrantId: 'opencode-1', inputTokens: 321, outputTokens: 45, cachedInputTokens: 0, costUsd: null },
       }],
       sessionId: 'session-length',
       turnEnded: true,
     });
+  });
+
+  it('counts a mid-turn tool-calls step without ending the turn', () => {
+    const parser = new OpenCodeEventParser('opencode-1');
+    const parsed = parser.parse(JSON.stringify({
+      type: 'step_finish',
+      sessionID: 'session-tools',
+      part: { reason: 'tool-calls', tokens: { input: 15138, output: 45 }, cost: 0.0042 },
+    }));
+
+    expect(parsed.events).toEqual([{
+      type: 'usage',
+      payload: { entrantId: 'opencode-1', inputTokens: 15138, outputTokens: 45, cachedInputTokens: 0, costUsd: 0.0042 },
+    }]);
+    expect(parsed.turnEnded).toBeUndefined();
   });
 
   it('ends an unrecognized step-finish reason without counting it as unknown', () => {
@@ -196,7 +216,7 @@ describe('OpenCodeEventParser', () => {
 
     expect(parsed.events).toEqual([{
       type: 'usage',
-      payload: { entrantId: 'opencode-1', inputTokens: 98, outputTokens: 7 },
+      payload: { entrantId: 'opencode-1', inputTokens: 98, outputTokens: 7, cachedInputTokens: 0, costUsd: null },
     }]);
     expect(parsed.turnEnded).toBe(true);
     expect(parser.unknownEvents).toBe(0);

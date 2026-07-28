@@ -109,6 +109,7 @@ async function setup(
   harness: 'codex' | 'opencode',
   watchdogMs = 10 * 60 * 1_000,
   withWallet = false,
+  model?: string,
 ): Promise<{
   journal: EventJournal;
   driver: EntrantDriver;
@@ -124,11 +125,14 @@ async function setup(
   const manager = new RunManager(journal, seedDriver);
   const created = await manager.create({ preset: 'docker-duel' });
   const run = journal.database.select().from(runs).where(eq(runs.id, created.run.id)).get();
-  const entrant = journal.database.select().from(entrants).where(and(
+  let entrant = journal.database.select().from(entrants).where(and(
     eq(entrants.runId, created.run.id),
     eq(entrants.harness, harness),
   )).get();
   if (run === undefined || entrant === undefined) throw new Error('Test run was not seeded');
+  // Cost pricing keys off the entrant's model, so a test can swap in a model the
+  // rate table lists (or one it does not).
+  if (model !== undefined) entrant = { ...entrant, model };
   if (withWallet) {
     createWallet(run.id, entrant.id, journal.database);
   }
@@ -217,6 +221,74 @@ describe.each(['codex', 'opencode'] as const)('%s steer queue', (harness) => {
       expect(steers.map((event) => event.payload.text)).toEqual(['queued steer', 'idle steer']);
       completeTurn(harness, context.container.turns[2] as ControlledExecution, sessionId);
       await waitFor(() => context.container.calls.length >= 6);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+});
+
+describe('usage cost', () => {
+  it('prices a codex turn from the rate table, cached prompt tokens included', async () => {
+    const context = await setup('codex', undefined, false, 'gpt-5-codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.push(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
+      turn.push(JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 100_000, cached_input_tokens: 80_000, output_tokens: 10_000 },
+      }));
+      turn.finish(0);
+
+      await waitFor(() => context.journal.after(context.run.id, 0).some((event) => event.type === 'usage'));
+      const usage = context.journal.after(context.run.id, 0).find((event) => event.type === 'usage');
+      // 20k fresh at $1.25/M + 80k cached at $0.125/M + 10k out at $10/M. Pricing
+      // all 100k input as fresh would read $0.225, nearly double.
+      expect(usage?.payload).toEqual({
+        entrantId: context.entrant.id,
+        inputTokens: 100_000,
+        outputTokens: 10_000,
+        cachedInputTokens: 80_000,
+        costUsd: 0.135,
+      });
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('leaves cost unknown for a codex model the rate table does not list', async () => {
+    const context = await setup('codex', undefined, false, 'gpt-6-codex-preview');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      completeTurn('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+
+      await waitFor(() => context.journal.after(context.run.id, 0).some((event) => event.type === 'usage'));
+      const usage = context.journal.after(context.run.id, 0).find((event) => event.type === 'usage');
+      expect(usage?.payload).toMatchObject({ inputTokens: 10, outputTokens: 2, costUsd: null });
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('keeps the cost opencode reports for its own step', async () => {
+    const context = await setup('opencode');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.push(JSON.stringify({ type: 'step_start', sessionID: 'session-1', part: {} }));
+      turn.push(JSON.stringify({
+        type: 'step_finish',
+        sessionID: 'session-1',
+        part: { reason: 'stop', tokens: { input: 109, output: 3 }, cost: 0.0042 },
+      }));
+      turn.finish(0);
+
+      await waitFor(() => context.journal.after(context.run.id, 0).some((event) => event.type === 'usage'));
+      const usage = context.journal.after(context.run.id, 0).find((event) => event.type === 'usage');
+      expect(usage?.payload).toMatchObject({ inputTokens: 109, outputTokens: 3, costUsd: 0.0042 });
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

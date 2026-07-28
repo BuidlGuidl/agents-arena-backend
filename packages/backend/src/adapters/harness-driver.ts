@@ -3,6 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import type { EntrantStatus } from '../contract.js';
 import { entrants } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
+import { costForTokens } from '../pricing.js';
 import type {
   ContainerFactory,
   EntrantContainer,
@@ -211,7 +212,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
         }
 
         const parsed = this.parseLine(state.entrant.id, output.line);
-        for (const event of parsed.events) this.appendParsed(state.run.id, state.entrant.id, event);
+        for (const event of parsed.events) this.appendParsed(state, event);
         if (parsed.turnEnded === true) {
           sawTurnEnd = true;
           // Disarm the watchdog once the turn actually ends. A slow process close
@@ -287,14 +288,25 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     }
   }
 
-  private appendParsed(runId: string, entrantId: string, event: ParsedArenaEvent): void {
+  private appendParsed(state: EntrantRuntimeState, event: ParsedArenaEvent): void {
+    const runId = state.run.id;
+    const entrantId = state.entrant.id;
     switch (event.type) {
       case 'agent.message': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'agent.reasoning': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'tool.call': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'tool.result': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'entrant.error': this.journal.append(runId, entrantId, event.type, event.payload); break;
-      case 'usage': this.journal.append(runId, entrantId, event.type, event.payload); break;
+      // A harness that prices its own turns wins; otherwise the rate table fills in.
+      case 'usage': this.journal.append(runId, entrantId, event.type, {
+        ...event.payload,
+        costUsd: event.payload.costUsd ?? costForTokens(
+          state.entrant.model,
+          event.payload.inputTokens,
+          event.payload.outputTokens,
+          event.payload.cachedInputTokens,
+        ),
+      }); break;
       default: this.logger.warn(`[${this.harnessName()}] parser returned unsupported event ${event.type}`);
     }
   }

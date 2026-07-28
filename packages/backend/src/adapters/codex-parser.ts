@@ -29,6 +29,10 @@ export class CodexEventParser {
             entrantId: this.entrantId,
             inputTokens: numberValue(usage?.input_tokens),
             outputTokens: numberValue(usage?.output_tokens),
+            cachedInputTokens: numberValue(usage?.cached_input_tokens),
+            // The codex stream carries no price; the driver derives one from the
+            // rate table when the entrant's model is listed there.
+            costUsd: null,
           },
         }],
         turnEnded: true,

@@ -27,8 +27,14 @@ Returns the current `RunSnapshot`. A missing run returns status `404`.
 Each entrant carries its confirmed solves in journal order, and `flags` equals `solves.length`, so a reload can repaint the board without replaying events.
 
 ```json
-{"id":"codex-1","harness":"codex","model":"...","address":"0x...","status":"working","flags":2,"solves":[{"challengeId":3,"ts":"...","txHash":"0x..."},{"challengeId":7,"ts":"...","txHash":"0x..."}]}
+{"id":"codex-1","harness":"codex","model":"...","address":"0x...","status":"working","flags":2,"solves":[{"challengeId":3,"ts":"...","txHash":"0x..."},{"challengeId":7,"ts":"...","txHash":"0x..."}],"inputTokens":36126,"outputTokens":126,"costUsd":0.046418}
 ```
+
+`inputTokens` and `outputTokens` total every `usage` event for that entrant, and `costUsd` totals the priced ones. Both survive a reload, and a client that folds live `usage` events into its own copy reaches the same numbers.
+
+`costUsd` is display only and can be `null`. A harness that prices its own turns (opencode through OpenRouter) reports the cost; a harness that reports tokens only (codex on a ChatGPT-account login) gets one from the backend rate table when its model is listed there; otherwise the field stays `null`. Cost is therefore partial — present for one entrant and absent for another in the same run.
+
+A derived cost prices the `usage` event's `cachedInputTokens` at the model's cached rate, roughly a tenth of fresh input. Most of a codex turn is repeated context, so skipping that would overstate a turn about threefold.
 
 ### `POST /runs/:id/start`
 

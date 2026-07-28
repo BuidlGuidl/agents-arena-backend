@@ -55,20 +55,6 @@ export function styleForEvent(event: ArenaEvent): EventStyle {
   }
 }
 
-// Sum token usage across a lane's events. usage events carry per-emit counts, so
-// totalling them gives the running spend.
-export function totalUsage(events: ArenaEvent[]): { input: number; output: number } {
-  let input = 0;
-  let output = 0;
-  for (const event of events) {
-    if (event.type === 'usage') {
-      input += event.payload.inputTokens;
-      output += event.payload.outputTokens;
-    }
-  }
-  return { input, output };
-}
-
 // Coarse phase for a run state, for the scoreboard status pill.
 export function runPhase(state: string | undefined): 'idle' | 'preparing' | 'running' | 'finished' | 'failed' {
   switch (state) {

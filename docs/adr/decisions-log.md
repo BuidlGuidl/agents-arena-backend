@@ -90,13 +90,13 @@ the run holds in a new `awaiting_funding` state until each entrant's balance cro
 
 **Consequence:** preflight checks only funded + flag-#1-not-minted; there is no identity to verify at ready-time. scoring stays per-wallet-address (the arena never needs the agentId — it watches `FlagMinted` by the address it generated).
 
-**Prompt posture (iterable, not carved):** silent on the 12 puzzles (discovery-based, keeps challenge 9's empty-ABI signal), explicit on operational mechanics (wallet + key location, Base RPC, the register→flag-#1 entry sequence, same-address rule, gas funded, helper contracts allowed). identical for both entrants bar a one-line per-harness tool note.
+**Prompt posture (iterable, not carved; amended by ADR-0009 — no longer silent, and now varies by chain profile):** silent on the 12 puzzles (discovery-based, keeps challenge 9's empty-ABI signal), explicit on operational mechanics (wallet + key location, Base RPC, the register→flag-#1 entry sequence, same-address rule, gas funded, helper contracts allowed). identical for both entrants bar a one-line per-harness tool note.
 
 ---
 
 ## ADR-0007 — dev substrate is the ai-ctf repo's own local chain, selected via a chain profile
 
-**Status:** accepted (2026-07-22)
+**Status:** accepted (2026-07-22) — substrate choice stands; ADR-0009 changes what a profile switch carries
 
 **Decision:** dev and early slices run against the ai-ctf repo's local Scaffold-ETH chain (`yarn chain` + `yarn deploy`), which deploys all 12 challenges, `NFTFlags`, and the `MockIdentityRegistry`. the arena selects a chain via a **chain profile**: `{ rpcUrl, chainId, nftFlags, challenge1, identityRegistry }`. local is one profile; real Base is another. only addresses + RPC change between them — runner, watcher, and adapters are identical.
 
@@ -119,3 +119,21 @@ the run holds in a new `awaiting_funding` state until each entrant's balance cro
 **Trade-off:** the marquee "claude vs codex" matchup becomes "codex vs opencode" until a sanctioned claude credential exists (org api key or explicit blessing). adapter symmetry is preserved, so claude is an adapter away.
 
 **Consequence:** slice 2 = codex adapter, slice 3 = opencode adapter. the pinned image ships codex + opencode CLIs, no claude CLI. toolchain locked the same day: pnpm workspaces, tsx runtime, vitest.
+
+---
+
+## ADR-0009 — the challenge material ships into the container as a mounted pack; the opening prompt varies by chain profile
+
+**Status:** accepted (2026-07-27) — amends the prompt posture in ADR-0006; ADR-0007's substrate choice stands
+
+**Decision:** on a profile with no briefing URL, at prepare time the arena assembles a **challenge pack** from a local ai-ctf checkout (`AI_CTF_REPO`) and mounts it read-only at `/ctf` in that run's entrant containers. base mounts nothing. the pack holds: `BRIEFING.md` (the CTF's own twelve challenge markdown files, verbatim, under an address table read from the deploy artifacts), `contracts/`, and the deploy script. the opening prompt points at `/ctf` on the local profile and at the public CTF site on the base profile. the base prompt names no contract addresses.
+
+**Why:** the prompt told the agent to "read each challenge contract with `cast`", which returns runtime bytecode on a local chain — an instruction that cannot be followed. it also never mentioned the site where the twelve descriptions and hints live.
+
+forking Base was the first candidate and was rejected on a live check: `NFTFlags.enabled()` is `false` at `0xD60C911a…` and `enabledAt` is `0` (checked 2026-07-27). the contracts are deployed there but minting was never switched on, so a fork inherits a board where every `mintFlag` reverts and both entrants score zero.
+
+pointing at the site alone does not close the gap either. the challenge text is server-rendered and a plain `curl` returns it, but the per-challenge address comes from `ChallengeContractLink`, a client component — so `curl` gets descriptions without addresses, and `/leaderboard` returns nothing at all. the ai-ctf repo is private, so the site's challenge-9 hint linking its own deploy script 404s for an entrant. shipping the material is the only route that hands the agent instructions, addresses, and source on a local chain.
+
+**Trade-off:** the ai-ctf checkout becomes a build input, not only an RPC endpoint. a file that moves upstream now breaks the pack, where before only the chain shape mattered — so the assembler throws and names the missing path rather than shipping a briefing with holes. the larger cost is that local and base now differ in more than addresses and RPC: the prompt differs too. that is a behavioural fork of the chain profile, not the data swap ADR-0007 described. accepted because production is expected to point agents at the site (team call, still open), so the base prompt is the one that has to match the race and the local pack is the stand-in.
+
+**Consequence:** this repo is public and ai-ctf is private, so the pack is never checked in — it is assembled per run from `AI_CTF_REPO`, and a `docker-duel` run fails at prepare when that path is missing. the pack's address table is read from `deployments/<network>/`, which is what `yarn deploy` actually wrote, and the two addresses the arena itself watches — `NFTFlags` and `Challenge1` — are cross-checked against the active profile so nonce drift becomes a startup error instead of a silent wrong answer. ADR-0006's "silent on the 12 puzzles" posture is amended: still identical across entrants, no longer silent, no longer identical across profiles.

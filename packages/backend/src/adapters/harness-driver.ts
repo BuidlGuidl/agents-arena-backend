@@ -10,6 +10,7 @@ import type {
   RuntimeExecution,
 } from '../runtime/container.js';
 import { createDockerContainer } from '../runtime/container.js';
+import type { ChallengePackResolver } from '../ctf/resolve.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
 import type { ParsedArenaEvent, ParsedHarnessLine, ParserLogger } from './parser-types.js';
 
@@ -17,6 +18,10 @@ export interface HarnessDriverOptions {
   containerFactory?: ContainerFactory;
   rpcUrl?: string;
   logger?: ParserLogger;
+  // Returns the assembled challenge pack directory for a run, mounted read-only
+  // into every entrant container. Throwing here fails prepare, which is how a
+  // missing ai-ctf checkout surfaces (ADR-0009).
+  resolveChallengePack?: ChallengePackResolver;
 }
 
 interface EntrantRuntimeState {
@@ -42,7 +47,16 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     protected readonly journal: EventJournal,
     options: HarnessDriverOptions = {},
   ) {
-    this.containerFactory = options.containerFactory ?? createDockerContainer;
+    const factory = options.containerFactory ?? createDockerContainer;
+    const resolveChallengePack = options.resolveChallengePack;
+    // Wrapped once here so every adapter's createContainer picks the mount up
+    // without repeating it.
+    this.containerFactory = resolveChallengePack === undefined
+      ? factory
+      : (containerOptions) => factory({
+        ...containerOptions,
+        challengePackDir: resolveChallengePack(containerOptions.runId),
+      });
     this.rpcUrl = options.rpcUrl ?? process.env.ARENA_RPC_URL ?? 'http://host.docker.internal:8545';
     this.logger = options.logger ?? console;
   }

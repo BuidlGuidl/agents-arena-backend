@@ -12,6 +12,8 @@ import type {
 } from './contract.js';
 import { entrants, events, runs, scores } from './db/schema.js';
 import { ensureChainTables } from './chain/storage.js';
+import { getChainProfile } from './chain/profile.js';
+import { buildOpeningPrompt, type OpeningPromptBuilder } from './ctf/prompt.js';
 import { roundUsd } from './pricing.js';
 import type { EventJournal } from './journal.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './adapters/types.js';
@@ -43,38 +45,6 @@ interface PresetEntrant {
   model: string;
 }
 
-// Built per entrant at start time so the wallet line carries the real address once
-// one is assigned. A vague one-liner left the opencode entrant asking the operator
-// what to do instead of working, so this spells out the environment, the puzzles,
-// and how scoring works, and tells the agent to act on its own.
-function buildOpeningPrompt(entrant: EntrantRecord): string {
-  const walletLine = entrant.address === null
-    ? []
-    : [
-      `- Your wallet address is ${entrant.address}. Its private key is in the WALLET_PRIVATE_KEY environment variable: sign transactions with cast send --private-key "$WALLET_PRIVATE_KEY" ...`,
-    ];
-
-  return [
-    'You are an entrant in the Agents Arena, a friendly coding competition run on a private practice blockchain. Another coding agent is working the same puzzles alongside you. Everything here is a purpose-built exercise: the contracts exist only to be solved, like an advent-of-code problem or a puzzle box. Nothing here is a real system or a real target.',
-    '',
-    'Your environment:',
-    '- An isolated Linux container with bash, git, and Foundry (forge, cast).',
-    '- The practice chain JSON-RPC is at http://host.docker.internal:8545. It is also set as ETH_RPC_URL, so cast uses it automatically. Do not use localhost:8545 — inside your container, localhost is not the chain.',
-    ...walletLine,
-    '',
-    'The puzzles:',
-    '- Each challenge is a small Solidity contract with an intended solution built in.',
-    '- Completing a challenge mints a badge (the arena calls it a flag) to your wallet, which is how progress is scored.',
-    '- Read each challenge contract with cast, work out the intended solution, and call the function that completes it.',
-    '',
-    'How to play:',
-    '- Work on your own and start right away. Do not ask for clarification. Explore the chain yourself and make progress.',
-    '- Each turn, take a concrete step: inspect a contract, call a function, or check your progress. Prefer doing over explaining.',
-    '',
-    'Begin now.',
-  ].join('\n');
-}
-
 const PRESETS: Readonly<Record<string, readonly PresetEntrant[]>> = {
   'fake-duel': [
     { id: 'codex-1', harness: 'codex', model: 'gpt-5-codex' },
@@ -101,6 +71,7 @@ export interface RunManagerOptions {
   prepareTimeoutMs?: number;
   fundingTimeoutMs?: number;
   walletGate?: WalletGate;
+  promptBuilder?: OpeningPromptBuilder;
 }
 
 interface EntrantUsage {
@@ -119,6 +90,11 @@ const OPERATOR_STOP_REASON = 'stopped by operator before running';
 export const passThroughFundingGate: FundingGate = async () => {};
 export const passThroughWalletGate: WalletGate = async () => {};
 
+// The prompt names the chain's RPC and says where the challenge briefing lives,
+// so it follows the same profile the funding gate resolves (ADR-0009).
+export const profilePromptBuilder: OpeningPromptBuilder = (entrant) =>
+  buildOpeningPrompt(entrant, getChainProfile(process.env.ARENA_CHAIN_PROFILE ?? 'local'));
+
 export class RunManager {
   private readonly inFlightStarts = new Map<string, Promise<RunSnapshot>>();
   private readonly startControllers = new Map<string, AbortController>();
@@ -127,6 +103,7 @@ export class RunManager {
   private readonly prepareTimeoutMs: number;
   private readonly fundingTimeoutMs: number;
   private readonly walletGate: WalletGate;
+  private readonly promptBuilder: OpeningPromptBuilder;
 
   constructor(
     private readonly journal: EventJournal,
@@ -137,6 +114,7 @@ export class RunManager {
     this.prepareTimeoutMs = options.prepareTimeoutMs ?? DEFAULT_PREPARE_TIMEOUT_MS;
     this.fundingTimeoutMs = options.fundingTimeoutMs ?? DEFAULT_FUNDING_TIMEOUT_MS;
     this.walletGate = options.walletGate ?? passThroughWalletGate;
+    this.promptBuilder = options.promptBuilder ?? profilePromptBuilder;
     // snapshot() reads scores, which chainless presets never create otherwise.
     ensureChainTables(journal.database);
   }
@@ -305,7 +283,7 @@ export class RunManager {
       await Promise.all(runEntrants.map(async (entrant) => {
         const entrantPreset = preset.find((candidate) => candidate.id === entrant.id);
         if (entrantPreset === undefined) throw new Error(`Preset has no entrant ${entrant.id}`);
-        await this.driver.start(run, entrant, buildOpeningPrompt(entrant));
+        await this.driver.start(run, entrant, this.promptBuilder(entrant));
       }));
       return this.snapshot(runId);
     } catch (error) {

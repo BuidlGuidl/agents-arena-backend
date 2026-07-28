@@ -195,7 +195,7 @@ describe('solve poller', () => {
     }
   }, 30_000);
 
-  it('a restarted poller on the same database does not re-record past solves', async () => {
+  it('a restarted poller recovers a solve it never saw and skips the ones already scored', async () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-restart';
     try {
@@ -204,16 +204,22 @@ describe('solve poller', () => {
       await anvil.mine(CONFIRMATIONS);
       expect(await poller(journal, runId).pollOnce()).toBe(1);
 
-      // Restart: a brand-new poller with no memory of the tick that scored.
-      expect(await poller(journal, runId).pollOnce()).toBe(0);
+      // The mint that lands while nothing is polling is the case a cursor used to
+      // cover. A replacement poller has to find it by reading state, and has to leave
+      // the already-scored pair alone.
+      const missed = await mintFlag(anvil, contract, address, 4n);
+      await anvil.mine(CONFIRMATIONS);
+      expect(await poller(journal, runId).pollOnce()).toBe(1);
 
-      expect(scoreEvents(journal, runId)).toHaveLength(1);
+      const events = scoreEvents(journal, runId);
+      expect(events.map((event) => event.challengeId)).toEqual([7, 4]);
+      expect(events[1]?.txHash).toBe(missed.txHash);
     } finally {
       journal.close();
     }
   }, 30_000);
 
-  it('reads every pending pair in one batched request', async () => {
+  it('batches the tick reads without exceeding what Base accepts in one request', async () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-batch';
     const proxy = await startRpcProxy(anvil.rpcUrl);
@@ -234,10 +240,36 @@ describe('solve poller', () => {
         (body): body is { method: string }[] =>
           Array.isArray(body) && body.every((entry) => (entry as { method: string }).method === 'eth_call'),
       );
-      expect(callBodies).toHaveLength(1);
-      expect(callBodies[0]).toHaveLength(2 * CHALLENGE_IDS.length);
+      const reads = 2 * CHALLENGE_IDS.length;
+      // mainnet.base.org answers -32014 above ten calls per batch, so the tick's reads
+      // are grouped rather than sent as one request or as one request each.
+      expect(callBodies.every((body) => body.length <= 10)).toBe(true);
+      expect(callBodies.reduce((total, body) => total + body.length, 0)).toBe(reads);
+      expect(callBodies).toHaveLength(Math.ceil(reads / 10));
     } finally {
       await proxy.stop();
+      journal.close();
+    }
+  }, 30_000);
+
+  it('does not journal a solve found by a tick that was already aborted', async () => {
+    const journal = new EventJournal(':memory:');
+    const runId = 'run-late-tick';
+    try {
+      const address = createWallet(runId, 'e1', journal.database);
+      await mintFlag(anvil, contract, address, 10n);
+      await anvil.mine(CONFIRMATIONS);
+
+      // The run stopped while this tick was mid-flight. A score.flag written now would
+      // land after the run's own finished event.
+      const controller = new AbortController();
+      controller.abort();
+      expect(await poller(journal, runId).pollOnce(controller.signal)).toBe(0);
+      expect(scoreEvents(journal, runId)).toHaveLength(0);
+
+      // Nothing was consumed: a later poller still finds and records it.
+      expect(await poller(journal, runId).pollOnce()).toBe(1);
+    } finally {
       journal.close();
     }
   }, 30_000);

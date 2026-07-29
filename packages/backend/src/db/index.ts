@@ -44,6 +44,8 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
     );
     CREATE UNIQUE INDEX IF NOT EXISTS events_run_id_source_seq ON events (run_id, source, seq);
     CREATE INDEX IF NOT EXISTS events_run_id_id ON events (run_id, id);
+    CREATE INDEX IF NOT EXISTS events_run_id_type_id ON events (run_id, type, id);
+    CREATE INDEX IF NOT EXISTS events_run_id_source_id ON events (run_id, source, id);
   `);
   return { database: drizzle(sqlite, { schema }), sqlite };
 }

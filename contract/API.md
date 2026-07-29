@@ -62,6 +62,29 @@ Send `Last-Event-ID: 12` or `?after=12` to replay later events before live deliv
 
 Event IDs increase across all runs. Per-source `seq` values increase within each `(runId, source)` pair.
 
+The journal retains payloads in full. Payload strings are capped at 4,000 characters when delivered over the SSE stream or history read. The event envelope's `truncated` keys are dotted paths to capped fields and record each original length and line count.
+
+### `GET /runs/:id/events/history`
+
+Returns a bounded page from the event journal.
+
+| Parameter | Type | Default | Rule |
+| --- | --- | --- | --- |
+| `limit` | integer | `50` | From `1` through `200` |
+| `before` | integer | none | At least `1`; excludes the event with this ID |
+| `types` | CSV | none | Each item must be an event type |
+| `source` | CSV | none | Source IDs |
+
+```json
+{"events":[],"lastEventId":42,"hasMore":false}
+```
+
+Events are ordered by ascending ID. `hasMore` reports whether older matching events exist. Pass the oldest returned event ID as the exclusive `before` cursor to read the prior page.
+
+`lastEventId` is the unfiltered run head. Open the SSE stream with it. A client that filters by type still receives every type from that stream.
+
+A page whose `before` is at or below `lastEventId + 1` can never gain events. The service marks it `Cache-Control: public, max-age=31536000, immutable` and omits `lastEventId`, which changes as the run continues. Every other response carries `lastEventId` and uses `Cache-Control: public, max-age=1`.
+
 ## Contract file
 
 [`arena-types.ts`](./arena-types.ts) defines the shared request, snapshot, and event types. It has no dependencies and can be copied as one file.

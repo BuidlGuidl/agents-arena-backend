@@ -56,6 +56,8 @@ Sends one director message to every entrant that is not `done`. Each recipient t
 
 The response has status `202`. An entrant that cannot take the turn is named in `failed` and gets an `entrant.error` event; the rest still receive the message.
 
+`delivered` means the entrant accepted the message, not that it has read it yet: an entrant that is mid-turn queues it and takes it when that turn ends, exactly as a per-entrant steer does. The `director.broadcast` event lands immediately either way, so the feed shows the message the moment the director sends it.
+
 ```json
 {"accepted":true,"delivered":["codex-1"],"failed":[{"entrantId":"opencode-1","message":"Entrant opencode-1 is stopping"}]}
 ```

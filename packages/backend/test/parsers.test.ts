@@ -54,27 +54,25 @@ describe('CodexEventParser', () => {
 
   // turn.completed carries the session running total, not the turn
   // (openai/codex#17539), and `exec resume` keeps counting in the same session.
-  // The captured fixture holds a single turn, so these pin the multi-turn shape.
-  it('reports each turn as its own spend when the session total keeps growing', () => {
+  // codex-resume-turns.jsonl is a captured two-turn session — `codex exec` then
+  // `codex exec resume` on the same thread, the shape a steer produces. Turn 2
+  // reports output 10 for the two turns that emitted 5 each.
+  it('reports each turn as its own spend across a resumed session', async () => {
     const parser = new CodexEventParser('codex-1');
-    parser.parse(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
-    const first = parser.parse(JSON.stringify({
-      type: 'turn.completed',
-      usage: { input_tokens: 22_183, cached_input_tokens: 0, output_tokens: 5 },
-    }));
-    // A steer resumes the same thread in a new process; codex re-reports turn 1.
-    parser.parse(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
-    const second = parser.parse(JSON.stringify({
-      type: 'turn.completed',
-      usage: { input_tokens: 48_348, cached_input_tokens: 21_248, output_tokens: 11 },
-    }));
+    const usage = (await fixture('codex-resume-turns.jsonl'))
+      .flatMap((line) => parser.parse(line).events)
+      .filter((event) => event.type === 'usage')
+      .map((event) => event.payload);
 
-    expect(first.events[0]?.payload).toMatchObject({
-      inputTokens: 22_183, outputTokens: 5, cachedInputTokens: 0,
-    });
-    expect(second.events[0]?.payload).toMatchObject({
-      inputTokens: 26_165, outputTokens: 6, cachedInputTokens: 21_248,
-    });
+    expect(usage).toMatchObject([
+      { inputTokens: 12_937, cachedInputTokens: 10_496, outputTokens: 5 },
+      { inputTokens: 12_955, cachedInputTokens: 12_544, outputTokens: 5 },
+    ]);
+    // What the snapshot would total has to land on the session total codex last
+    // reported — 25,892 in / 23,040 cached / 10 out — not the sum of both reports.
+    expect(usage.reduce((total, turn) => total + turn.inputTokens, 0)).toBe(25_892);
+    expect(usage.reduce((total, turn) => total + turn.cachedInputTokens, 0)).toBe(23_040);
+    expect(usage.reduce((total, turn) => total + turn.outputTokens, 0)).toBe(10);
   });
 
   it('counts from zero again when a new thread starts', () => {

@@ -228,6 +228,94 @@ describe.each(['codex', 'opencode'] as const)('%s steer queue', (harness) => {
   });
 });
 
+describe('parser isolation', () => {
+  // One CodexDriver serves every run in the process and entrant ids are preset
+  // literals, so a parser cache keyed by entrant alone would let two runs in
+  // flight interleave their sessions and reset each other's token baseline.
+  it('gives each run its own parser so a second run cannot reset the baseline', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, {
+      async prepare() {}, async start() {}, async steer() {}, async stop() {},
+    });
+    const authDirectory = await mkdtemp(join(tmpdir(), 'arena-test-auth-'));
+    temporaryPaths.push(authDirectory);
+    const authPath = join(authDirectory, 'auth.json');
+    await writeFile(authPath, '{}');
+
+    const containers: ControlledContainer[] = [];
+    const containerFactory: ContainerFactory = async (options) => {
+      if (options.credentialDir !== undefined) temporaryPaths.push(options.credentialDir);
+      const container = new ControlledContainer();
+      containers.push(container);
+      return container;
+    };
+    const driver = new CodexDriver(journal, { authPath, containerFactory });
+
+    const seed = async () => {
+      const created = await manager.create({ preset: 'docker-duel' });
+      const run = journal.database.select().from(runs).where(eq(runs.id, created.run.id)).get();
+      const entrant = journal.database.select().from(entrants).where(and(
+        eq(entrants.runId, created.run.id),
+        eq(entrants.harness, 'codex'),
+      )).get();
+      if (run === undefined || entrant === undefined) throw new Error('Test run was not seeded');
+      return { run, entrant };
+    };
+    const first = await seed();
+    const second = await seed();
+    expect(first.entrant.id).toBe(second.entrant.id);
+
+    const usageOf = (runId: string) => journal.after(runId, 0)
+      .filter((event) => event.type === 'usage')
+      .map((event) => event.payload);
+    const completeCumulative = (
+      container: ControlledContainer,
+      index: number,
+      threadId: string,
+      totals: { input: number; output: number },
+    ) => {
+      const execution = container.turns[index] as ControlledExecution;
+      execution.push(JSON.stringify({ type: 'thread.started', thread_id: threadId }));
+      execution.push(JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: totals.input, output_tokens: totals.output },
+      }));
+      execution.finish(0);
+    };
+
+    try {
+      await driver.prepare(first.run, first.entrant);
+      await driver.prepare(second.run, second.entrant);
+      await driver.start(first.run, first.entrant, 'opening');
+      await driver.start(second.run, second.entrant, 'opening');
+
+      const [firstContainer, secondContainer] = containers as [ControlledContainer, ControlledContainer];
+      completeCumulative(firstContainer, 0, 'thread-a', { input: 10_000, output: 40 });
+      await waitFor(() => usageOf(first.run.id).length === 1);
+      // The other run reports a different session between the two turns below.
+      completeCumulative(secondContainer, 0, 'thread-b', { input: 5_000, output: 20 });
+      await waitFor(() => usageOf(second.run.id).length === 1);
+
+      await waitFor(() => journal.after(first.run.id, 0).some((event) =>
+        event.type === 'entrant.status' && event.payload.status === 'idle'));
+      await driver.steer(first.run, first.entrant, 'again');
+      completeCumulative(firstContainer, 1, 'thread-a', { input: 18_000, output: 70 });
+      await waitFor(() => usageOf(first.run.id).length === 2);
+
+      // 18,000 - 10,000, not the whole 18,000 a baseline reset would report.
+      expect(usageOf(first.run.id)).toMatchObject([
+        { inputTokens: 10_000, outputTokens: 40 },
+        { inputTokens: 8_000, outputTokens: 30 },
+      ]);
+      expect(usageOf(second.run.id)).toMatchObject([{ inputTokens: 5_000, outputTokens: 20 }]);
+    } finally {
+      await driver.stop(first.run, first.entrant);
+      await driver.stop(second.run, second.entrant);
+      journal.close();
+    }
+  });
+});
+
 describe('usage cost', () => {
   it('prices a codex turn from the rate table, cached prompt tokens included', async () => {
     const context = await setup('codex', undefined, false, 'gpt-5-codex');

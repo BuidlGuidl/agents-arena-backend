@@ -66,11 +66,12 @@ export type ArenaEvent =
   | (ArenaEventBase & { type: 'score.flag'; payload: { entrantId: string; challengeId: number; txHash: string; tokenId: string } })
   | (ArenaEventBase & { type: 'entrant.error'; payload: { entrantId: string; message: string } })
   | (ArenaEventBase & { type: 'run.error'; payload: { message: string } })
-  // Tokens are per turn, and inputTokens is the whole prompt — cachedInputTokens,
-  // the part served from cache, is counted inside it. Harnesses disagree on both
-  // points upstream (codex reports a running session total, opencode reports its
-  // input net of cache), so the adapters normalize to this shape. Cached tokens
-  // bill cheaper, which is why cost needs them broken out.
+  // Tokens count only what this event covers — codex emits one per turn, opencode
+  // one per step, so events are not turns. inputTokens is the whole prompt, with
+  // cachedInputTokens, the part served from cache, counted inside it. Harnesses
+  // disagree on both points upstream (codex reports a running session total,
+  // opencode reports its input net of cache), so the adapters normalize to this
+  // shape. Cached tokens bill cheaper, which is why cost needs them broken out.
   | (ArenaEventBase & {
     type: 'usage';
     payload: {

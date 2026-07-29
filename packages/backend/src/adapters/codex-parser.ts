@@ -15,10 +15,10 @@ export class CodexEventParser {
 
   // turn.completed reports the session running total, not the turn
   // (openai/codex#17539: exec emits ThreadTokenUsage.total and never .last), and
-  // `exec resume` continues the same session in a fresh process. This parser
-  // outlives those processes, so it holds the last reported totals and emits the
-  // difference — otherwise every steer re-reports the whole session and the
-  // snapshot sums the same tokens again.
+  // `exec resume` continues the same session in a fresh process. The driver keeps
+  // one parser per entrant of a run across those processes, so this holds the last
+  // reported totals and emits the difference — otherwise every steer re-reports
+  // the whole session and the snapshot sums the same tokens again.
   private sessionId: string | undefined;
   private reported: SessionTotals = NO_TOTALS;
 

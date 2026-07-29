@@ -741,7 +741,10 @@ flowchart TB
     <table class="map">
       <thead><tr><th>File</th><th>Owns</th></tr></thead>
       <tbody>
-        <tr><td><span class="path">src/run-manager.ts</span></td><td>State machine, start/stop, steer entry, opening prompt.</td></tr>
+        <tr><td><span class="path">src/run-manager.ts</span></td><td>State machine, start/stop, steer entry, prompt injection.</td></tr>
+        <tr><td><span class="path">src/ctf/prompt.ts</span></td><td>Opening prompt, per chain profile: mounted pack or public site.</td></tr>
+        <tr><td><span class="path">src/ctf/pack.ts</span></td><td>Challenge pack assembly from the ai-ctf checkout.</td></tr>
+        <tr><td><span class="path">src/ctf/resolve.ts</span></td><td>Per-run pack build, address cross-check against the profile.</td></tr>
         <tr><td><span class="path">src/chain/wallet.ts</span></td><td>Burner keys in SQLite: generate, read, export.</td></tr>
         <tr><td><span class="path">src/chain/funding-gate.ts</span></td><td>Wallet gate + local funding gate (docker-duel only).</td></tr>
         <tr><td><span class="path">src/chain/funding-watcher.ts</span></td><td>Balance poll at head &minus; confirmations, funding.balance events.</td></tr>

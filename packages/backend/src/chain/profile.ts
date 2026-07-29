@@ -11,6 +11,9 @@ export interface ChainProfile {
   nftFlags: Address;
   challenge1: Address;
   identityRegistry: Address;
+  // Set when the chain has a public briefing the entrant can fetch. Absent means
+  // the arena mounts a challenge pack instead (ADR-0009).
+  briefingUrl?: string;
 }
 
 interface RawChainProfile extends Omit<ChainProfile, 'nftFlags' | 'challenge1' | 'identityRegistry'> {
@@ -38,6 +41,11 @@ function parseProfile(name: string, value: RawChainProfile): ChainProfile {
   if (!Number.isSafeInteger(value.confirmations) || value.confirmations < 0) {
     throw new Error(`Invalid confirmation count for profile ${name}`);
   }
+  // Presence of briefingUrl selects a prompt variant, so an empty one would send
+  // the entrant to fetch nothing rather than fall back to the pack.
+  if (value.briefingUrl !== undefined && value.briefingUrl.trim() === '') {
+    throw new Error(`Empty briefingUrl for profile ${name}; remove the key to use a challenge pack`);
+  }
 
   return {
     name,
@@ -48,6 +56,7 @@ function parseProfile(name: string, value: RawChainProfile): ChainProfile {
     nftFlags: parseAddress(value.nftFlags, `${name}.nftFlags`),
     challenge1: parseAddress(value.challenge1, `${name}.challenge1`),
     identityRegistry: parseAddress(value.identityRegistry, `${name}.identityRegistry`),
+    ...(value.briefingUrl === undefined ? {} : { briefingUrl: value.briefingUrl }),
   };
 }
 

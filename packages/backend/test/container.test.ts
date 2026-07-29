@@ -1,9 +1,13 @@
 import { PassThrough, type Readable, type Writable } from 'node:stream';
+import { resolve } from 'node:path';
 
 import Docker from 'dockerode';
 import { describe, expect, it, vi } from 'vitest';
 
-import { DockerEntrantContainer } from '../src/runtime/container.js';
+import {
+  DockerEntrantContainer,
+  type ContainerOptions,
+} from '../src/runtime/container.js';
 
 interface FakeWaitResult {
   StatusCode: number;
@@ -40,7 +44,7 @@ class FakeDocker {
     };
   }
 
-  readonly createContainer = vi.fn(async () => this.container);
+  readonly createContainer = vi.fn(async (_options: unknown) => this.container);
 
   send(message: object): void {
     this.runnerOutput.write(`${JSON.stringify(message)}\n`);
@@ -58,12 +62,23 @@ class FakeDocker {
   }
 }
 
-async function createContainer(docker: FakeDocker): Promise<DockerEntrantContainer> {
+async function createContainer(
+  docker: FakeDocker,
+  options: Partial<ContainerOptions> = {},
+): Promise<DockerEntrantContainer> {
   return DockerEntrantContainer.create({
     runId: 'runtime-unit',
     entrantId: 'entrant-1',
     readyTimeoutMs: 100,
+    ...options,
   }, docker as unknown as Docker);
+}
+
+function createdBinds(docker: FakeDocker): string[] {
+  const options = docker.createContainer.mock.calls[0]?.[0] as {
+    HostConfig?: { Binds?: string[] };
+  } | undefined;
+  return options?.HostConfig?.Binds ?? [];
 }
 
 async function within<T>(promise: Promise<T>): Promise<T> {
@@ -129,5 +144,51 @@ describe('DockerEntrantContainer lifecycle', () => {
     docker.die(0);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(await execution.exit).toBe(0);
+  });
+});
+
+describe('DockerEntrantContainer mounts', () => {
+  it('mounts the challenge pack at /ctf as read-only with an absolute source', async () => {
+    const docker = new FakeDocker();
+    const challengePackDir = './test-challenge-pack';
+
+    await createContainer(docker, { challengePackDir });
+
+    expect(createdBinds(docker)).toContain(`${resolve(challengePackDir)}:/ctf:ro`);
+  });
+
+  it('uses the configured challenge pack target', async () => {
+    const docker = new FakeDocker();
+    const challengePackDir = './test-challenge-pack';
+
+    await createContainer(docker, {
+      challengePackDir,
+      challengePackTarget: '/arena/challenges',
+    });
+
+    expect(createdBinds(docker)).toContain(
+      `${resolve(challengePackDir)}:/arena/challenges:ro`,
+    );
+  });
+
+  it('adds no read-only bind without a challenge pack', async () => {
+    const docker = new FakeDocker();
+
+    await createContainer(docker);
+
+    expect(createdBinds(docker).some((bind) => bind.endsWith(':ro'))).toBe(false);
+  });
+
+  it('keeps credentials read-write when both mounts are present', async () => {
+    const docker = new FakeDocker();
+    const credentialDir = './test-credentials';
+    const challengePackDir = './test-challenge-pack';
+
+    await createContainer(docker, { credentialDir, challengePackDir });
+
+    expect(createdBinds(docker)).toEqual([
+      `${resolve(credentialDir)}:/creds:rw`,
+      `${resolve(challengePackDir)}:/ctf:ro`,
+    ]);
   });
 });

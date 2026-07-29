@@ -125,18 +125,39 @@ export async function startAnvil(): Promise<AnvilHandle> {
 
 const fixtureDir = fileURLToPath(new URL('./fixture', import.meta.url));
 const artifactPath = `${fixtureDir}/out/FlagMintedFixture.sol/FlagMintedFixture.json`;
+const multicallArtifactPath = `${fixtureDir}/out/Multicall3Fixture.sol/Multicall3Fixture.json`;
+
+/** Every chain that ships Multicall3 puts it here, which is why the poller probes it. */
+export const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11' as Address;
 
 interface FixtureArtifact {
   abi: readonly unknown[];
   bytecode: { object: `0x${string}` };
+  deployedBytecode: { object: `0x${string}` };
 }
 
-/** Compile the fixture with forge when its artifact is missing. Idempotent. */
+/** Compile the fixtures with forge when an artifact is missing. Idempotent. */
 export function buildFixture(): void {
-  if (existsSync(artifactPath)) {
+  if (existsSync(artifactPath) && existsSync(multicallArtifactPath)) {
     return;
   }
   execFileSync('forge', ['build'], { cwd: fixtureDir, stdio: 'ignore' });
+}
+
+/**
+ * Put Multicall3 at its canonical address for the duration of a test, then take it away.
+ * Writing the code rather than deploying it is what lets the poller's own probe run
+ * unchanged, the same way it will against base.
+ */
+export async function withMulticall3<T>(handle: AnvilHandle, action: () => Promise<T>): Promise<T> {
+  buildFixture();
+  const artifact = JSON.parse(readFileSync(multicallArtifactPath, 'utf8')) as FixtureArtifact;
+  await handle.rpc('anvil_setCode', [MULTICALL3_ADDRESS, artifact.deployedBytecode.object]);
+  try {
+    return await action();
+  } finally {
+    await handle.rpc('anvil_setCode', [MULTICALL3_ADDRESS, '0x']);
+  }
 }
 
 /** Deploy the FlagMinted fixture and return its address. Builds first if needed. */

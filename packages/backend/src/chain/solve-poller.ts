@@ -32,6 +32,18 @@ const MAX_BACKOFF_MS = 30_000;
 const MAX_RPC_BATCH = 10;
 const MAX_LOG_SPAN = 10_000n;
 
+// Multicall3 sits at the same address on every chain that has it, base and base sepolia
+// included. The poller asks the chain whether it is there rather than keying off the
+// profile name, so a local chain that gains it later gets the aggregated path for free
+// and a new network profile needs no code change.
+const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11' as const;
+
+// viem splits an aggregate3 every 1024 bytes of calldata by default, which would put a
+// duel back at 2 calls and the ten entrants #2 asks for at 10, near enough to the
+// unaggregated count to be pointless. One hasMinted call3 encodes to about 224 bytes, so
+// this holds roughly 140 of them: one request per tick at any entrant count we run.
+const MULTICALL_BATCH_BYTES = 32_768;
+
 export interface SolvePollerOptions {
   profile: ChainProfile;
   runId: string;
@@ -67,12 +79,13 @@ export class SolvePoller {
   private readonly database: ArenaDatabase;
   private readonly pollMs: number;
   private searchFrom: bigint;
+  private aggregated: Promise<boolean> | null = null;
 
   constructor(private readonly options: SolvePollerOptions) {
     this.database = options.database ?? options.journal.database;
-    // batch groups the tick's hasMinted reads into as few JSON-RPC requests as the
-    // endpoint takes. Multicall3 would do the same but is not deployed on the local
-    // hardhat chain (ADR-0010).
+    // The fallback when Multicall3 is absent: batch groups the tick's hasMinted reads
+    // into as few JSON-RPC requests as the endpoint takes. Neither the local hardhat
+    // chain nor anvil deploys Multicall3, so this is the path local dev runs on.
     this.client = options.client ?? createPublicClient({
       transport: http(options.profile.rpcUrl, { batch: { batchSize: MAX_RPC_BATCH } }),
     });
@@ -98,7 +111,7 @@ export class SolvePoller {
       return 0;
     }
 
-    const minted = await Promise.all(pairs.map((pair) => this.hasMinted(pair, confirmedBlock)));
+    const minted = await this.readMintedFlags(pairs, confirmedBlock);
     const solved = pairs.filter((_, index) => minted[index] === true);
     if (solved.length === 0) {
       this.searchFrom = confirmedBlock + 1n;
@@ -181,6 +194,52 @@ export class SolvePoller {
           address: getAddress(row.address),
           challengeId,
         })));
+  }
+
+  // One aggregate3 where the chain has Multicall3, otherwise one eth_call per pair.
+  // The difference is flat versus linear in entrants: a duel is 3 batched requests
+  // against 1, and the ten entrants #2 asks for are 12 against 1.
+  private async readMintedFlags(pairs: readonly Pair[], blockNumber: bigint): Promise<boolean[]> {
+    if (!(await this.hasMulticall())) {
+      return Promise.all(pairs.map((pair) => this.hasMinted(pair, blockNumber)));
+    }
+
+    const results = await this.client.multicall({
+      contracts: pairs.map((pair) => ({
+        address: this.options.profile.nftFlags,
+        abi: nftFlagsAbi,
+        functionName: 'hasMinted',
+        args: [pair.address, BigInt(pair.challengeId)],
+      } as const)),
+      multicallAddress: MULTICALL3_ADDRESS,
+      batchSize: MULTICALL_BATCH_BYTES,
+      allowFailure: true,
+      blockNumber,
+    });
+
+    // aggregate3 reports a sub-call that returned nothing as a failure, which erases the
+    // difference between a block before the NFTFlags deploy and a profile pointing at
+    // the wrong address. Only the contract's own code settles that, same as the single
+    // call path, so one read answers it for the whole tick.
+    if (results.some((result) => result.status === 'failure')) {
+      const code = await this.client.getCode({ address: this.options.profile.nftFlags, blockNumber });
+      if (code !== undefined && code !== '0x') {
+        const failure = results.find((result) => result.status === 'failure');
+        throw failure?.error ?? new Error('hasMinted failed inside aggregate3');
+      }
+    }
+
+    return results.map((result) => result.status === 'success' && result.result === true);
+  }
+
+  // Cached for the poller's life: a chain does not gain or lose Multicall3 mid-run, and
+  // this would otherwise be an extra request on every tick.
+  private hasMulticall(): Promise<boolean> {
+    this.aggregated ??= this.client
+      .getCode({ address: MULTICALL3_ADDRESS })
+      .then((code) => code !== undefined && code !== '0x')
+      .catch(() => false);
+    return this.aggregated;
   }
 
   private async hasMinted(pair: Pair, blockNumber: bigint): Promise<boolean> {

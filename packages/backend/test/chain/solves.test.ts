@@ -8,9 +8,11 @@ import { EventJournal } from '../../src/journal.js';
 import {
   deployFlagFixture,
   mintFlag,
+  MULTICALL3_ADDRESS,
   startAnvil,
   startRpcProxy,
   testProfile,
+  withMulticall3,
   type AnvilHandle,
 } from './support.js';
 
@@ -269,6 +271,67 @@ describe('solve poller', () => {
 
       // Nothing was consumed: a later poller still finds and records it.
       expect(await poller(journal, runId).pollOnce()).toBe(1);
+    } finally {
+      journal.close();
+    }
+  }, 30_000);
+
+  it('aggregates the tick into one call where the chain has Multicall3', async () => {
+    const journal = new EventJournal(':memory:');
+    const runId = 'run-multicall';
+    const proxy = await startRpcProxy(anvil.rpcUrl);
+    try {
+      const address = createWallet(runId, 'e1', journal.database);
+      createWallet(runId, 'e2', journal.database);
+      await mintFlag(anvil, contract, address, 6n);
+
+      await withMulticall3(anvil, async () => {
+        // The reads execute at head - confirmations, so the injected code has to be that
+        // deep as well. On base Multicall3 predates every run, so this only sets up here.
+        await anvil.mine(CONFIRMATIONS + 1);
+        const aggregating = new SolvePoller({
+          profile: testProfile(proxy.url, CONFIRMATIONS, contract),
+          runId,
+          journal,
+          database: journal.database,
+        });
+        expect(await aggregating.pollOnce()).toBe(1);
+      });
+
+      const calls = proxy.bodies
+        .flatMap((body) => (Array.isArray(body) ? body : [body]) as { method: string; params?: unknown[] }[])
+        .filter((entry) => entry.method === 'eth_call');
+      const toMulticall = calls.filter((entry) => {
+        const [call] = (entry.params ?? []) as [{ to?: string }];
+        return call?.to?.toLowerCase() === MULTICALL3_ADDRESS.toLowerCase();
+      });
+
+      // Two entrants across twelve challenges is 24 reads, which the fallback path sends
+      // as three batched requests. Aggregated it is one call whatever the entrant count.
+      expect(toMulticall).toHaveLength(1);
+      expect(calls).toHaveLength(toMulticall.length);
+
+      const [event] = scoreEvents(journal, runId);
+      expect(event?.entrantId).toBe('e1');
+      expect(event?.challengeId).toBe(6);
+    } finally {
+      await proxy.stop();
+      journal.close();
+    }
+  }, 30_000);
+
+  it('falls back to per-pair reads once Multicall3 is gone again', async () => {
+    const journal = new EventJournal(':memory:');
+    const runId = 'run-no-multicall';
+    try {
+      const address = createWallet(runId, 'e1', journal.database);
+      await mintFlag(anvil, contract, address, 12n);
+      await anvil.mine(CONFIRMATIONS);
+
+      // withMulticall3 clears the code again, so the probe has to see a bare chain here.
+      // This is the path local dev runs on, since neither anvil nor hardhat deploys it.
+      expect(await poller(journal, runId).pollOnce()).toBe(1);
+      expect(scoreEvents(journal, runId).map((event) => event.challengeId)).toEqual([12]);
     } finally {
       journal.close();
     }

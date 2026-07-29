@@ -2,8 +2,25 @@ import type { ParsedArenaEvent, ParsedHarnessLine, ParserLogger } from './parser
 
 type JsonObject = Record<string, unknown>;
 
+interface SessionTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+}
+
+const NO_TOTALS: SessionTotals = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
+
 export class CodexEventParser {
   unknownEvents = 0;
+
+  // turn.completed reports the session running total, not the turn
+  // (openai/codex#17539: exec emits ThreadTokenUsage.total and never .last), and
+  // `exec resume` continues the same session in a fresh process. This parser
+  // outlives those processes, so it holds the last reported totals and emits the
+  // difference — otherwise every steer re-reports the whole session and the
+  // snapshot sums the same tokens again.
+  private sessionId: string | undefined;
+  private reported: SessionTotals = NO_TOTALS;
 
   constructor(
     private readonly entrantId: string,
@@ -17,19 +34,30 @@ export class CodexEventParser {
     const type = stringValue(value.type);
     if (type === 'thread.started') {
       const sessionId = stringValue(value.thread_id);
-      return sessionId === undefined ? { events: [] } : { events: [], sessionId };
+      if (sessionId === undefined) return { events: [] };
+      // A different thread counts from zero again.
+      if (sessionId !== this.sessionId) {
+        this.sessionId = sessionId;
+        this.reported = NO_TOTALS;
+      }
+      return { events: [], sessionId };
     }
     if (type === 'turn.started') return { events: [] };
     if (type === 'turn.completed') {
       const usage = objectValue(value.usage);
+      const totals: SessionTotals = {
+        inputTokens: numberValue(usage?.input_tokens),
+        outputTokens: numberValue(usage?.output_tokens),
+        cachedInputTokens: numberValue(usage?.cached_input_tokens),
+      };
+      const turn = this.turnDelta(totals);
+      this.reported = totals;
       return {
         events: [{
           type: 'usage',
           payload: {
             entrantId: this.entrantId,
-            inputTokens: numberValue(usage?.input_tokens),
-            outputTokens: numberValue(usage?.output_tokens),
-            cachedInputTokens: numberValue(usage?.cached_input_tokens),
+            ...turn,
             // The codex stream carries no price; the driver derives one from the
             // rate table when the entrant's model is listed there.
             costUsd: null,
@@ -128,6 +156,21 @@ export class CodexEventParser {
 
     this.recordUnknown(`${type}/${itemType}`);
     return { events: [] };
+  }
+
+  // A running total only grows. A smaller number means this stream is not
+  // counting the way the session did, so take it at face value rather than
+  // reporting a negative turn.
+  private turnDelta(totals: SessionTotals): SessionTotals {
+    const stepped = totals.inputTokens >= this.reported.inputTokens
+      && totals.outputTokens >= this.reported.outputTokens
+      && totals.cachedInputTokens >= this.reported.cachedInputTokens;
+    if (!stepped) return totals;
+    return {
+      inputTokens: totals.inputTokens - this.reported.inputTokens,
+      outputTokens: totals.outputTokens - this.reported.outputTokens,
+      cachedInputTokens: totals.cachedInputTokens - this.reported.cachedInputTokens,
+    };
   }
 
   private errorEvent(message: string): ParsedArenaEvent {

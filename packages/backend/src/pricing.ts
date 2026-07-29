@@ -22,8 +22,8 @@ export const MODEL_RATES: Readonly<Record<string, ModelRate>> = {
 };
 
 // cachedInputTokens are the prompt tokens served from cache, counted inside
-// inputTokens the way codex reports them. A harness that reports them alongside
-// its input count instead cannot go negative here — it clamps at zero.
+// inputTokens — the shape the adapters normalize to. The clamp guards against a
+// harness that slips out of that convention rather than pricing negative tokens.
 export function costForTokens(
   model: string,
   inputTokens: number,

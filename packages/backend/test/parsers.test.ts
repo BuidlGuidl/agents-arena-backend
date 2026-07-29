@@ -52,6 +52,62 @@ describe('CodexEventParser', () => {
     expect(parsed.at(-1)?.turnEnded).toBe(true);
   });
 
+  // turn.completed carries the session running total, not the turn
+  // (openai/codex#17539), and `exec resume` keeps counting in the same session.
+  // The captured fixture holds a single turn, so these pin the multi-turn shape.
+  it('reports each turn as its own spend when the session total keeps growing', () => {
+    const parser = new CodexEventParser('codex-1');
+    parser.parse(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
+    const first = parser.parse(JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 22_183, cached_input_tokens: 0, output_tokens: 5 },
+    }));
+    // A steer resumes the same thread in a new process; codex re-reports turn 1.
+    parser.parse(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
+    const second = parser.parse(JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 48_348, cached_input_tokens: 21_248, output_tokens: 11 },
+    }));
+
+    expect(first.events[0]?.payload).toMatchObject({
+      inputTokens: 22_183, outputTokens: 5, cachedInputTokens: 0,
+    });
+    expect(second.events[0]?.payload).toMatchObject({
+      inputTokens: 26_165, outputTokens: 6, cachedInputTokens: 21_248,
+    });
+  });
+
+  it('counts from zero again when a new thread starts', () => {
+    const parser = new CodexEventParser('codex-1');
+    parser.parse(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
+    parser.parse(JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 9_000, output_tokens: 40 },
+    }));
+    parser.parse(JSON.stringify({ type: 'thread.started', thread_id: 'thread-2' }));
+    const fresh = parser.parse(JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 1_500, output_tokens: 7 },
+    }));
+
+    expect(fresh.events[0]?.payload).toMatchObject({ inputTokens: 1_500, outputTokens: 7 });
+  });
+
+  it('takes a shrinking total at face value instead of reporting a negative turn', () => {
+    const parser = new CodexEventParser('codex-1');
+    parser.parse(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
+    parser.parse(JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 9_000, output_tokens: 40 },
+    }));
+    const shrunk = parser.parse(JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 1_200, output_tokens: 6 },
+    }));
+
+    expect(shrunk.events[0]?.payload).toMatchObject({ inputTokens: 1_200, outputTokens: 6 });
+  });
+
   it('warns on malformed lines and counts unknown events', () => {
     const logger = { info: vi.fn(), warn: vi.fn() };
     const parser = new CodexEventParser('codex-1', logger);
@@ -146,7 +202,7 @@ describe('OpenCodeEventParser', () => {
       // The tool-calls step is mid-turn, but its tokens are real spend.
       {
         type: 'usage',
-        payload: { entrantId: 'opencode-1', inputTokens: 15138, outputTokens: 45, cachedInputTokens: 0, costUsd: 0 },
+        payload: { entrantId: 'opencode-1', inputTokens: 15138, outputTokens: 45, cachedInputTokens: 0, costUsd: null },
       },
       {
         type: 'agent.message',
@@ -154,7 +210,7 @@ describe('OpenCodeEventParser', () => {
       },
       {
         type: 'usage',
-        payload: { entrantId: 'opencode-1', inputTokens: 109, outputTokens: 3, cachedInputTokens: 15104, costUsd: 0 },
+        payload: { entrantId: 'opencode-1', inputTokens: 15213, outputTokens: 3, cachedInputTokens: 15104, costUsd: null },
       },
     ]);
     expect(parsed.every((result) => result.sessionId === 'ses_077870ef7ffeaZ3Asz0lQdr92M')).toBe(true);
@@ -203,6 +259,39 @@ describe('OpenCodeEventParser', () => {
       payload: { entrantId: 'opencode-1', inputTokens: 15138, outputTokens: 45, cachedInputTokens: 0, costUsd: 0.0042 },
     }]);
     expect(parsed.turnEnded).toBeUndefined();
+  });
+
+  // opencode reports input net of cache; codex counts cache reads inside input.
+  // The board compares the two lanes, so this adapter normalizes to codex's shape.
+  it('folds cache reads into the prompt total', () => {
+    const parser = new OpenCodeEventParser('opencode-1');
+    const parsed = parser.parse(JSON.stringify({
+      type: 'step_finish',
+      sessionID: 'session-cache',
+      part: {
+        reason: 'stop',
+        tokens: { total: 15226, input: 109, output: 3, reasoning: 10, cache: { write: 0, read: 15104 } },
+        cost: 0.0042,
+      },
+    }));
+
+    expect(parsed.events[0]?.payload).toMatchObject({
+      inputTokens: 15213,
+      cachedInputTokens: 15104,
+      outputTokens: 3,
+    });
+  });
+
+  it('treats a reported cost of zero as no price', () => {
+    const parser = new OpenCodeEventParser('opencode-1');
+    // Subscription and local-model logins report 0 for every step.
+    const parsed = parser.parse(JSON.stringify({
+      type: 'step_finish',
+      sessionID: 'session-free',
+      part: { reason: 'stop', tokens: { input: 400, output: 20 }, cost: 0 },
+    }));
+
+    expect(parsed.events[0]?.payload).toMatchObject({ costUsd: null });
   });
 
   it('ends an unrecognized step-finish reason without counting it as unknown', () => {

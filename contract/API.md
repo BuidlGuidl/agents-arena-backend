@@ -36,6 +36,8 @@ Each entrant carries its confirmed solves in journal order, and `flags` equals `
 
 A derived cost prices the `usage` event's `cachedInputTokens` at the model's cached rate, roughly a tenth of fresh input. Most of a codex turn is repeated context, so skipping that would overstate a turn about threefold.
 
+Every `usage` event describes one turn, and `inputTokens` is the whole prompt with `cachedInputTokens` counted inside it. The harnesses disagree upstream — codex reports a running session total that `exec resume` keeps growing, opencode reports its input net of cache reads — so the adapters normalize both to this shape before journalling.
+
 ### `POST /runs/:id/start`
 
 Prepares a new run, advances it to `ready`, and starts each entrant. A run already at `ready` starts without preparation.

@@ -18,9 +18,9 @@ describe('costForTokens', () => {
     expect(asIfAllFresh).toBe(0.18441);
   });
 
-  it('clamps cached tokens a harness reports outside its input count', () => {
-    // opencode counts cache reads alongside input rather than inside it; the
-    // clamp keeps that from pricing a negative number of fresh tokens.
+  it('clamps cached tokens reported outside the input count', () => {
+    // Adapters normalize cache reads into inputTokens; if one ever slips out of
+    // that convention the clamp prices zero fresh tokens, never a negative count.
     expect(costForTokens('gpt-5.5', 109, 3, 15_104)).toBe(costForTokens('gpt-5.5', 109, 3, 109));
   });
 

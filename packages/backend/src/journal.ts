@@ -41,7 +41,6 @@ export class EventJournal {
     type: T,
     payload: EventPayload<T>,
   ): EventOfType<T> {
-    const capped = capPayload(payload);
     const event = this.database.transaction((transaction) => {
       const sequence = transaction
         .select({ current: max(events.seq) })
@@ -52,15 +51,7 @@ export class EventJournal {
       const ts = new Date().toISOString();
       const inserted = transaction
         .insert(events)
-        .values({
-          runId,
-          source,
-          seq,
-          ts,
-          type,
-          payloadJson: JSON.stringify(capped.payload),
-          truncatedJson: capped.truncated === undefined ? null : JSON.stringify(capped.truncated),
-        })
+        .values({ runId, source, seq, ts, type, payloadJson: JSON.stringify(payload) })
         .returning({ id: events.id })
         .get();
       return {
@@ -70,8 +61,7 @@ export class EventJournal {
         seq,
         ts,
         type,
-        payload: capped.payload,
-        ...(capped.truncated === undefined ? {} : { truncated: capped.truncated }),
+        payload,
       } as EventOfType<T>;
     });
 
@@ -143,13 +133,34 @@ export class EventJournal {
   }
 }
 
-function capPayload<T extends EventType>(
-  payload: EventPayload<T>,
-): { payload: EventPayload<T>; truncated?: TruncationReceipt } {
-  const cappedPayload: Record<string, unknown> = { ...payload };
-  const truncated: TruncationReceipt = {};
-  for (const [field, value] of Object.entries(payload)) {
-    if (typeof value !== 'string' || value.length <= EVENT_TEXT_LIMIT) continue;
+// The journal retains full payloads, so wire responses cap strings separately.
+export function capEvent(event: ArenaEvent): ArenaEvent {
+  // Null-prototype so a payload key of `__proto__` records a receipt entry
+  // instead of hitting the prototype setter and being cut without one.
+  const truncated: TruncationReceipt = Object.create(null) as TruncationReceipt;
+  const payload = capValue(event.payload, '', truncated, 0) as ArenaEvent['payload'];
+  const capped = { ...event, payload } as ArenaEvent;
+  if (Object.keys(truncated).length === 0) {
+    delete capped.truncated;
+  } else {
+    capped.truncated = truncated;
+  }
+  return capped;
+}
+
+// Payloads are flat today. The bound only exists so a future nested shape
+// cannot overflow the stack on the SSE path, where a throw kills the stream.
+const MAX_CAP_DEPTH = 64;
+
+function capValue(
+  value: unknown,
+  path: string,
+  truncated: TruncationReceipt,
+  depth: number,
+): unknown {
+  if (depth > MAX_CAP_DEPTH) return value;
+  if (typeof value === 'string') {
+    if (value.length <= EVENT_TEXT_LIMIT) return value;
     const boundaryCodeUnit = value.charCodeAt(EVENT_TEXT_LIMIT - 1);
     const nextCodeUnit = value.charCodeAt(EVENT_TEXT_LIMIT);
     const truncationEnd = boundaryCodeUnit >= 0xD800
@@ -158,16 +169,34 @@ function capPayload<T extends EventType>(
       && nextCodeUnit <= 0xDFFF
       ? EVENT_TEXT_LIMIT - 1
       : EVENT_TEXT_LIMIT;
-    cappedPayload[field] = value.slice(0, truncationEnd);
-    truncated[field] = {
+    truncated[path] = {
       fullLength: value.length,
       lines: value.split('\n').length,
     };
+    return value.slice(0, truncationEnd);
   }
-  return {
-    payload: cappedPayload as EventPayload<T>,
-    ...(Object.keys(truncated).length === 0 ? {} : { truncated }),
-  };
+  if (Array.isArray(value)) {
+    return value.map((item, index) =>
+      capValue(item, joinPath(path, String(index)), truncated, depth + 1));
+  }
+  // Anything not a plain object passes through uncapped, and a key containing a
+  // dot collides with a nested path. Both need handling before a payload type
+  // gains a class instance, a `toJSON`, or a caller-supplied key.
+  if (!isPlainObject(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    capValue(item, joinPath(path, key), truncated, depth + 1),
+  ]));
+}
+
+function joinPath(parent: string, key: string): string {
+  return parent.length === 0 ? key : `${parent}.${key}`;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object') return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function toArenaEvent(row: typeof events.$inferSelect): ArenaEvent {
@@ -179,8 +208,5 @@ function toArenaEvent(row: typeof events.$inferSelect): ArenaEvent {
     ts: row.ts,
     type: row.type,
     payload: JSON.parse(row.payloadJson) as ArenaEvent['payload'],
-    ...(row.truncatedJson === null
-      ? {}
-      : { truncated: JSON.parse(row.truncatedJson) as TruncationReceipt }),
   } as ArenaEvent;
 }

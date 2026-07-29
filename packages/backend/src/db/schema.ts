@@ -61,7 +61,6 @@ export const events = sqliteTable('events', {
   ts: text('ts').notNull(),
   type: text('type', { enum: eventTypes }).notNull(),
   payloadJson: text('payload_json').notNull(),
-  truncatedJson: text('truncated_json'),
 }, (table) => [
   uniqueIndex('events_run_id_source_seq').on(table.runId, table.source, table.seq),
   index('events_run_id_id').on(table.runId, table.id),

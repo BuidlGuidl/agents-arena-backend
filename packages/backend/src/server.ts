@@ -6,7 +6,7 @@ import type { Schedule } from './adapters/fake.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
 import type { EntrantDriver } from './adapters/types.js';
 import { eventTypes } from './db/schema.js';
-import { EventJournal } from './journal.js';
+import { capEvent, EventJournal } from './journal.js';
 import {
   type FundingGate,
   EntrantNotFoundError,
@@ -178,11 +178,14 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
     // lastEventId is the live run head, so it goes only on pages we let change.
     const frozen = queryResult.data.before !== undefined
       && queryResult.data.before <= page.lastEventId + 1;
+    const cappedEvents = page.events.map(capEvent);
     reply.header(
       'Cache-Control',
       frozen ? 'public, max-age=31536000, immutable' : 'public, max-age=1',
     );
-    return frozen ? { events: page.events, hasMore: page.hasMore } : page;
+    return frozen
+      ? { events: cappedEvents, hasMore: page.hasMore }
+      : { ...page, events: cappedEvents };
   });
 
   app.addHook('onClose', async () => {
@@ -247,7 +250,7 @@ function openEventStream(
   const pending: ArenaEvent[] = [];
   const send = (event: ArenaEvent): void => {
     if (event.id <= lastSentId || reply.raw.destroyed) return;
-    reply.raw.write(`id: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`);
+    reply.raw.write(`id: ${event.id}\ndata: ${JSON.stringify(capEvent(event))}\n\n`);
     lastSentId = event.id;
   };
   const unsubscribe = journal.subscribe(runId, (event) => {
@@ -258,12 +261,6 @@ function openEventStream(
     }
   });
 
-  for (const event of journal.after(runId, afterId)) {
-    send(event);
-  }
-  replaying = false;
-  pending.sort((left, right) => left.id - right.id).forEach(send);
-
   const heartbeat = setInterval(() => {
     if (!reply.raw.destroyed) reply.raw.write(': heartbeat\n\n');
   }, 15_000);
@@ -273,6 +270,14 @@ function openEventStream(
     clearInterval(heartbeat);
     unsubscribe();
   };
+  // Registered before replay: a throw mid-replay would otherwise strand the
+  // subscriber, which keeps buffering events for a connection nobody reads.
   request.raw.once('close', cleanup);
   reply.raw.once('error', cleanup);
+
+  for (const event of journal.after(runId, afterId)) {
+    send(event);
+  }
+  replaying = false;
+  pending.sort((left, right) => left.id - right.id).forEach(send);
 }

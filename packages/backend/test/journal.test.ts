@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ArenaEvent } from '../src/contract.js';
-import { EVENT_TEXT_LIMIT, EventJournal } from '../src/journal.js';
+import { EventJournal } from '../src/journal.js';
 
 describe('EventJournal', () => {
   it('assigns global IDs and per-source sequences', () => {
@@ -206,74 +206,31 @@ describe('EventJournal', () => {
     }
   });
 
-  it('caps long payload strings and records what was truncated', () => {
+  it('stores and returns long payload strings in full', () => {
     const journal = new EventJournal(':memory:');
     try {
       const longText = `${'a'.repeat(2_000)}\n${'b'.repeat(2_000)}\nend`;
       const input = { entrantId: 'codex-1', text: longText };
-      const truncated = journal.append('run-1', 'codex-1', 'agent.message', input);
+      const appended = journal.append('run-1', 'codex-1', 'agent.message', input);
       const short = journal.append('run-1', 'codex-1', 'agent.message', {
         entrantId: 'codex-1',
         text: 'short',
       });
       const page = journal.history('run-1', { limit: 10 });
+      const after = journal.after('run-1', 0);
 
       expect(input.text).toBe(longText);
-      expect(truncated.payload.text).toBe(longText.slice(0, EVENT_TEXT_LIMIT));
-      expect(truncated.truncated).toEqual({
-        text: { fullLength: longText.length, lines: 3 },
-      });
-      expect(page.events[0]).toEqual(truncated);
-      expect(journal.after('run-1', 0)[0]).toEqual(truncated);
+      expect(appended.payload.text).toBe(longText);
+      expect(page.events[0]).toEqual(appended);
+      expect(after[0]).toEqual(appended);
+      expect((page.events[0]?.payload as { text: string }).text).toBe(longText);
+      expect((after[0]?.payload as { text: string }).text).toBe(longText);
       expect(short.payload.text).toBe('short');
+      expect('truncated' in appended).toBe(false);
       expect('truncated' in short).toBe(false);
+      expect('truncated' in after[0]!).toBe(false);
+      expect('truncated' in page.events[0]!).toBe(false);
       expect('truncated' in page.events[1]!).toBe(false);
-    } finally {
-      journal.close();
-    }
-  });
-
-  it('leaves 4,000 characters intact and caps 4,001 characters', () => {
-    const journal = new EventJournal(':memory:');
-    try {
-      const exact = journal.append('run-1', 'codex-1', 'agent.message', {
-        entrantId: 'codex-1',
-        text: 'a'.repeat(4_000),
-      });
-      const over = journal.append('run-1', 'codex-1', 'agent.message', {
-        entrantId: 'codex-1',
-        text: 'b'.repeat(4_001),
-      });
-
-      expect(exact.payload.text).toHaveLength(4_000);
-      expect('truncated' in exact).toBe(false);
-      expect(over.payload.text).toHaveLength(4_000);
-      expect(over.truncated).toEqual({
-        text: { fullLength: 4_001, lines: 1 },
-      });
-    } finally {
-      journal.close();
-    }
-  });
-
-  it('drops a whole surrogate pair at the truncation boundary', () => {
-    const journal = new EventJournal(':memory:');
-    try {
-      journal.append('run-1', 'codex-1', 'agent.message', {
-        entrantId: 'codex-1',
-        text: `${'z'.repeat(3_999)}\u{1F600}`,
-      });
-
-      const [stored] = journal.after('run-1', 0);
-      if (stored?.type !== 'agent.message') throw new Error('Expected an agent message');
-      const text = stored.payload.text;
-      const lastCodeUnit = text.charCodeAt(text.length - 1);
-
-      expect(text).toHaveLength(3_999);
-      expect(lastCodeUnit < 0xD800 || lastCodeUnit > 0xDBFF).toBe(true);
-      expect(stored.truncated).toEqual({
-        text: { fullLength: 4_001, lines: 1 },
-      });
     } finally {
       journal.close();
     }

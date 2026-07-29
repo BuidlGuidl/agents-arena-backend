@@ -40,17 +40,12 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
       seq INTEGER NOT NULL,
       ts TEXT NOT NULL,
       type TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      truncated_json TEXT
+      payload_json TEXT NOT NULL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS events_run_id_source_seq ON events (run_id, source, seq);
     CREATE INDEX IF NOT EXISTS events_run_id_id ON events (run_id, id);
     CREATE INDEX IF NOT EXISTS events_run_id_type_id ON events (run_id, type, id);
     CREATE INDEX IF NOT EXISTS events_run_id_source_id ON events (run_id, source, id);
   `);
-  const eventColumns = sqlite.pragma('table_info(events)') as { name: string }[];
-  if (!eventColumns.some((column) => column.name === 'truncated_json')) {
-    sqlite.exec('ALTER TABLE events ADD COLUMN truncated_json TEXT');
-  }
   return { database: drizzle(sqlite, { schema }), sqlite };
 }

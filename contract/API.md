@@ -62,7 +62,7 @@ Send `Last-Event-ID: 12` or `?after=12` to replay later events before live deliv
 
 Event IDs increase across all runs. Per-source `seq` values increase within each `(runId, source)` pair.
 
-Top-level payload strings are capped at 4,000 characters. The event envelope's `truncated` field records each cut field's original length and line count.
+The journal retains payloads in full. Payload strings are capped at 4,000 characters when delivered over the SSE stream or history read. The event envelope's `truncated` keys are dotted paths to capped fields and record each original length and line count.
 
 ### `GET /runs/:id/events/history`
 

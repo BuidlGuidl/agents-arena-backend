@@ -14,6 +14,8 @@ A request without it, or with a wrong token, returns status `401` and `{"error":
 
 The token comes from the `ARENA_OPERATOR_TOKEN` environment variable. The backend refuses to start when it is unset, so a deployment cannot leave the controls open by accident.
 
+**For a frontend:** keep the token on your server and proxy the control calls through it — a route handler that holds `ARENA_OPERATOR_TOKEN` in its own environment and adds the header. The browser then calls your origin under its own session and never holds the arena secret. This repo's mock frontend does it in the vite dev proxy. Putting the token in `localStorage` and sending it from the page works, but exposes it to any XSS and to anyone reading devtools over the operator's shoulder on a live stream. See ADR-0011.
+
 ## Runs
 
 ### `POST /runs`

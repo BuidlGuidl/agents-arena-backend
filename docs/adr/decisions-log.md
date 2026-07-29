@@ -169,3 +169,20 @@ the same endpoint caps `eth_getLogs` at a 10,000 block span (`-32614`). in the s
 **Consequence — the frontend contract does not move.** `recordSolve` is untouched, so the dedup key, the `score.flag` payload, and `EntrantSummary.solves` stay exactly as #3 shipped them. ordering also survives: the recovery `getLogs` returns `blockNumber` and `logIndex`, so two solves discovered in one tick are journaled in true chain order rather than poll order.
 
 **Consequence — the arena has no runtime dependency on the ai-ctf deploy.** their Ponder can be down, mid-migration, or half-indexed on race day and the board still moves. the public leaderboard and the arena board can differ transiently on latency, never on final state, since both derive from the same chain. that also keeps the ask at tomorrow's meeting small: upgrade and host Ponder for the leaderboard, build nothing for us.
+---
+
+## ADR-0011 — one shared operator token on the mutating routes; reads stay open; the backend refuses to start without it
+
+**Status:** accepted (2026-07-29) — enforces the "control endpoints are operator-only" line the PRD has carried since 2026-07-22
+
+**Decision:** create, start, stop, and steer require `Authorization: Bearer $ARENA_OPERATOR_TOKEN` — one shared secret read from the environment, no accounts, no sessions, no expiry. the snapshot and the SSE feed need no credential. the gate is **method-based**: `GET`/`HEAD`/`OPTIONS` pass, every other method is checked, so a control route added later is closed the day it lands rather than the day someone remembers to list it. the backend exits at startup when the variable is unset or empty.
+
+**Why:** one person drives a run (Austin), and the thing being protected is a process holding a Docker socket, funded burner keys, and the race itself. per-user identity buys nothing against that threat model; a shared secret in an env var is the smallest change that stops a stranger with the URL from stopping the race or steering an agent mid-stream.
+
+**Trade-off:** no identity, no audit trail of *who* acted, and no revocation short of a restart with a new value — a leaked token is handled by rotating and restarting. reads stay open, so anyone with a run id can watch the feed; that is deliberate (spectators are the product) and also forced: `EventSource` cannot set headers, so gating SSE would mean the secret in a query string, where it lands in access logs, referrers, and the browser's reconnect URL.
+
+fail-closed startup is the other trade: a deploy that forgets the variable dies loudly instead of serving open controls, and the cost is that every launcher, CI job, and local run has to set it. `operatorToken` is also a required option of `createServer`, so an unauthenticated server cannot be constructed by accident in a test or a script.
+
+**Consequence — a frontend keeps the token server-side and proxies the control calls; it does not ship it to the browser.** this repo's mock frontend does exactly that: `ARENA_OPERATOR_TOKEN` lives in the vite process, and the dev proxy adds the header to each `/runs` request, so the browser never holds the secret. the real frontend (the ai-ctf fork, BuidlGuidl/ai.ctf.buidlguidl.com#2) should do the same in a server route handler. a token typed into a field and kept in `localStorage` is the fallback, and it is exposed to any XSS on the page and to anyone reading the operator's devtools during a live stream.
+
+**Consequence:** `scripts/demo.sh` generates a token into `.demo/operator-token` (gitignored) unless the caller exports one, and hands it to the backend, the frontend proxy, and its own curl calls; `demo.sh token` prints the active one. a backend left running with an older token answers `401` to a freshly generated one — restart both sides.

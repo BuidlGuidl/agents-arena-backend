@@ -12,6 +12,7 @@ const defaultSchedule: Schedule = (task, delayMs) => setTimeout(task, delayMs);
 
 export class FakeDriver implements EntrantDriver {
   private readonly activeEntrants = new Set<string>();
+  private toolCallCount = 0;
 
   constructor(
     private readonly journal: EventJournal,
@@ -22,6 +23,7 @@ export class FakeDriver implements EntrantDriver {
 
   async start(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {
     const key = this.key(run.id, entrant.id);
+    const toolCallId = `fake-${++this.toolCallCount}`;
     this.activeEntrants.add(key);
     this.setStatus(run.id, entrant.id, 'working');
 
@@ -33,11 +35,13 @@ export class FakeDriver implements EntrantDriver {
       [50, () => this.journal.append(run.id, entrant.id, 'tool.call', {
         entrantId: entrant.id,
         tool: 'shell',
+        toolCallId,
         detail: 'inspect challenge files',
       })],
       [75, () => this.journal.append(run.id, entrant.id, 'tool.result', {
         entrantId: entrant.id,
         tool: 'shell',
+        toolCallId,
         ok: true,
         detail: 'challenge files inspected',
       })],

@@ -23,6 +23,7 @@ describe('SSE event delivery', () => {
     const missedTwo = server.journal.append(runId, 'codex-1', 'tool.call', {
       entrantId: 'codex-1',
       tool: 'shell',
+      toolCallId: 'server-tool-1',
       detail: 'missed two',
     });
 
@@ -39,6 +40,7 @@ describe('SSE event delivery', () => {
     const live = server.journal.append(runId, 'codex-1', 'tool.result', {
       entrantId: 'codex-1',
       tool: 'shell',
+      toolCallId: 'server-tool-1',
       ok: true,
       detail: 'live',
     });
@@ -74,8 +76,13 @@ describe('fake run vertical slice', () => {
 
     const beforeSteer = server.journal.after(run.id, 0);
     for (const entrantId of ['codex-1', 'opencode-1']) {
-      expect(beforeSteer.filter((event) => event.source === entrantId).map((event) => event.type))
+      const entrantEvents = beforeSteer.filter((event) => event.source === entrantId);
+      expect(entrantEvents.map((event) => event.type))
         .toEqual(['entrant.status', 'agent.message', 'tool.call', 'tool.result', 'entrant.status']);
+      const toolEvents = entrantEvents.filter((event) =>
+        event.type === 'tool.call' || event.type === 'tool.result',
+      );
+      expect(toolEvents[0]?.payload.toolCallId).toBe(toolEvents[1]?.payload.toolCallId);
     }
 
     const steerResponse = await server.app.inject({

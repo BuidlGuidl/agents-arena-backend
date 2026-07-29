@@ -1,4 +1,5 @@
 import type { ArenaEvent } from '../../../contract/arena-types';
+import type { FeedEntry } from './feed-projection';
 
 // Presentation-only classifier. Maps each ArenaEvent to a visual tone and a
 // short tag shown on the feed row. No projection logic lives here — this only
@@ -31,9 +32,9 @@ export function styleForEvent(event: ArenaEvent): EventStyle {
     case 'agent.reasoning':
       return { tone: 'reasoning', tag: 'think' };
     case 'tool.call':
-      return { tone: 'tool', tag: 'call' };
+      return { tone: 'tool', tag: 'running' };
     case 'tool.result':
-      return { tone: event.payload.ok ? 'tool' : 'tool-fail', tag: 'result' };
+      return { tone: event.payload.ok ? 'tool' : 'tool-fail', tag: event.payload.ok ? 'ok' : 'fail' };
     case 'entrant.steered':
       return { tone: 'steer', tag: 'steer' };
     case 'entrant.prompt':
@@ -53,6 +54,13 @@ export function styleForEvent(event: ArenaEvent): EventStyle {
     default:
       return { tone: 'system', tag: 'evt' };
   }
+}
+
+export function styleForEntry(entry: FeedEntry): EventStyle {
+  if (entry.event.type === 'tool.call' && entry.result?.type === 'tool.result') {
+    return styleForEvent(entry.result);
+  }
+  return styleForEvent(entry.event);
 }
 
 // Sum token usage across a lane's events. usage events carry per-emit counts, so

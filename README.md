@@ -67,6 +67,17 @@ curl -X POST http://127.0.0.1:4177/runs \
 curl -N http://127.0.0.1:4177/runs/<id>/events # SSE, no token needed
 ```
 
+The mock frontend needs the same token in its own terminal — its dev proxy adds the
+operator header, so the browser never holds the token. Without it the lanes still
+stream, but "start race" and "steer" answer `401`.
+
+```bash
+export ARENA_OPERATOR_TOKEN=<the same token>
+pnpm --filter mock-frontend dev
+```
+
+`scripts/demo.sh` does all of this for you (see [DEMO.md](DEMO.md)).
+
 Smoke one real agent, or the funding gate, without a full run:
 
 ```bash

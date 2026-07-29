@@ -61,6 +61,23 @@ describe('solve poller', () => {
       .map((event) => event.payload as unknown as ScoreEvent);
   }
 
+  function runErrors(journal: EventJournal, runId: string): { message: string }[] {
+    return journal
+      .after(runId, 0)
+      .filter((event) => event.type === 'run.error')
+      .map((event) => event.payload as unknown as { message: string });
+  }
+
+  function multicallCalls(proxy: { bodies: unknown[] }): { method: string }[] {
+    return proxy.bodies
+      .flatMap((body) => (Array.isArray(body) ? body : [body]) as { method: string; params?: unknown[] }[])
+      .filter((entry) => {
+        if (entry.method !== 'eth_call') return false;
+        const [call] = (entry.params ?? []) as [{ to?: string }];
+        return call?.to?.toLowerCase() === MULTICALL3_ADDRESS.toLowerCase();
+      });
+  }
+
   it('records nothing until the pair is confirmation-deep, then exactly one solve', async () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-confirm';
@@ -301,10 +318,7 @@ describe('solve poller', () => {
       const calls = proxy.bodies
         .flatMap((body) => (Array.isArray(body) ? body : [body]) as { method: string; params?: unknown[] }[])
         .filter((entry) => entry.method === 'eth_call');
-      const toMulticall = calls.filter((entry) => {
-        const [call] = (entry.params ?? []) as [{ to?: string }];
-        return call?.to?.toLowerCase() === MULTICALL3_ADDRESS.toLowerCase();
-      });
+      const toMulticall = multicallCalls(proxy);
 
       // Two entrants across twelve challenges is 24 reads, which the fallback path sends
       // as three batched requests. Aggregated it is one call whatever the entrant count.
@@ -333,6 +347,120 @@ describe('solve poller', () => {
       expect(await poller(journal, runId).pollOnce()).toBe(1);
       expect(scoreEvents(journal, runId).map((event) => event.challengeId)).toEqual([12]);
     } finally {
+      journal.close();
+    }
+  }, 30_000);
+
+  it('journals one run.error once polling keeps failing, and stops after recovery', async () => {
+    const journal = new EventJournal(':memory:');
+    const runId = 'run-dead-rpc';
+    try {
+      createWallet(runId, 'e1', journal.database);
+      const dead = new SolvePoller({
+        // Nothing listens here, so every tick throws the way a wrong address on base would.
+        profile: testProfile('http://127.0.0.1:1', CONFIRMATIONS, contract),
+        runId,
+        journal,
+        database: journal.database,
+        pollMs: 10,
+      });
+
+      const controller = new AbortController();
+      const loop = dead.watch(controller.signal);
+      await waitFor(() => runErrors(journal, runId).length === 1, 10_000);
+      // Well past the three-tick threshold: a repeating failure must not repeat the event.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      controller.abort();
+      await loop;
+
+      expect(runErrors(journal, runId)).toHaveLength(1);
+      expect(runErrors(journal, runId)[0]?.message).toContain('solve poll failed');
+      expect(scoreEvents(journal, runId)).toHaveLength(0);
+    } finally {
+      journal.close();
+    }
+  }, 30_000);
+
+  it('journals run.error when hasMinted is true but the mint log is out of range', async () => {
+    const journal = new EventJournal(':memory:');
+    const runId = 'run-stuck-pair';
+    try {
+      const address = createWallet(runId, 'e1', journal.database);
+      const mint = await mintFlag(anvil, contract, address, 8n);
+      await anvil.mine(CONFIRMATIONS + 2);
+
+      // Starting the search past the mint is what a >10,000 block gap looks like from
+      // inside recoverCapture: the pair reads true and no log explains it.
+      const stuck = new SolvePoller({
+        profile,
+        runId,
+        journal,
+        database: journal.database,
+        client,
+        fromBlock: mint.blockNumber + 1n,
+      });
+
+      expect(await stuck.pollOnce()).toBe(0);
+      expect(await stuck.pollOnce()).toBe(0);
+
+      const errors = runErrors(journal, runId);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]?.message).toContain('challenge 8');
+      expect(scoreEvents(journal, runId)).toHaveLength(0);
+    } finally {
+      journal.close();
+    }
+  }, 30_000);
+
+  it('retries the Multicall3 probe after a failed one instead of caching the slow path', async () => {
+    const journal = new EventJournal(':memory:');
+    const runId = 'run-probe-retry';
+    const proxy = await startRpcProxy(anvil.rpcUrl);
+    try {
+      const address = createWallet(runId, 'e1', journal.database);
+      await mintFlag(anvil, contract, address, 9n);
+
+      await withMulticall3(anvil, async () => {
+        await anvil.mine(CONFIRMATIONS + 1);
+        let blips = 1;
+        const flaky = new Proxy(
+          createPublicClient({ transport: http(proxy.url), cacheTime: 0 }),
+          {
+            get(target, property, receiver) {
+              if (property !== 'getCode') {
+                return Reflect.get(target, property, receiver) as unknown;
+              }
+              return async (args: { address: Address; blockNumber?: bigint }) => {
+                if (blips > 0) {
+                  blips -= 1;
+                  throw new Error('rpc blip');
+                }
+                return target.getCode(args);
+              };
+            },
+          },
+        ) as PublicClient;
+
+        const retrying = new SolvePoller({
+          profile: testProfile(proxy.url, CONFIRMATIONS, contract),
+          runId,
+          journal,
+          database: journal.database,
+          client: flaky,
+        });
+
+        // First tick's probe throws, so it reads pair by pair and still scores.
+        expect(await retrying.pollOnce()).toBe(1);
+        expect(multicallCalls(proxy)).toHaveLength(0);
+
+        // Second tick probes again rather than trusting the blip for the whole run.
+        await mintFlag(anvil, contract, address, 10n);
+        await anvil.mine(CONFIRMATIONS + 1);
+        expect(await retrying.pollOnce()).toBe(1);
+        expect(multicallCalls(proxy)).toHaveLength(1);
+      });
+    } finally {
+      await proxy.stop();
       journal.close();
     }
   }, 30_000);

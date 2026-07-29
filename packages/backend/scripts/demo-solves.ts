@@ -1,12 +1,20 @@
-/**
- * Throwaway end-to-end drill (not committed).
- *
- * Deploys the real ai-ctf NFTFlags / MockIdentityRegistry / Challenge1 bytecode onto a
- * fresh anvil with 1s blocks, runs the production SolvePoller at confirmations: 5, and
- * drives the real entrant path: registry.registerAgent -> Challenge1.registerAgent -> mint.
- */
+// Solve-poller drill against the real CTF contracts (ADR-0010).
+//
+// Deploys the ai-ctf NFTFlags / MockIdentityRegistry / Challenge1 bytecode onto a
+// throwaway anvil with 1s blocks, then runs the real SolvePoller against it while
+// driving the entrant path an agent takes: registry.registerAgent, then
+// Challenge1.registerAgent, which mints flag 1.
+//
+// The confirmation depth defaults to 5, base's, because the local chain profile
+// ships at 1 and the head - confirmations path otherwise never runs. The drill
+// fails if a solve is journaled before that depth has passed.
+//
+//   AI_CTF_REPO=~/src/ai.ctf.buidlguidl.com tsx scripts/demo-solves.ts [confirmations=5]
+//
+// Needs anvil on PATH and a built ai-ctf checkout (`yarn compile` there once).
+// It starts and stops its own chain, so it does not touch a running demo.
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 import {
@@ -24,13 +32,24 @@ import { SolvePoller } from '../src/chain/solve-poller.js';
 import { createWallet, getWallet } from '../src/chain/wallet.js';
 import { EventJournal } from '../src/journal.js';
 
-const CONFIRMATIONS = 5;
+const CONFIRMATIONS = Number(process.argv[2] ?? 5);
 const RPC_URL = 'http://127.0.0.1:8599';
 const DEV_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80' as const;
-const ARTIFACTS = `${homedir()}/Desktop/github/ai.ctf.buidlguidl.com/packages/hardhat/artifacts/contracts`;
+
+const chainRepo = process.env.AI_CTF_REPO;
+if (chainRepo === undefined || chainRepo.trim() === '') {
+  console.error('Set AI_CTF_REPO to your local ai-ctf checkout (see DEMO.md).');
+  process.exit(2);
+}
+const ARTIFACTS = `${chainRepo.replace(/^~/, homedir())}/packages/hardhat/artifacts/contracts`;
 
 function artifact(name: string): { abi: readonly unknown[]; bytecode: Hex } {
-  const raw = JSON.parse(readFileSync(`${ARTIFACTS}/${name}.sol/${name}.json`, 'utf8'));
+  const path = `${ARTIFACTS}/${name}.sol/${name}.json`;
+  if (!existsSync(path)) {
+    console.error(`No artifact at ${path}. Run \`yarn compile\` in ${chainRepo} first.`);
+    process.exit(2);
+  }
+  const raw = JSON.parse(readFileSync(path, 'utf8'));
   return { abi: raw.abi, bytecode: raw.bytecode };
 }
 

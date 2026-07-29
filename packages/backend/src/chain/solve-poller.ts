@@ -24,6 +24,8 @@ export const CHALLENGE_IDS: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 
 // Base produces a block every two seconds, so polling faster only buys duplicate reads.
 const DEFAULT_POLL_MS = 3_000;
 const MAX_BACKOFF_MS = 30_000;
+// Three ticks of tolerance, so a single flaky response stays out of the run's event feed.
+const FAILURES_BEFORE_REPORT = 3;
 
 // mainnet.base.org rejects a JSON-RPC batch of 11 or more with -32014, and rejects an
 // eth_getLogs span wider than 10,000 blocks with -32614. Both were measured against the
@@ -80,6 +82,7 @@ export class SolvePoller {
   private readonly pollMs: number;
   private searchFrom: bigint;
   private aggregated: Promise<boolean> | null = null;
+  private readonly reported = new Set<string>();
 
   constructor(private readonly options: SolvePollerOptions) {
     this.database = options.database ?? options.journal.database;
@@ -148,6 +151,19 @@ export class SolvePoller {
     // no later search would ever look at that block again.
     if (recovered.length === solved.length && written === recovered.length) {
       this.searchFrom = confirmedBlock + 1n;
+      this.clearReport('unrecovered');
+    } else {
+      // Holding searchFrom keeps retrying this pair every tick, and the retry only helps
+      // if the log is inside the span. When it is not, the loop is permanent and silent,
+      // so say so once rather than let the board hide a solve that already happened.
+      const stuck = solved.filter((pair) => !recovered.some((capture) =>
+        capture.entrantId === pair.entrantId && capture.challengeId === pair.challengeId));
+      this.reportOnce(
+        'unrecovered',
+        `hasMinted is true but no FlagMinted log was found for ${stuck
+          .map((pair) => `${pair.entrantId}/challenge ${pair.challengeId}`)
+          .join(', ')}`,
+      );
     }
     return written;
   }
@@ -161,9 +177,15 @@ export class SolvePoller {
       try {
         await this.pollOnce(signal);
         failures = 0;
-      } catch {
+        this.clearReport('poll');
+      } catch (error) {
         failures += 1;
         delayMs = Math.min(MAX_BACKOFF_MS, Math.max(10, this.pollMs) * 2 ** Math.min(failures - 1, 10));
+        // Backing off quietly forever is the worst outcome here: a wrong nftFlags address
+        // on base throws every tick, and the board would sit at zero with nothing to read.
+        if (failures >= FAILURES_BEFORE_REPORT) {
+          this.reportOnce('poll', `solve poll failed ${failures} times in a row: ${describe(error)}`);
+        }
       }
       if (!(await sleep(delayMs, signal))) {
         return;
@@ -232,14 +254,33 @@ export class SolvePoller {
     return results.map((result) => result.status === 'success' && result.result === true);
   }
 
-  // Cached for the poller's life: a chain does not gain or lose Multicall3 mid-run, and
-  // this would otherwise be an extra request on every tick.
+  // Cached once answered: a chain does not gain or lose Multicall3 mid-run, and this
+  // would otherwise be an extra request on every tick. Only an answer is cached, though.
+  // Caching a failed probe would let one bad response hold a base run on the batched
+  // path for its whole length, which is three times the requests and nothing to show why.
   private hasMulticall(): Promise<boolean> {
     this.aggregated ??= this.client
       .getCode({ address: MULTICALL3_ADDRESS })
       .then((code) => code !== undefined && code !== '0x')
-      .catch(() => false);
+      .catch(() => {
+        this.aggregated = null;
+        return false;
+      });
     return this.aggregated;
+  }
+
+  // At most one report per reason per poller, so a failure that repeats every 3s for an
+  // hour is one event and not 1,200. Clearing on recovery lets a later relapse speak up.
+  private reportOnce(reason: string, message: string): void {
+    if (this.reported.has(reason)) {
+      return;
+    }
+    this.reported.add(reason);
+    this.options.journal.append(this.options.runId, 'chain:flags', 'run.error', { message });
+  }
+
+  private clearReport(reason: string): void {
+    this.reported.delete(reason);
   }
 
   private async hasMinted(pair: Pair, blockNumber: bigint): Promise<boolean> {
@@ -331,14 +372,16 @@ export function createSolveWatch(journal: EventJournal, profileName?: string): S
     if (run.preset !== 'docker-duel') {
       return;
     }
-    // Nothing awaits this loop, so an escaped rejection would take down the server
-    // process. A dead poller means a frozen board, which the operator has to see.
-    new SolvePoller({ profile, runId: run.id, journal }).watch(signal).catch((error: unknown) => {
-      journal.append(run.id, 'chain:flags', 'run.error', {
-        message: `solve poller stopped: ${error instanceof Error ? error.message : String(error)}`,
-      });
-    });
+    // watch() reports its own poll failures through the journal and does not reject on
+    // them, so getting here means the journal write itself threw. There is nowhere left
+    // to record that, and nothing awaits this loop, so the choice is swallow it or let an
+    // unhandled rejection take the server down mid-race.
+    new SolvePoller({ profile, runId: run.id, journal }).watch(signal).catch(() => {});
   };
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function pairKey(address: string, challengeId: number): string {

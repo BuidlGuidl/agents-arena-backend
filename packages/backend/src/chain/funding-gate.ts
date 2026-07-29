@@ -125,7 +125,13 @@ async function fundLocalEntrants(
     await publicClient.waitForTransactionReceipt({ hash });
   }
 
-  await (walletClient as unknown as LocalMiningClient).request({ method: 'evm_mine', params: [] });
+  // The local chain only mines when something transacts, and awaitFunding reads the
+  // balance at head - confirmations. One block past the last transfer is enough for a
+  // depth of 1 and nothing else, so a deeper local profile has to be mined up to.
+  const mining = walletClient as unknown as LocalMiningClient;
+  for (let block = 0; block < Math.max(1, profile.confirmations); block += 1) {
+    await mining.request({ method: 'evm_mine', params: [] });
+  }
 }
 
 interface LocalMiningClient {

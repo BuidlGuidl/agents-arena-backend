@@ -102,6 +102,7 @@ Keys are dropped at teardown and never enter SQLite. The funder can re-sign the 
 | POST | `/runs/:id/seed` | submit the funder's seed signature while the run awaits it |
 | POST | `/runs/:id/stop` | stop and tear down |
 | POST | `/runs/:id/entrants/:eid/steer` | inject a turn into one live agent |
+| POST | `/runs/:id/broadcast` | inject one director message into every live agent |
 | GET | `/runs/:id` | snapshot: state, entrants, addresses, scores, last event id |
 | GET | `/runs/:id/events` | replayable SSE feed |
 

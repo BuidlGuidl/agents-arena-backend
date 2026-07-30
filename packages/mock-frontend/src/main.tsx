@@ -2,7 +2,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { ArenaEvent, EntrantSolve, EntrantSummary, RunSnapshot, RunState } from '../../../contract/arena-types';
+import type {
+  ArenaEvent,
+  BroadcastResponse,
+  EntrantSolve,
+  EntrantSummary,
+  RunSnapshot,
+  RunState,
+} from '../../../contract/arena-types';
 import { projectSnapshot } from './project-snapshot';
 import {
   deriveLaneWallet,
@@ -177,6 +184,13 @@ function App() {
         </section>
       )}
 
+      {run !== null ? (
+        <>
+          <h2 className="section-head">director</h2>
+          <BroadcastRow key={run.id} runId={run.id} />
+        </>
+      ) : null}
+
       <h2 className="section-head">run log</h2>
       <ul className={`run-log${runLog.length === 0 ? ' empty' : ''}`} data-testid="run-log">
         {runLog.length === 0
@@ -199,6 +213,49 @@ function leadLabel(entrants: EntrantSummary[]): string {
   const leader = a.flags > b.flags ? a : b;
   const margin = Math.abs(a.flags - b.flags);
   return `${leader.id} leads by ${margin}`;
+}
+
+// One message to the whole arena. The broadcast event itself arrives over SSE and
+// renders in the run log below, so this only reports who took the turn — a lane
+// that could not be reached is named here and nowhere else.
+function BroadcastRow({ runId }: { runId: string }) {
+  const [text, setText] = useState('');
+  const broadcast = useMutation({
+    mutationFn: async (message: string) => fetchJson<BroadcastResponse>(`/runs/${runId}/broadcast`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: message }),
+    }),
+    onSuccess: () => setText(''),
+  });
+  const result = broadcast.data;
+
+  return (
+    <div>
+      <div className="steer-row">
+        <input
+          className="steer"
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          placeholder="say something to every live agent at once"
+        />
+        <button
+          className="btn steer-btn"
+          disabled={text.length === 0 || broadcast.isPending}
+          onClick={() => broadcast.mutate(text)}
+        >
+          {broadcast.isPending ? 'sending…' : 'broadcast'}
+        </button>
+      </div>
+      {broadcast.error instanceof Error ? <p className="error-line">{broadcast.error.message}</p> : null}
+      {result !== undefined ? (
+        <p className="broadcast-result" data-testid="broadcast-result">
+          sent to {result.delivered.length > 0 ? result.delivered.join(', ') : 'nobody'}
+          {result.failed.map((entry) => ` · ${entry.entrantId} missed it (${entry.message})`).join('')}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 function FeedRow({ event }: { event: ArenaEvent }) {

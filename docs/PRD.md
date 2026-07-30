@@ -49,7 +49,8 @@ TypeScript on Node, Fastify (HTTP + SSE), `dockerode` (containers), `viem` (chai
 | `POST /runs/:id/start` | begin the signature, preparation, and funding flow; release a ready run |
 | `POST /runs/:id/seed` | accept the funder's EIP-191 seed signature while the run is in `awaiting_signature` |
 | `POST /runs/:id/stop` | stop and clean up |
-| `POST /runs/:id/entrants/:eid/steer` | inject an Austin steer turn into one entrant (or a run-level variant for both) |
+| `POST /runs/:id/entrants/:eid/steer` | inject an Austin steer turn into one entrant |
+| `POST /runs/:id/broadcast` | fan one director message into every live entrant, recorded once on the feed |
 | `GET /runs/:id` | snapshot: state, entrants, addresses, scores, last event id |
 | `GET /runs/:id/events` | replayable SSE feed for the whole run |
 

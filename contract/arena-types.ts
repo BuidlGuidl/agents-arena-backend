@@ -63,6 +63,7 @@ export type ArenaEvent =
   | (ArenaEventBase & { type: 'entrant.steered'; payload: { entrantId: string; text: string } })
   | (ArenaEventBase & { type: 'entrant.prompt'; payload: { entrantId: string; text: string } })
   | (ArenaEventBase & { type: 'entrant.nudged'; payload: { entrantId: string; text: string; flags: number } })
+  | (ArenaEventBase & { type: 'director.broadcast'; payload: { text: string; targetEntrantIds: string[] } })
   | (ArenaEventBase & { type: 'wallet.assigned'; payload: { entrantId: string; address: string } })
   | (ArenaEventBase & { type: 'funding.balance'; payload: { entrantId: string; address: string; wei: string; funded: boolean } })
   | (ArenaEventBase & { type: 'score.flag'; payload: { entrantId: string; challengeId: number; txHash: string; tokenId: string } })
@@ -105,4 +106,16 @@ export interface CreateRunResponse {
 
 export interface SteerRequest {
   text: string;
+}
+
+export interface BroadcastRequest {
+  text: string;
+}
+
+// One entrant failing to take the message does not fail the broadcast, so the
+// response names both sides: who received the turn and who could not.
+export interface BroadcastResponse {
+  accepted: boolean;
+  delivered: string[];
+  failed: { entrantId: string; message: string }[];
 }

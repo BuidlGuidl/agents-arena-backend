@@ -511,6 +511,34 @@ sequenceDiagram
       <li>RunManager writes those addresses to <code>entrants.address</code> in one transaction, then appends one <code>wallet.assigned</code> per entrant. If either write throws, it drops the run's keys and fails the seed.</li>
     </ul>
 
+    <p>Here is one real run of that derivation: the local profile, <code>runId</code> "1", and the local dev funder — anvil account&nbsp;0. That account's private key is printed in every anvil banner, so the burner keys below are public arithmetic and guard nothing. They are here to show the shape.</p>
+
+    <p class="eg-label">the message the funder signs</p>
+    <pre class="eg-code">agents-arena seed v1
+run: 1</pre>
+
+    <p class="eg-label">the signature that comes back — one 65-byte string, r ‖ s ‖ v</p>
+    <pre class="eg-code">0x a5a56be28f9d244409d14a074112c46591dca81bdb85140892f6ae83cb1f99e6  <span class="jk">r</span>
+   7c8842e3f4be2e4a31f416521e7b418a95d2c06f4cfd33d4e3d94f9d39949c22  <span class="jk">s</span>
+   1b                                                                <span class="jk">v = 27, so already canonical</span></pre>
+
+    <p class="eg-label">the two keys that fall out of it</p>
+    <pre class="eg-code"><span class="jk">codex-1</span>
+  key      <span class="jv">0x9e30862148d3d08073d0f4fcb2879ae6b77a44775914d26c55736097dd355a49</span>
+  address  <span class="jv">0x3189838a5dD1dAE2dbAE85cd945e558c98F6Ef3F</span>
+
+<span class="jk">opencode-1</span>
+  key      <span class="jv">0xf081f77901235ae551738e804e72b43e6e97a07a155b85563eece8a26f108b01</span>
+  address  <span class="jv">0x62F16E026500757A6F4dDF42acdD94AbDfF1ad0C</span></pre>
+
+    <ul class="facts">
+      <li><code>recoverMessageAddress</code> over that message and signature returns <code>0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266</code>, which is the local profile's <code>funderAddress</code>, so the seed is accepted. Any other signer recovers to some other address and gets a 403.</li>
+      <li>The two addresses go to <code>entrants.address</code> in SQLite. The two keys go only to the in-memory vault, and from there to each container's <code>WALLET_PRIVATE_KEY</code>.</li>
+      <li>Signing that same message again returns byte-identical output — the nonce comes from the key and the message, not from randomness (RFC&nbsp;6979). That is why re-signing next week re-derives these same two wallets and recovers whatever ETH is left in them.</li>
+      <li>The run id never enters the hash. It reaches the keys only through the message the funder signed, which is where run-uniqueness comes from.</li>
+      <li>A keccak256 output works as a secp256k1 private key for a dull reason: a private key is only a 256-bit number below the curve order, and a hash hands you 256 high-entropy bits.</li>
+    </ul>
+
     <h3>What the run emits while it waits</h3>
     <table class="map">
       <thead><tr><th>Event</th><th>Source</th><th>Payload</th><th>Written by</th></tr></thead>

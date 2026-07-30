@@ -5,7 +5,8 @@ import type { ArenaEvent, CreateRunRequest } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
 import type { EntrantDriver } from './adapters/types.js';
-import { EventJournal } from './journal.js';
+import { eventTypes } from './db/schema.js';
+import { capEvent, EventJournal } from './journal.js';
 import {
   type FundingGate,
   EntrantNotFoundError,
@@ -26,6 +27,16 @@ const createRunSchema = z.object({
 
 const steerSchema = z.object({ text: z.string().min(1) }).strict();
 const eventsQuerySchema = z.object({ after: z.coerce.number().int().nonnegative().optional() });
+const decimalIntegerSchema = z.string()
+  .regex(/^\d+$/)
+  .transform(Number)
+  .refine(Number.isSafeInteger);
+const historyQuerySchema = z.object({
+  limit: decimalIntegerSchema.pipe(z.number().int().min(1).max(200)).default('50'),
+  before: decimalIntegerSchema.pipe(z.number().int().min(1)).optional(),
+  types: z.string().optional(),
+  source: z.string().optional(),
+}).strict();
 
 export interface ServerOptions {
   dbPath?: string;
@@ -127,6 +138,64 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
     openEventStream(request, reply, journal, id, afterId);
   });
 
+  app.get('/runs/:id/events/history', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!manager.hasRun(id)) {
+      throw new RunNotFoundError(`Run not found: ${id}`);
+    }
+    const queryResult = historyQuerySchema.safeParse(request.query);
+    if (!queryResult.success) {
+      const issue = queryResult.error.issues[0];
+      if (issue?.code === 'unrecognized_keys') {
+        const label = issue.keys.length === 1 ? 'parameter' : 'parameters';
+        return reply.status(400).send({
+          error: `Unknown query ${label}: ${issue.keys.join(', ')}`,
+        });
+      }
+      const field = issue?.path[0] ?? 'history';
+      const received = (request.query as Record<string, unknown>)[String(field)];
+      return reply.status(400).send({
+        error: typeof received === 'string'
+          ? `Invalid ${String(field)} query value: ${clip(received)}`
+          : `Invalid ${String(field)} query value`,
+      });
+    }
+    const typesResult = parseCsv(queryResult.data.types, 'types');
+    if (!typesResult.ok) {
+      return reply.status(400).send({ error: typesResult.error });
+    }
+    const sourceResult = parseCsv(queryResult.data.source, 'source');
+    if (!sourceResult.ok) {
+      return reply.status(400).send({ error: sourceResult.error });
+    }
+    const invalidType = typesResult.values?.find((type) => !eventTypes.includes(
+      type as (typeof eventTypes)[number],
+    ));
+    if (invalidType !== undefined) {
+      return reply.status(400).send({ error: `Unknown event type: ${invalidType}` });
+    }
+    const page = journal.history(id, {
+      limit: queryResult.data.limit,
+      ...(queryResult.data.before === undefined ? {} : { before: queryResult.data.before }),
+      ...(typesResult.values === undefined
+        ? {}
+        : { types: typesResult.values as ArenaEvent['type'][] }),
+      ...(sourceResult.values === undefined ? {} : { sources: sourceResult.values }),
+    });
+    // Every id below `before` already exists, so the page can never gain rows.
+    // lastEventId is the live run head, so it goes only on pages we let change.
+    const frozen = queryResult.data.before !== undefined
+      && queryResult.data.before <= page.lastEventId + 1;
+    const cappedEvents = page.events.map(capEvent);
+    reply.header(
+      'Cache-Control',
+      frozen ? 'public, max-age=31536000, immutable' : 'public, max-age=1',
+    );
+    return frozen
+      ? { events: cappedEvents, hasMore: page.hasMore }
+      : { ...page, events: cappedEvents };
+  });
+
   app.addHook('onClose', async () => {
     journal.close();
   });
@@ -151,6 +220,23 @@ function parseLastEventId(value: string | string[] | undefined): { ok: true; val
   return Number.isSafeInteger(parsed) ? { ok: true, value: parsed } : { ok: false };
 }
 
+// Error messages echo what the caller sent, so bound it.
+function clip(value: string): string {
+  return value.length <= 40 ? value : `${value.slice(0, 40)}…`;
+}
+
+function parseCsv(
+  value: string | undefined,
+  field: 'types' | 'source',
+): { ok: true; values?: string[] } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true };
+  const values = value.split(',');
+  if (values.some((item) => item.length === 0)) {
+    return { ok: false, error: `Invalid ${field} query value: empty CSV item` };
+  }
+  return { ok: true, values };
+}
+
 function openEventStream(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -172,7 +258,7 @@ function openEventStream(
   const pending: ArenaEvent[] = [];
   const send = (event: ArenaEvent): void => {
     if (event.id <= lastSentId || reply.raw.destroyed) return;
-    reply.raw.write(`id: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`);
+    reply.raw.write(`id: ${event.id}\ndata: ${JSON.stringify(capEvent(event))}\n\n`);
     lastSentId = event.id;
   };
   const unsubscribe = journal.subscribe(runId, (event) => {
@@ -183,12 +269,6 @@ function openEventStream(
     }
   });
 
-  for (const event of journal.after(runId, afterId)) {
-    send(event);
-  }
-  replaying = false;
-  pending.sort((left, right) => left.id - right.id).forEach(send);
-
   const heartbeat = setInterval(() => {
     if (!reply.raw.destroyed) reply.raw.write(': heartbeat\n\n');
   }, 15_000);
@@ -198,6 +278,14 @@ function openEventStream(
     clearInterval(heartbeat);
     unsubscribe();
   };
+  // Registered before replay: a throw mid-replay would otherwise strand the
+  // subscriber, which keeps buffering events for a connection nobody reads.
   request.raw.once('close', cleanup);
   reply.raw.once('error', cleanup);
+
+  for (const event of journal.after(runId, afterId)) {
+    send(event);
+  }
+  replaying = false;
+  pending.sort((left, right) => left.id - right.id).forEach(send);
 }

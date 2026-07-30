@@ -18,7 +18,6 @@ export interface CodexDriverOptions extends HarnessDriverOptions {
 
 export class CodexDriver extends HarnessEntrantDriver {
   private readonly authPath: string;
-  private readonly parsers = new Map<string, CodexEventParser>();
 
   constructor(journal: EventJournal, options: CodexDriverOptions = {}) {
     super(journal, options);
@@ -105,13 +104,8 @@ export class CodexDriver extends HarnessEntrantDriver {
     ];
   }
 
-  protected parseLine(entrantId: string, line: string) {
-    let parser = this.parsers.get(entrantId);
-    if (parser === undefined) {
-      parser = new CodexEventParser(entrantId, this.logger);
-      this.parsers.set(entrantId, parser);
-    }
-    return parser.parse(line);
+  protected createParser(entrant: EntrantRecord): CodexEventParser {
+    return new CodexEventParser(entrant.id, this.logger);
   }
 
   protected validateResumeSession(): boolean {

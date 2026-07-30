@@ -26,6 +26,11 @@ export interface EntrantSummary {
   status: EntrantStatus;
   flags: number;
   solves: EntrantSolve[];
+  inputTokens: number;
+  outputTokens: number;
+  // USD across the turns that carried a cost; null when none did. Display only —
+  // harnesses on a subscription login report tokens without a price.
+  costUsd: number | null;
 }
 
 export interface RunSnapshot {
@@ -44,6 +49,7 @@ export interface ArenaEventBase {
   source: string;
   seq: number;
   ts: string;
+  truncated?: Record<string, { fullLength: number; lines: number }>;
 }
 
 export type ArenaEvent =
@@ -61,7 +67,30 @@ export type ArenaEvent =
   | (ArenaEventBase & { type: 'score.flag'; payload: { entrantId: string; challengeId: number; txHash: string; tokenId: string } })
   | (ArenaEventBase & { type: 'entrant.error'; payload: { entrantId: string; message: string } })
   | (ArenaEventBase & { type: 'run.error'; payload: { message: string } })
-  | (ArenaEventBase & { type: 'usage'; payload: { entrantId: string; inputTokens: number; outputTokens: number } });
+  // Tokens count only what this event covers — codex emits one per turn, opencode
+  // one per step, so events are not turns. inputTokens is the whole prompt, with
+  // cachedInputTokens, the part served from cache, counted inside it. Harnesses
+  // disagree on both points upstream (codex reports a running session total,
+  // opencode reports its input net of cache), so the adapters normalize to this
+  // shape. Cached tokens bill cheaper, which is why cost needs them broken out.
+  | (ArenaEventBase & {
+    type: 'usage';
+    payload: {
+      entrantId: string;
+      inputTokens: number;
+      outputTokens: number;
+      cachedInputTokens: number;
+      costUsd: number | null;
+    };
+  });
+
+export interface HistoryPage {
+  events: ArenaEvent[];
+  hasMore: boolean;
+  // Absent on immutable pages, whose bodies must never change. Read the SSE
+  // resume cursor from a page without `before`.
+  lastEventId?: number;
+}
 
 export interface CreateRunRequest {
   preset: string;

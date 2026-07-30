@@ -143,6 +143,65 @@ describe('RunManager snapshot solves', () => {
   });
 });
 
+describe('RunManager snapshot usage', () => {
+  it('totals tokens and cost per entrant from usage events', async () => {
+    const { journal, manager, runId } = await createManager();
+    try {
+      journal.append(runId, 'codex-1', 'usage', {
+        entrantId: 'codex-1', inputTokens: 100, outputTokens: 10, cachedInputTokens: 0, costUsd: 0.0125,
+      });
+      journal.append(runId, 'codex-1', 'usage', {
+        entrantId: 'codex-1', inputTokens: 250, outputTokens: 40, cachedInputTokens: 0, costUsd: 0.0075,
+      });
+      journal.append(runId, 'opencode-1', 'usage', {
+        entrantId: 'opencode-1', inputTokens: 900, outputTokens: 12, cachedInputTokens: 0, costUsd: null,
+      });
+
+      const { entrants } = manager.snapshot(runId);
+      const codex = entrants.find((entrant) => entrant.id === 'codex-1');
+      const opencode = entrants.find((entrant) => entrant.id === 'opencode-1');
+
+      expect(codex).toMatchObject({ inputTokens: 350, outputTokens: 50, costUsd: 0.02 });
+      // Every turn was unpriced, so cost stays unknown instead of reading $0.
+      expect(opencode).toMatchObject({ inputTokens: 900, outputTokens: 12, costUsd: null });
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('keeps totals across a reload and counts only priced turns in cost', async () => {
+    const { journal, manager, runId } = await createManager();
+    try {
+      journal.append(runId, 'codex-1', 'usage', {
+        entrantId: 'codex-1', inputTokens: 100, outputTokens: 10, cachedInputTokens: 0, costUsd: null,
+      });
+      journal.append(runId, 'codex-1', 'usage', {
+        entrantId: 'codex-1', inputTokens: 100, outputTokens: 10, cachedInputTokens: 0, costUsd: 0.001,
+      });
+
+      const first = manager.snapshot(runId).entrants.find((entrant) => entrant.id === 'codex-1');
+      // A second read is what a browser refresh does: same journal, same totals.
+      const second = manager.snapshot(runId).entrants.find((entrant) => entrant.id === 'codex-1');
+
+      expect(first).toMatchObject({ inputTokens: 200, outputTokens: 20, costUsd: 0.001 });
+      expect(second).toEqual(first);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('reports zero tokens and no cost before any usage event', async () => {
+    const { journal, manager, runId } = await createManager();
+    try {
+      for (const entrant of manager.snapshot(runId).entrants) {
+        expect(entrant).toMatchObject({ inputTokens: 0, outputTokens: 0, costUsd: null });
+      }
+    } finally {
+      journal.close();
+    }
+  });
+});
+
 describe('RunManager idempotency', () => {
   it('returns one run for repeated idempotency keys', async () => {
     const journal = new EventJournal(':memory:');

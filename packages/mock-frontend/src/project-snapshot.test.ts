@@ -16,6 +16,9 @@ const snapshot: RunSnapshot = {
       status: 'idle',
       flags: 0,
       solves: [],
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: null,
     },
   ],
   startedAt: null,
@@ -64,6 +67,40 @@ describe('projectSnapshot', () => {
     };
 
     expect(projectSnapshot(snapshot, replayed)).toBe(snapshot);
+  });
+
+  it('adds usage events to the entrant totals', () => {
+    const priced: ArenaEvent = {
+      id: 5,
+      runId: 'run-1',
+      source: 'codex-1',
+      seq: 2,
+      ts: '2026-07-22T00:00:03.000Z',
+      type: 'usage',
+      payload: { entrantId: 'codex-1', inputTokens: 100, outputTokens: 10, cachedInputTokens: 60, costUsd: 0.002 },
+    };
+    const unpriced: ArenaEvent = { ...priced, id: 6, seq: 3, payload: { ...priced.payload, costUsd: null } };
+
+    const once = projectSnapshot(snapshot, priced);
+    const twice = projectSnapshot(once, unpriced);
+
+    expect(once?.entrants[0]).toMatchObject({ inputTokens: 100, outputTokens: 10, costUsd: 0.002 });
+    // The unpriced turn still adds tokens; cost holds at what the priced turn cost.
+    expect(twice?.entrants[0]).toMatchObject({ inputTokens: 200, outputTokens: 20, costUsd: 0.002 });
+  });
+
+  it('leaves cost null while every usage event is unpriced', () => {
+    const event: ArenaEvent = {
+      id: 5,
+      runId: 'run-1',
+      source: 'codex-1',
+      seq: 2,
+      ts: '2026-07-22T00:00:03.000Z',
+      type: 'usage',
+      payload: { entrantId: 'codex-1', inputTokens: 100, outputTokens: 10, cachedInputTokens: 60, costUsd: null },
+    };
+
+    expect(projectSnapshot(snapshot, event)?.entrants[0]).toMatchObject({ inputTokens: 100, costUsd: null });
   });
 
   it('projects score.flag events into flags and solves', () => {

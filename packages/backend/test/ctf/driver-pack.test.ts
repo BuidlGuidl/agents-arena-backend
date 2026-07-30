@@ -4,7 +4,7 @@ import {
   HarnessEntrantDriver,
   type HarnessDriverOptions,
 } from '../../src/adapters/harness-driver.js';
-import type { ParsedHarnessLine } from '../../src/adapters/parser-types.js';
+import type { HarnessLineParser, ParsedHarnessLine } from '../../src/adapters/parser-types.js';
 import type { EntrantRecord, RunRecord } from '../../src/adapters/types.js';
 import { EventJournal } from '../../src/journal.js';
 import type {
@@ -51,8 +51,8 @@ class TestHarnessDriver extends HarnessEntrantDriver {
     return ['test', sessionId, text];
   }
 
-  protected parseLine(_entrantId: string, _line: string): ParsedHarnessLine {
-    return { events: [] };
+  protected createParser(): HarnessLineParser {
+    return { parse: (): ParsedHarnessLine => ({ events: [] }) };
   }
 }
 

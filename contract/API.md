@@ -4,7 +4,7 @@ The backend listens on `PORT`, or port `4177` when `PORT` is unset. JSON request
 
 ## Operator auth
 
-Every mutating route (create, start, stop, steer) requires the shared operator token:
+Every mutating route (create, start, stop, steer, broadcast) requires the shared operator token:
 
 ```text
 Authorization: Bearer <ARENA_OPERATOR_TOKEN>

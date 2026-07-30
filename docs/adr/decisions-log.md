@@ -176,7 +176,7 @@ the same endpoint caps `eth_getLogs` at a 10,000 block span (`-32614`). in the s
 
 **Status:** accepted (2026-07-29) — enforces the "control endpoints are operator-only" line the PRD has carried since 2026-07-22
 
-**Decision:** create, start, stop, and steer require `Authorization: Bearer $ARENA_OPERATOR_TOKEN` — one shared secret read from the environment, no accounts, no sessions, no expiry. the snapshot and the SSE feed need no credential. the gate is **method-based**: `GET`/`HEAD`/`OPTIONS` pass, every other method is checked, so a control route added later is closed the day it lands rather than the day someone remembers to list it. the backend exits at startup when the variable is unset or empty.
+**Decision:** create, start, stop, steer, and broadcast require `Authorization: Bearer $ARENA_OPERATOR_TOKEN` — one shared secret read from the environment, no accounts, no sessions, no expiry. the snapshot and the SSE feed need no credential. the gate is **method-based**: `GET`/`HEAD`/`OPTIONS` pass, every other method is checked, so a control route added later is closed the day it lands rather than the day someone remembers to list it. the backend exits at startup when the variable is unset or empty.
 
 **Why:** one person drives a run (Austin), and the thing being protected is a process holding a Docker socket, funded burner keys, and the race itself. per-user identity buys nothing against that threat model; a shared secret in an env var is the smallest change that stops a stranger with the URL from stopping the race or steering an agent mid-stream.
 

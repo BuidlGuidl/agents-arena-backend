@@ -76,3 +76,9 @@ export function getChainProfile(name: string): ChainProfile {
   }
   return profile;
 }
+
+// One process serves one chain, so the environment is read once here rather than
+// at each of the prompt builder, funding gate, container driver, and solve poller.
+export const activeChainProfile: ChainProfile = getChainProfile(
+  process.env.ARENA_CHAIN_PROFILE ?? 'local',
+);

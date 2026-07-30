@@ -11,7 +11,6 @@ const entrant: EntrantRecord = {
   model: 'gpt-5.5',
   address: null,
   status: 'idle',
-  flags: 0,
 };
 
 describe('buildOpeningPrompt', () => {

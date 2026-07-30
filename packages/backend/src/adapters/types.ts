@@ -16,7 +16,6 @@ export interface EntrantRecord {
   model: string;
   address: string | null;
   status: EntrantStatus;
-  flags: number;
 }
 
 export interface EntrantDriver {

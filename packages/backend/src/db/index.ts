@@ -29,7 +29,6 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
       model TEXT NOT NULL,
       address TEXT,
       status TEXT NOT NULL,
-      flags INTEGER NOT NULL DEFAULT 0,
       FOREIGN KEY (run_id) REFERENCES runs(id)
     );
     CREATE UNIQUE INDEX IF NOT EXISTS entrants_run_id_id ON entrants (run_id, id);

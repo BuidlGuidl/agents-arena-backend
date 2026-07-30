@@ -221,6 +221,94 @@ describe('RunManager idempotency', () => {
   });
 });
 
+describe('RunManager solve watch', () => {
+  function watchedManager() {
+    const journal = new EventJournal(':memory:');
+    const order: string[] = [];
+    const signals: AbortSignal[] = [];
+    const driver: EntrantDriver = {
+      ...noopDriver,
+      async start() {
+        order.push('entrant-start');
+      },
+    };
+    const manager = new RunManager(
+      journal,
+      driver,
+      async () => {
+        order.push('funding');
+      },
+      {
+        solveWatch: (_run, _entrants, signal) => {
+          order.push('solve-watch');
+          signals.push(signal);
+        },
+      },
+    );
+    return { journal, manager, order, signals };
+  }
+
+  it('starts one watch after funding and before the entrants start', async () => {
+    const { journal, manager, order, signals } = watchedManager();
+    try {
+      await manager.create({ preset: 'docker-duel', autoStart: true });
+
+      expect(order).toEqual(['funding', 'solve-watch', 'entrant-start', 'entrant-start']);
+      expect(signals).toHaveLength(1);
+      expect(signals[0]?.aborted).toBe(false);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('aborts the watch when the run stops', async () => {
+    const { journal, manager, signals } = watchedManager();
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel', autoStart: true });
+      expect(signals[0]?.aborted).toBe(false);
+
+      await manager.stop(run.id);
+
+      expect(signals[0]?.aborted).toBe(true);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('aborts the watch when the run fails to start', async () => {
+    const journal = new EventJournal(':memory:');
+    const signals: AbortSignal[] = [];
+    const failing: EntrantDriver = {
+      ...noopDriver,
+      async start() {
+        throw new Error('entrant refused to start');
+      },
+    };
+    const manager = new RunManager(journal, failing, undefined, {
+      solveWatch: (_run, _entrants, signal) => signals.push(signal),
+    });
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel' });
+      await expect(manager.start(run.id)).rejects.toThrow('entrant refused to start');
+
+      expect(signals[0]?.aborted).toBe(true);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('leaves the watch out when no factory is wired', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, noopDriver);
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel', autoStart: true });
+      expect(manager.snapshot(run.id).state).toBe('running');
+    } finally {
+      journal.close();
+    }
+  });
+});
+
 interface Deferred {
   resolve(): void;
   reject(error: Error): void;

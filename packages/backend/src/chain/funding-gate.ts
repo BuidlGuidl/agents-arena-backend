@@ -14,7 +14,7 @@ import { entrants } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
 import type { FundingGate, WalletGate } from '../run-manager.js';
 import { awaitFunding, type FundingEntry } from './funding-watcher.js';
-import { getChainProfile } from './profile.js';
+import { activeChainProfile, getChainProfile } from './profile.js';
 import { createWallet, getWallet } from './wallet.js';
 
 const FUNDING_THRESHOLD_WEI = parseEther('0.05');
@@ -54,7 +54,7 @@ export function createLocalFundingGate(
       return;
     }
 
-    const profile = getChainProfile(profileName ?? process.env.ARENA_CHAIN_PROFILE ?? 'local');
+    const profile = profileName === undefined ? activeChainProfile : getChainProfile(profileName);
     const entries = runEntrants.map<FundingEntry>((entrant) => {
       if (entrant.address === null) {
         throw new Error(`Entrant ${entrant.id} has no wallet address`);
@@ -125,7 +125,13 @@ async function fundLocalEntrants(
     await publicClient.waitForTransactionReceipt({ hash });
   }
 
-  await (walletClient as unknown as LocalMiningClient).request({ method: 'evm_mine', params: [] });
+  // The local chain only mines when something transacts, and awaitFunding reads the
+  // balance at head - confirmations. One block past the last transfer is enough for a
+  // depth of 1 and nothing else, so a deeper local profile has to be mined up to.
+  const mining = walletClient as unknown as LocalMiningClient;
+  for (let block = 0; block < Math.max(1, profile.confirmations); block += 1) {
+    await mining.request({ method: 'evm_mine', params: [] });
+  }
 }
 
 interface LocalMiningClient {

@@ -16,7 +16,7 @@ afterEach(async () => {
 
 describe('event history', () => {
   it('returns the newest events in ascending order', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const appended = Array.from({ length: 4 }, (_, index) =>
@@ -39,7 +39,7 @@ describe('event history', () => {
   });
 
   it('caps history and SSE copies while the journal retains the full payload', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const longText = `${'a'.repeat(2_000)}\n${'b'.repeat(2_000)}\nend`;
@@ -83,7 +83,7 @@ describe('event history', () => {
   });
 
   it('caps nested payload strings with dotted paths without mutating the event', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const nestedText = 'n'.repeat(EVENT_TEXT_LIMIT + 1);
@@ -153,7 +153,7 @@ describe('event history', () => {
   });
 
   it('leaves 4,000 characters intact and caps 4,001 characters', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const exact = server.journal.append(created.run.id, 'codex-1', 'agent.message', {
@@ -205,7 +205,7 @@ describe('event history', () => {
   });
 
   it('drops an emoji whole when its surrogate pair straddles the boundary', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const appended = server.journal.append(created.run.id, 'codex-1', 'agent.message', {
@@ -225,7 +225,7 @@ describe('event history', () => {
   });
 
   it('accepts a limit of 200, rejects larger limits, and defaults to 50', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     Array.from({ length: 55 }, (_, index) =>
@@ -255,7 +255,7 @@ describe('event history', () => {
   });
 
   it('rejects unknown event types and empty CSV items', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
 
@@ -275,7 +275,7 @@ describe('event history', () => {
   });
 
   it('names unknown history query parameters', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
 
@@ -289,7 +289,7 @@ describe('event history', () => {
   });
 
   it('rejects non-decimal and unsafe history integers', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
 
@@ -316,7 +316,7 @@ describe('event history', () => {
   });
 
   it('returns 404 for an unknown run', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
 
     const response = await server.app.inject({
@@ -329,7 +329,7 @@ describe('event history', () => {
   });
 
   it('only marks history immutable when its exclusive cursor cannot gain events', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const head = server.journal.append(created.run.id, 'codex-1', 'agent.message', {
@@ -370,7 +370,7 @@ describe('event history', () => {
   });
 
   it('hands the unfiltered history cursor to SSE without gaps or duplicates', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     server.journal.append(created.run.id, 'codex-1', 'agent.message', {

@@ -169,6 +169,7 @@ the same endpoint caps `eth_getLogs` at a 10,000 block span (`-32614`). in the s
 **Consequence — the frontend contract does not move.** `recordSolve` is untouched, so the dedup key, the `score.flag` payload, and `EntrantSummary.solves` stay exactly as #3 shipped them. ordering also survives: the recovery `getLogs` returns `blockNumber` and `logIndex`, so two solves discovered in one tick are journaled in true chain order rather than poll order.
 
 **Consequence — the arena has no runtime dependency on the ai-ctf deploy.** their Ponder can be down, mid-migration, or half-indexed on race day and the board still moves. the public leaderboard and the arena board can differ transiently on latency, never on final state, since both derive from the same chain. that also keeps the ask at tomorrow's meeting small: upgrade and host Ponder for the leaderboard, build nothing for us.
+
 ---
 
 ## ADR-0011 — one shared operator token on the mutating routes; reads stay open; the backend refuses to start without it

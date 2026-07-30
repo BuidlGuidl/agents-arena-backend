@@ -56,7 +56,7 @@ export type ArenaEvent =
   | (ArenaEventBase & { type: 'entrant.steered'; payload: { entrantId: string; text: string } })
   | (ArenaEventBase & { type: 'entrant.prompt'; payload: { entrantId: string; text: string } })
   | (ArenaEventBase & { type: 'entrant.nudged'; payload: { entrantId: string; text: string; flags: number } })
-  | (ArenaEventBase & { type: 'director.broadcast'; payload: { text: string; entrantIds: string[] } })
+  | (ArenaEventBase & { type: 'director.broadcast'; payload: { text: string; targetEntrantIds: string[] } })
   | (ArenaEventBase & { type: 'wallet.assigned'; payload: { entrantId: string; address: string } })
   | (ArenaEventBase & { type: 'funding.balance'; payload: { entrantId: string; address: string; wei: string; funded: boolean } })
   | (ArenaEventBase & { type: 'score.flag'; payload: { entrantId: string; challengeId: number; txHash: string; tokenId: string } })

@@ -1,7 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
-import type { EntrantDriver } from '../src/adapters/types.js';
+import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
 import { recordSolve } from '../src/chain/storage.js';
 import { entrants } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
@@ -433,6 +433,7 @@ describe('RunManager broadcast', () => {
     const manager = new RunManager(journal, driver);
     try {
       const { run } = await manager.create({ preset: 'fake-duel' });
+      await advance(manager, run.id, 'running');
       const result = await manager.broadcast(run.id, 'Ten minutes left.');
 
       expect(steers).toEqual(['codex-1:Ten minutes left.']);
@@ -445,10 +446,11 @@ describe('RunManager broadcast', () => {
       expect(broadcasts[0]?.source).toBe('run');
       expect(broadcasts[0]?.payload).toEqual({
         text: 'Ten minutes left.',
-        entrantIds: ['codex-1', 'opencode-1'],
+        targetEntrantIds: ['codex-1', 'opencode-1'],
       });
-      expect(events.filter((event) => event.type === 'entrant.error').map((event) => event.source))
-        .toEqual(['opencode-1']);
+      const errors = events.filter((event) => event.type === 'entrant.error');
+      expect(errors.map((event) => event.source)).toEqual(['opencode-1']);
+      expect(errors[0]?.payload.message).toBe('Broadcast not delivered: container is gone');
     } finally {
       journal.close();
     }
@@ -466,6 +468,7 @@ describe('RunManager broadcast', () => {
     const manager = new RunManager(journal, driver);
     try {
       const { run } = await manager.create({ preset: 'fake-duel' });
+      await advance(manager, run.id, 'running');
       journal.database
         .update(entrants)
         .set({ status: 'done' })
@@ -477,7 +480,7 @@ describe('RunManager broadcast', () => {
       expect(steers).toEqual(['opencode-1']);
       expect(result.delivered).toEqual(['opencode-1']);
       const broadcast = journal.after(run.id, 0).find((event) => event.type === 'director.broadcast');
-      expect(broadcast?.payload.entrantIds).toEqual(['opencode-1']);
+      expect(broadcast?.payload.targetEntrantIds).toEqual(['opencode-1']);
     } finally {
       journal.close();
     }
@@ -488,6 +491,56 @@ describe('RunManager broadcast', () => {
     const manager = new RunManager(journal, noopDriver);
     try {
       await expect(manager.broadcast('missing-run', 'hello')).rejects.toBeInstanceOf(RunNotFoundError);
+    } finally {
+      journal.close();
+    }
+  });
+
+  // Before the opening turn the harness has no session to resume, and the docker
+  // driver answers a steer there by degrading the entrant for good. So the gate is
+  // load-bearing: nothing may reach the driver until the run is running.
+  it.each(['created', 'preparing', 'awaiting_funding', 'ready', 'stopping', 'finished'] as const)(
+    'refuses to broadcast to a run in %s and never touches the driver',
+    async (state) => {
+      const journal = new EventJournal(':memory:');
+      const steers: string[] = [];
+      const driver: EntrantDriver = {
+        ...noopDriver,
+        async steer(_run, entrant) {
+          steers.push(entrant.id);
+        },
+      };
+      const manager = new RunManager(journal, driver);
+      try {
+        const { run } = await manager.create({ preset: 'fake-duel' });
+        await advance(manager, run.id, state);
+
+        await expect(manager.broadcast(run.id, 'too early')).rejects.toBeInstanceOf(InvalidTransitionError);
+        expect(steers).toEqual([]);
+        expect(journal.after(run.id, 0).filter((event) => event.type === 'director.broadcast')).toEqual([]);
+      } finally {
+        journal.close();
+      }
+    },
+  );
+
+  it('records a failed single steer on the lane and keeps the error type', async () => {
+    const journal = new EventJournal(':memory:');
+    const driver: EntrantDriver = {
+      ...noopDriver,
+      async steer(_run, entrant) {
+        throw new EntrantUnavailableError(`Entrant ${entrant.id} is degraded`);
+      },
+    };
+    const manager = new RunManager(journal, driver);
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      await expect(manager.steer(run.id, 'codex-1', 'are you there?'))
+        .rejects.toBeInstanceOf(EntrantUnavailableError);
+
+      const errors = journal.after(run.id, 0).filter((event) => event.type === 'entrant.error');
+      expect(errors.map((event) => event.payload.message))
+        .toEqual(['Steer not delivered: Entrant codex-1 is degraded']);
     } finally {
       journal.close();
     }

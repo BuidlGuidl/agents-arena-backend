@@ -355,24 +355,33 @@ export class RunManager {
     if (entrant === undefined) {
       throw new EntrantNotFoundError(`Entrant ${entrantId} does not exist in run ${runId}`);
     }
-    await this.driver.steer(run, entrant, text);
+    await this.deliver(run, entrant, text, 'Steer');
   }
 
   // The director speaks once and every entrant still in the fight hears it. The
   // broadcast event lands before the fan-out so the feed reads message-then-turns,
   // and a steer that throws is reported back instead of thrown: one wedged entrant
   // must not swallow the message for the rest.
+  //
+  // Only a running run may be addressed. Before the opening turn the harness has no
+  // session to resume, and a steer there degrades the entrant for the rest of the
+  // run — one early broadcast would take out the whole field.
   async broadcast(runId: string, text: string): Promise<BroadcastResult> {
     const run = this.requireRun(runId);
+    if (run.state !== 'running') {
+      throw new InvalidTransitionError(`Cannot broadcast to run ${runId} in state ${run.state}`);
+    }
     const live = this.entrants(runId).filter((entrant) => entrant.status !== 'done');
+    // Who the director addressed. Delivery truth is the response, not this list:
+    // a busy entrant queues the turn, and a wedged one lands in `failed`.
     this.journal.append(runId, 'run', 'director.broadcast', {
       text,
-      entrantIds: live.map((entrant) => entrant.id),
+      targetEntrantIds: live.map((entrant) => entrant.id),
     });
 
     const outcomes = await Promise.all(live.map(async (entrant) => {
       try {
-        await this.driver.steer(run, entrant, text);
+        await this.deliver(run, entrant, text, 'Broadcast');
         return { entrantId: entrant.id, message: undefined };
       } catch (error) {
         return { entrantId: entrant.id, message: errorMessage(error) };
@@ -387,12 +396,27 @@ export class RunManager {
         continue;
       }
       failed.push({ entrantId: outcome.entrantId, message: outcome.message });
-      this.journal.append(runId, outcome.entrantId, 'entrant.error', {
-        entrantId: outcome.entrantId,
-        message: `Broadcast not delivered: ${outcome.message}`,
-      });
     }
     return { delivered, failed };
+  }
+
+  // Every operator message travels this path so a miss is recorded on the lane it
+  // missed, whoever asked for it. The error keeps its type for the caller to map.
+  private async deliver(
+    run: RunRecord,
+    entrant: EntrantRecord,
+    text: string,
+    label: 'Steer' | 'Broadcast',
+  ): Promise<void> {
+    try {
+      await this.driver.steer(run, entrant, text);
+    } catch (error) {
+      this.journal.append(run.id, entrant.id, 'entrant.error', {
+        entrantId: entrant.id,
+        message: `${label} not delivered: ${errorMessage(error)}`,
+      });
+      throw error;
+    }
   }
 
   hasRun(runId: string): boolean {

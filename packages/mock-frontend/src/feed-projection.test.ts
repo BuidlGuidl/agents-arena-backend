@@ -129,7 +129,7 @@ describe('describeEvent — all 16 contract types render', () => {
     { ...base, type: 'entrant.steered', payload: { entrantId: 'codex-1', text: 'go' } },
     { ...base, type: 'entrant.prompt', payload: { entrantId: 'codex-1', text: 'begin' } },
     { ...base, type: 'entrant.nudged', payload: { entrantId: 'codex-1', text: 'nudge', flags: 1 } },
-    { ...base, source: RUN_SOURCE, type: 'director.broadcast', payload: { text: 'wrap up', entrantIds: ['codex-1', 'opencode-1'] } },
+    { ...base, source: RUN_SOURCE, type: 'director.broadcast', payload: { text: 'wrap up', targetEntrantIds: ['codex-1', 'opencode-1'] } },
     { ...base, type: 'wallet.assigned', payload: { entrantId: 'codex-1', address: '0xabc' } },
     { ...base, type: 'funding.balance', payload: { entrantId: 'codex-1', address: '0xabc', wei: '100', funded: true } },
     { ...base, type: 'score.flag', payload: { entrantId: 'codex-1', challengeId: 1, txHash: '0xtx', tokenId: '7' } },

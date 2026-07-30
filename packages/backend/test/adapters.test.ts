@@ -7,7 +7,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { CodexDriver } from '../src/adapters/codex.js';
 import { OpenCodeDriver, scrubOpenCodeEnvironment } from '../src/adapters/opencode.js';
-import type { EntrantDriver, EntrantRecord, RunRecord } from '../src/adapters/types.js';
+import {
+  EntrantUnavailableError,
+  type EntrantDriver,
+  type EntrantRecord,
+  type RunRecord,
+} from '../src/adapters/types.js';
 import { createWallet, getWallet } from '../src/chain/wallet.js';
 import { entrants, runs } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
@@ -186,6 +191,30 @@ function completeTurn(harness: 'codex' | 'opencode', execution: ControlledExecut
   }
   execution.finish(0);
 }
+
+describe.each(['codex', 'opencode'] as const)('%s steer rejection', (harness) => {
+  it('rejects a steer sent before the opening turn and keeps rejecting once degraded', async () => {
+    const context = await setup(harness);
+    try {
+      await expect(context.driver.steer(context.run, context.entrant, 'too early'))
+        .rejects.toBeInstanceOf(EntrantUnavailableError);
+      expect(context.container.turns).toHaveLength(0);
+      expect(context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.error')
+        .map((event) => event.payload.message))
+        .toEqual(['Cannot steer before the harness reports a session ID']);
+
+      // Degraded is sticky, and the second rejection must not double-log the cause.
+      await expect(context.driver.steer(context.run, context.entrant, 'again'))
+        .rejects.toBeInstanceOf(EntrantUnavailableError);
+      expect(context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.error')).toHaveLength(1);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+});
 
 describe.each(['codex', 'opencode'] as const)('%s steer queue', (harness) => {
   it('queues during a turn and injects at once while idle', async () => {

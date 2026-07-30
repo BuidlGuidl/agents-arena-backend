@@ -175,7 +175,7 @@ function App() {
       {run !== null ? (
         <>
           <h2 className="section-head">director</h2>
-          <BroadcastRow runId={run.id} />
+          <BroadcastRow key={run.id} runId={run.id} />
         </>
       ) : null}
 

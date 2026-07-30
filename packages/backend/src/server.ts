@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { ArenaEvent, BroadcastResponse, CreateRunRequest } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
-import type { EntrantDriver } from './adapters/types.js';
+import { EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
 import { EventJournal } from './journal.js';
 import {
   type FundingGate,
@@ -62,6 +62,11 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
     }
     if (error instanceof InvalidTransitionError || error instanceof UnknownPresetError) {
       void reply.status(400).send({ error: error.message });
+      return;
+    }
+    // The entrant is real but cannot take a turn right now, so the operator can retry.
+    if (error instanceof EntrantUnavailableError) {
+      void reply.status(409).send({ error: error.message });
       return;
     }
     app.log.error(error);

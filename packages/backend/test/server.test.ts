@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { EntrantUnavailableError } from '../src/adapters/types.js';
 import type { ArenaEvent, RunSnapshot } from '../src/contract.js';
 import { createServer, type ArenaServer } from '../src/server.js';
 
@@ -129,13 +130,13 @@ describe('director broadcast', () => {
     const broadcasts = since.filter((event) => event.type === 'director.broadcast');
     expect(broadcasts).toHaveLength(1);
     expect(broadcasts[0]?.source).toBe('run');
-    expect(broadcasts[0]?.payload.entrantIds).toEqual(['codex-1', 'opencode-1']);
+    expect(broadcasts[0]?.payload.targetEntrantIds).toEqual(['codex-1', 'opencode-1']);
     expect(since.filter((event) =>
       event.type === 'entrant.steered' && event.payload.text === 'Five minutes left, ship what you have.',
     ).map((event) => event.source)).toEqual(['codex-1', 'opencode-1']);
   });
 
-  it('rejects an empty body and an unknown run', async () => {
+  it('rejects an empty body, an unknown run, and a run that is not running', async () => {
     const server = createServer({ dbPath: ':memory:' });
     servers.push(server);
     const { run } = await server.manager.create({ preset: 'fake-duel' });
@@ -153,6 +154,39 @@ describe('director broadcast', () => {
       payload: { text: 'anyone there?' },
     });
     expect(missing.statusCode).toBe(404);
+
+    // The run exists but has not started, so no steer may reach the driver.
+    const notRunning = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/broadcast`,
+      payload: { text: 'anyone there?' },
+    });
+    expect(notRunning.statusCode).toBe(400);
+    expect(server.journal.after(run.id, 0).filter((event) => event.type === 'director.broadcast')).toEqual([]);
+  });
+
+  it('answers 409 when an entrant cannot take the turn', async () => {
+    const server = createServer({
+      dbPath: ':memory:',
+      driverFactory: () => ({
+        async prepare() {},
+        async start() {},
+        async steer(_run, entrant) {
+          throw new EntrantUnavailableError(`Entrant ${entrant.id} is degraded`);
+        },
+        async stop() {},
+      }),
+    });
+    servers.push(server);
+    const { run } = await server.manager.create({ preset: 'fake-duel' });
+
+    const steer = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/entrants/codex-1/steer`,
+      payload: { text: 'are you there?' },
+    });
+    expect(steer.statusCode).toBe(409);
+    expect(steer.json()).toEqual({ error: 'Entrant codex-1 is degraded' });
   });
 });
 

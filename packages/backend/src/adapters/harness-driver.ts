@@ -9,7 +9,7 @@ import type {
   RuntimeExecution,
 } from '../runtime/container.js';
 import { createDockerContainer } from '../runtime/container.js';
-import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
+import { EntrantUnavailableError, type EntrantDriver, type EntrantRecord, type RunRecord } from './types.js';
 import type { ParsedArenaEvent, ParsedHarnessLine, ParserLogger } from './parser-types.js';
 
 export interface HarnessDriverOptions {
@@ -87,10 +87,10 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<void> {
     this.assertHarness(entrant);
     const state = this.requireState(run.id, entrant.id);
-    if (state.stopping) throw new Error(`Entrant ${entrant.id} is stopping`);
+    if (state.stopping) throw new EntrantUnavailableError(`Entrant ${entrant.id} is stopping`);
+    // The caller records the miss on the lane, so this only reports it.
     if (state.degraded) {
-      this.appendError(state, 'Steer rejected because the entrant is degraded');
-      return;
+      throw new EntrantUnavailableError(`Entrant ${entrant.id} is degraded`);
     }
 
     if (state.running) {
@@ -141,7 +141,9 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     if (state.running) throw new Error(`Entrant ${state.entrant.id} already has a turn in flight`);
     if (resume && state.sessionId === undefined) {
       this.markDegraded(state, 'Cannot steer before the harness reports a session ID');
-      return;
+      throw new EntrantUnavailableError(
+        `Entrant ${state.entrant.id} cannot take a turn before the harness reports a session ID`,
+      );
     }
 
     state.running = true;

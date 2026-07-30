@@ -57,7 +57,7 @@ export function styleForEvent(event: ArenaEvent): EventStyle {
 }
 
 export function styleForEntry(entry: FeedEntry): EventStyle {
-  if (entry.event.type === 'tool.call' && entry.result?.type === 'tool.result') {
+  if (entry.event.type === 'tool.call' && entry.result !== undefined) {
     return styleForEvent(entry.result);
   }
   return styleForEvent(entry.event);

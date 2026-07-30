@@ -101,7 +101,7 @@ describe('ingestEvent — id dedup on replay overlap', () => {
 
 describe('ingestEvent — tool call pairing', () => {
   it('keeps codex command and output details in one paired entry', () => {
-    const feed = feedFrom([
+    const events = [
       evt({
         id: 10,
         source: 'codex-1',
@@ -127,8 +127,10 @@ describe('ingestEvent — tool call pairing', () => {
           detail: 'output-token',
         },
       }),
-    ]);
+    ];
+    const feed = feedFrom(events);
 
+    expect(feed.events).toEqual(events);
     expect(feed.entries).toHaveLength(1);
     expect(describeEntry(feed.entries[0]!)).toContain('echo command-token');
     expect(describeEntry(feed.entries[0]!)).toContain('output-token');

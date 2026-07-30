@@ -134,7 +134,7 @@ function App() {
             {run.state}
           </span>
           <span className="meta-count">
-            <b>{feed.entries.length}</b> events
+            <b>{feed.events.length}</b> events
           </span>
         </div>
       ) : null}
@@ -174,8 +174,8 @@ function App() {
       </ul>
 
       <details className="raw">
-        <summary>raw event log ({feed.entries.length})</summary>
-        <pre>{feed.entries.map((entry) => JSON.stringify(entry)).join('\n') || 'no events.'}</pre>
+        <summary>raw event log ({feed.events.length})</summary>
+        <pre>{feed.events.map((event) => JSON.stringify(event)).join('\n') || 'no events.'}</pre>
       </details>
     </div>
   );

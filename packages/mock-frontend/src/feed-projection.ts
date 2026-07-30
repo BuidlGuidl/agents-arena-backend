@@ -16,10 +16,11 @@ export interface FeedGap {
 
 export interface FeedEntry {
   event: ArenaEvent;
-  result?: ArenaEvent;
+  result?: Extract<ArenaEvent, { type: 'tool.result' }>;
 }
 
 export interface FeedState {
+  events: ArenaEvent[];
   entries: FeedEntry[];
   seenIds: Set<number>; // every global id already ingested
   lastSeqBySource: Record<string, number>; // highest seq seen per source
@@ -27,7 +28,7 @@ export interface FeedState {
 }
 
 export function initialFeedState(): FeedState {
-  return { entries: [], seenIds: new Set<number>(), lastSeqBySource: {}, gaps: [] };
+  return { events: [], entries: [], seenIds: new Set<number>(), lastSeqBySource: {}, gaps: [] };
 }
 
 // Ingest one streamed event. Pure: returns the same state object when the event
@@ -42,14 +43,20 @@ export function ingestEvent(state: FeedState, event: ArenaEvent): FeedState {
 
   const seenIds = new Set(state.seenIds);
   seenIds.add(event.id);
-  const matchingCallIndex = findLatestUnresolvedCall(state.entries, event);
-  const entries = matchingCallIndex < 0
-    ? [...state.entries, { event }]
-    : state.entries.map((entry, index) => (
-      index === matchingCallIndex ? { ...entry, result: event } : entry
-    ));
+  let entries: FeedEntry[];
+  if (event.type === 'tool.result') {
+    const matchingCallIndex = findLatestUnresolvedCall(state.entries, event);
+    entries = matchingCallIndex < 0
+      ? [...state.entries, { event }]
+      : state.entries.map((entry, index) => (
+        index === matchingCallIndex ? { ...entry, result: event } : entry
+      ));
+  } else {
+    entries = [...state.entries, { event }];
+  }
 
   return {
+    events: [...state.events, event],
     entries,
     seenIds,
     lastSeqBySource: {
@@ -60,8 +67,10 @@ export function ingestEvent(state: FeedState, event: ArenaEvent): FeedState {
   };
 }
 
-function findLatestUnresolvedCall(entries: FeedEntry[], event: ArenaEvent): number {
-  if (event.type !== 'tool.result') return -1;
+function findLatestUnresolvedCall(
+  entries: FeedEntry[],
+  event: Extract<ArenaEvent, { type: 'tool.result' }>,
+): number {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]!;
     if (
@@ -181,7 +190,7 @@ export function describeEvent(event: ArenaEvent): string {
 
 export function describeEntry(entry: FeedEntry): string {
   if (entry.event.type !== 'tool.call') return describeEvent(entry.event);
-  if (entry.result?.type !== 'tool.result') {
+  if (entry.result === undefined) {
     return `${entry.event.payload.tool} → running: ${entry.event.payload.detail}`;
   }
 

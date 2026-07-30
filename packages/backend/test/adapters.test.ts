@@ -197,22 +197,23 @@ function completeTurn(harness: 'codex' | 'opencode', execution: ControlledExecut
 }
 
 describe.each(['codex', 'opencode'] as const)('%s steer rejection', (harness) => {
-  it('rejects a steer sent before the opening turn and keeps rejecting once degraded', async () => {
+  it('rejects a steer sent before the opening turn without degrading the entrant', async () => {
     const context = await setup(harness);
+    const sessionId = harness === 'codex' ? 'thread-1' : 'session-1';
     try {
       await expect(context.driver.steer(context.run, context.entrant, 'too early'))
         .rejects.toBeInstanceOf(EntrantUnavailableError);
       expect(context.container.turns).toHaveLength(0);
+      // The caller records the miss on the lane; the driver stays silent.
       expect(context.journal.after(context.run.id, 0)
-        .filter((event) => event.type === 'entrant.error')
-        .map((event) => event.payload.message))
-        .toEqual(['Cannot steer before the harness reports a session ID']);
+        .filter((event) => event.type === 'entrant.error')).toHaveLength(0);
 
-      // Degraded is sticky, and the second rejection must not double-log the cause.
-      await expect(context.driver.steer(context.run, context.entrant, 'again'))
-        .rejects.toBeInstanceOf(EntrantUnavailableError);
-      expect(context.journal.after(context.run.id, 0)
-        .filter((event) => event.type === 'entrant.error')).toHaveLength(1);
+      // The early miss must not poison the entrant: once the opening turn
+      // reports a session, a steer goes through.
+      await context.driver.start(context.run, context.entrant, 'opening');
+      completeTurn(harness, context.container.turns[0] as ControlledExecution, sessionId);
+      await context.driver.steer(context.run, context.entrant, 'after start');
+      await waitFor(() => context.container.turns.length === 2);
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

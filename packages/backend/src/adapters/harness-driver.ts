@@ -159,8 +159,9 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
 
   private async beginTurn(state: EntrantRuntimeState, text: string, resume: boolean): Promise<void> {
     if (state.running) throw new Error(`Entrant ${state.entrant.id} already has a turn in flight`);
+    // Too early is not broken: the caller gets the rejection, and the entrant
+    // steers normally once the opening turn reports a session.
     if (resume && state.sessionId === undefined) {
-      this.markDegraded(state, 'Cannot steer before the harness reports a session ID');
       throw new EntrantUnavailableError(
         `Entrant ${state.entrant.id} cannot take a turn before the harness reports a session ID`,
       );

@@ -724,9 +724,9 @@ flowchart TB
 
     <ul class="facts">
       <li><code>POST /runs/:id/entrants/:entrantId/steer</code> takes free text, replies <code>202</code>, and calls <code>RunManager.steer</code>, which looks up the entrant and calls the driver. <span class="path">src/server.ts</span> · <span class="path">src/run-manager.ts</span></li>
-      <li>A degraded entrant rejects the steer: the driver logs an <code>entrant.error</code> and returns. An entrant is stopping rejects too. <span class="path">src/adapters/harness-driver.ts</span> · <code>steer</code></li>
+      <li>A degraded or stopping entrant rejects the steer: the driver throws <code>EntrantUnavailableError</code>, and the caller records the miss on the lane. <span class="path">src/adapters/harness-driver.ts</span> · <code>steer</code></li>
       <li>If a turn is in flight, the text goes onto <code>queuedSteers</code> and the call returns. When the turn ends, <code>finishTurn</code> shifts one queued steer and starts it as a resume.</li>
-      <li>An idle entrant resumes right away. The resume runs <code>codex exec … resume &lt;sessionId&gt;</code> or <code>opencode run -s &lt;sessionId&gt;</code> in the same container, so the agent keeps its context. A resume before the harness has reported a session id marks the entrant degraded.</li>
+      <li>An idle entrant resumes right away. The resume runs <code>codex exec … resume &lt;sessionId&gt;</code> or <code>opencode run -s &lt;sessionId&gt;</code> in the same container, so the agent keeps its context. A resume before the harness has reported a session id is rejected the same way; the entrant steers normally once the opening turn reports one.</li>
       <li>Each resume appends an <code>entrant.steered</code> event to that entrant's lane, so the steer shows up in the feed.</li>
     </ul>
   </section>

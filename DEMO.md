@@ -80,6 +80,11 @@ active chain profile — redeploy the chain and restart the run if that happens.
 On the `base` chain profile no pack is mounted. The prompt points the entrant at
 the public CTF site instead. See ADR-0009.
 
+Once the run is active the backend polls each entrant's flag state every 3 seconds,
+reading at `head - confirmations`. A mint reaches the board a few seconds after it
+lands: the local profile confirms at 1 block, `base` at 5. The lane and the run log
+both update from the same `score.flag` event. See ADR-0010.
+
 Open the printed frontend URL. The Codex and OpenCode lanes enter the ready
 barrier, start together, and stream their status and tool events into the run log.
 
@@ -93,8 +98,19 @@ curl -fsS -X POST \
   -d '{"text":"Check the chain state again and try the next unsolved challenge."}'
 ```
 
-The next Codex turn appears in its lane and in the run log. Stop the launcher-owned
-processes after the demo:
+The next Codex turn appears in its lane and in the run log.
+
+Address both entrants at once, the way a streamer would:
+
+```bash
+curl -fsS -X POST \
+  "http://127.0.0.1:4177/runs/$RUN_ID/broadcast" \
+  -H 'content-type: application/json' \
+  -d '{"text":"Five minutes left, ship what you have."}'
+```
+
+The reply names who took the message. The run log shows one `broadcast` row, then
+each lane takes its own turn. Stop the launcher-owned processes after the demo:
 
 ```bash
 ./scripts/demo.sh down

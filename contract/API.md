@@ -54,6 +54,26 @@ Sends text to one entrant.
 {"text":"Inspect the contract first."}
 ```
 
+The response has status `202`. An entrant that exists but cannot take a turn — stopping, or degraded — returns status `409`, and the refusal is recorded on that entrant's feed as an `entrant.error`.
+
+### `POST /runs/:id/broadcast`
+
+Sends one director message to every entrant that is not `done`. Each recipient takes it as a steer turn, and the run emits one `director.broadcast` event, payload `{text, targetEntrantIds}`, so every viewer sees the message once. `targetEntrantIds` is who the director addressed; delivery truth is the response below.
+
+```json
+{"text":"Five minutes left, ship what you have."}
+```
+
+The run must be `running`; any other state returns status `400` and nothing reaches the entrants. Before the opening turn the harness has no session to resume, so there is nothing a broadcast could inject into.
+
+The response has status `202`. An entrant that cannot take the turn is named in `failed` and gets an `entrant.error` event; the rest still receive the message.
+
+`delivered` means the entrant accepted the message, not that it has read it yet: an entrant that is mid-turn queues it and takes it when that turn ends, exactly as a per-entrant steer does. The `director.broadcast` event lands immediately either way, so the feed shows the message the moment the director sends it.
+
+```json
+{"accepted":true,"delivered":["codex-1"],"failed":[{"entrantId":"opencode-1","message":"Entrant opencode-1 is stopping"}]}
+```
+
 ## Event stream
 
 ### `GET /runs/:id/events`

@@ -1,10 +1,10 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
-import type { ArenaEvent, CreateRunRequest } from './contract.js';
+import type { ArenaEvent, BroadcastResponse, CreateRunRequest } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
-import type { EntrantDriver } from './adapters/types.js';
+import { EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
 import { eventTypes } from './db/schema.js';
 import { capEvent, EventJournal } from './journal.js';
 import {
@@ -12,7 +12,9 @@ import {
   EntrantNotFoundError,
   InvalidTransitionError,
   RunManager,
+  type RunManagerOptions,
   RunNotFoundError,
+  type SolveWatch,
   UnknownPresetError,
   type WalletGate,
 } from './run-manager.js';
@@ -23,7 +25,8 @@ const createRunSchema = z.object({
   idempotencyKey: z.string().min(1).optional(),
 }).strict();
 
-const steerSchema = z.object({ text: z.string().min(1) }).strict();
+// Steer and broadcast carry the same body; only the fan-out differs.
+const textSchema = z.object({ text: z.string().min(1) }).strict();
 const eventsQuerySchema = z.object({ after: z.coerce.number().int().nonnegative().optional() });
 const decimalIntegerSchema = z.string()
   .regex(/^\d+$/)
@@ -42,6 +45,7 @@ export interface ServerOptions {
   driverFactory?: (journal: EventJournal) => EntrantDriver;
   walletGateFactory?: (journal: EventJournal) => WalletGate;
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
+  solveWatchFactory?: (journal: EventJournal) => SolveWatch;
   logger?: boolean;
 }
 
@@ -55,9 +59,14 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
   const app = Fastify({ logger: options.logger ?? false });
   const journal = new EventJournal(options.dbPath);
   const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(journal, options.schedule);
-  const runManagerOptions = options.walletGateFactory === undefined
-    ? {}
-    : { walletGate: options.walletGateFactory(journal) };
+  const runManagerOptions: RunManagerOptions = {
+    ...(options.walletGateFactory === undefined
+      ? {}
+      : { walletGate: options.walletGateFactory(journal) }),
+    ...(options.solveWatchFactory === undefined
+      ? {}
+      : { solveWatch: options.solveWatchFactory(journal) }),
+  };
   const manager = new RunManager(
     journal,
     driver,
@@ -72,6 +81,11 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
     }
     if (error instanceof InvalidTransitionError || error instanceof UnknownPresetError) {
       void reply.status(400).send({ error: error.message });
+      return;
+    }
+    // The entrant is real but cannot take a turn right now, so the operator can retry.
+    if (error instanceof EntrantUnavailableError) {
+      void reply.status(409).send({ error: error.message });
       return;
     }
     app.log.error(error);
@@ -106,11 +120,20 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
   });
 
   app.post('/runs/:id/entrants/:entrantId/steer', async (request, reply) => {
-    const body = parseBody(steerSchema, request.body, reply);
+    const body = parseBody(textSchema, request.body, reply);
     if (body === undefined) return;
     const { id, entrantId } = request.params as { id: string; entrantId: string };
     await manager.steer(id, entrantId, body.text);
     return reply.status(202).send({ accepted: true });
+  });
+
+  app.post('/runs/:id/broadcast', async (request, reply) => {
+    const body = parseBody(textSchema, request.body, reply);
+    if (body === undefined) return;
+    const { id } = request.params as { id: string };
+    const result = await manager.broadcast(id, body.text);
+    const response: BroadcastResponse = { accepted: true, ...result };
+    return reply.status(202).send(response);
   });
 
   app.get('/runs/:id/events', async (request, reply) => {

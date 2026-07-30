@@ -1,13 +1,16 @@
+import { and, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
-import type { EntrantDriver } from '../src/adapters/types.js';
+import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
 import { recordSolve } from '../src/chain/storage.js';
+import { entrants } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import {
   InvalidTransitionError,
   LEGAL_TRANSITIONS,
   passThroughWalletGate,
   RunManager,
+  RunNotFoundError,
   type WalletGate,
 } from '../src/run-manager.js';
 import type { RunState } from '../src/contract.js';
@@ -215,6 +218,94 @@ describe('RunManager idempotency', () => {
       expect(second.run.id).toBe(first.run.id);
       expect(manager.countRuns()).toBe(1);
       expect(journal.after(first.run.id, 0)).toHaveLength(1);
+    } finally {
+      journal.close();
+    }
+  });
+});
+
+describe('RunManager solve watch', () => {
+  function watchedManager() {
+    const journal = new EventJournal(':memory:');
+    const order: string[] = [];
+    const signals: AbortSignal[] = [];
+    const driver: EntrantDriver = {
+      ...noopDriver,
+      async start() {
+        order.push('entrant-start');
+      },
+    };
+    const manager = new RunManager(
+      journal,
+      driver,
+      async () => {
+        order.push('funding');
+      },
+      {
+        solveWatch: (_run, _entrants, signal) => {
+          order.push('solve-watch');
+          signals.push(signal);
+        },
+      },
+    );
+    return { journal, manager, order, signals };
+  }
+
+  it('starts one watch after funding and before the entrants start', async () => {
+    const { journal, manager, order, signals } = watchedManager();
+    try {
+      await manager.create({ preset: 'docker-duel', autoStart: true });
+
+      expect(order).toEqual(['funding', 'solve-watch', 'entrant-start', 'entrant-start']);
+      expect(signals).toHaveLength(1);
+      expect(signals[0]?.aborted).toBe(false);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('aborts the watch when the run stops', async () => {
+    const { journal, manager, signals } = watchedManager();
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel', autoStart: true });
+      expect(signals[0]?.aborted).toBe(false);
+
+      await manager.stop(run.id);
+
+      expect(signals[0]?.aborted).toBe(true);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('aborts the watch when the run fails to start', async () => {
+    const journal = new EventJournal(':memory:');
+    const signals: AbortSignal[] = [];
+    const failing: EntrantDriver = {
+      ...noopDriver,
+      async start() {
+        throw new Error('entrant refused to start');
+      },
+    };
+    const manager = new RunManager(journal, failing, undefined, {
+      solveWatch: (_run, _entrants, signal) => signals.push(signal),
+    });
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel' });
+      await expect(manager.start(run.id)).rejects.toThrow('entrant refused to start');
+
+      expect(signals[0]?.aborted).toBe(true);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('leaves the watch out when no factory is wired', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, noopDriver);
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel', autoStart: true });
+      expect(manager.snapshot(run.id).state).toBe('running');
     } finally {
       journal.close();
     }
@@ -469,6 +560,134 @@ describe('RunManager lifecycle cancellation', () => {
       }
       expect(stops).toEqual(['codex-1', 'opencode-1']);
       expect(manager.snapshot(run.id).state).toBe('failed');
+    } finally {
+      journal.close();
+    }
+  });
+});
+
+describe('RunManager broadcast', () => {
+  it('fans one message into every live entrant and records a single broadcast event', async () => {
+    const journal = new EventJournal(':memory:');
+    const steers: string[] = [];
+    const driver: EntrantDriver = {
+      ...noopDriver,
+      async steer(_run, entrant, text) {
+        if (entrant.id === 'opencode-1') throw new Error('container is gone');
+        steers.push(`${entrant.id}:${text}`);
+      },
+    };
+    const manager = new RunManager(journal, driver);
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      await advance(manager, run.id, 'running');
+      const result = await manager.broadcast(run.id, 'Ten minutes left.');
+
+      expect(steers).toEqual(['codex-1:Ten minutes left.']);
+      expect(result.delivered).toEqual(['codex-1']);
+      expect(result.failed).toEqual([{ entrantId: 'opencode-1', message: 'container is gone' }]);
+
+      const events = journal.after(run.id, 0);
+      const broadcasts = events.filter((event) => event.type === 'director.broadcast');
+      expect(broadcasts).toHaveLength(1);
+      expect(broadcasts[0]?.source).toBe('run');
+      expect(broadcasts[0]?.payload).toEqual({
+        text: 'Ten minutes left.',
+        targetEntrantIds: ['codex-1', 'opencode-1'],
+      });
+      const errors = events.filter((event) => event.type === 'entrant.error');
+      expect(errors.map((event) => event.source)).toEqual(['opencode-1']);
+      expect(errors[0]?.payload.message).toBe('Broadcast not delivered: container is gone');
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('leaves finished entrants out of the fan-out', async () => {
+    const journal = new EventJournal(':memory:');
+    const steers: string[] = [];
+    const driver: EntrantDriver = {
+      ...noopDriver,
+      async steer(_run, entrant) {
+        steers.push(entrant.id);
+      },
+    };
+    const manager = new RunManager(journal, driver);
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      await advance(manager, run.id, 'running');
+      journal.database
+        .update(entrants)
+        .set({ status: 'done' })
+        .where(and(eq(entrants.runId, run.id), eq(entrants.id, 'codex-1')))
+        .run();
+
+      const result = await manager.broadcast(run.id, 'Wrap up.');
+
+      expect(steers).toEqual(['opencode-1']);
+      expect(result.delivered).toEqual(['opencode-1']);
+      const broadcast = journal.after(run.id, 0).find((event) => event.type === 'director.broadcast');
+      expect(broadcast?.payload.targetEntrantIds).toEqual(['opencode-1']);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('rejects a broadcast to a run that does not exist', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, noopDriver);
+    try {
+      await expect(manager.broadcast('missing-run', 'hello')).rejects.toBeInstanceOf(RunNotFoundError);
+    } finally {
+      journal.close();
+    }
+  });
+
+  // Before the opening turn the harness has no session to resume, and the docker
+  // driver answers a steer there by degrading the entrant for good. So the gate is
+  // load-bearing: nothing may reach the driver until the run is running.
+  it.each(['created', 'preparing', 'awaiting_funding', 'ready', 'stopping', 'finished'] as const)(
+    'refuses to broadcast to a run in %s and never touches the driver',
+    async (state) => {
+      const journal = new EventJournal(':memory:');
+      const steers: string[] = [];
+      const driver: EntrantDriver = {
+        ...noopDriver,
+        async steer(_run, entrant) {
+          steers.push(entrant.id);
+        },
+      };
+      const manager = new RunManager(journal, driver);
+      try {
+        const { run } = await manager.create({ preset: 'fake-duel' });
+        await advance(manager, run.id, state);
+
+        await expect(manager.broadcast(run.id, 'too early')).rejects.toBeInstanceOf(InvalidTransitionError);
+        expect(steers).toEqual([]);
+        expect(journal.after(run.id, 0).filter((event) => event.type === 'director.broadcast')).toEqual([]);
+      } finally {
+        journal.close();
+      }
+    },
+  );
+
+  it('records a failed single steer on the lane and keeps the error type', async () => {
+    const journal = new EventJournal(':memory:');
+    const driver: EntrantDriver = {
+      ...noopDriver,
+      async steer(_run, entrant) {
+        throw new EntrantUnavailableError(`Entrant ${entrant.id} is degraded`);
+      },
+    };
+    const manager = new RunManager(journal, driver);
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      await expect(manager.steer(run.id, 'codex-1', 'are you there?'))
+        .rejects.toBeInstanceOf(EntrantUnavailableError);
+
+      const errors = journal.after(run.id, 0).filter((event) => event.type === 'entrant.error');
+      expect(errors.map((event) => event.payload.message))
+        .toEqual(['Steer not delivered: Entrant codex-1 is degraded']);
     } finally {
       journal.close();
     }

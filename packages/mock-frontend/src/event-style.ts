@@ -41,6 +41,8 @@ export function styleForEvent(event: ArenaEvent): EventStyle {
       return { tone: 'steer', tag: 'task' };
     case 'entrant.nudged':
       return { tone: 'steer', tag: 'nudge' };
+    case 'director.broadcast':
+      return { tone: 'steer', tag: 'bcast' };
     case 'wallet.assigned':
     case 'funding.balance':
       return { tone: 'chain', tag: 'chain' };

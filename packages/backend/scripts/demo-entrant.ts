@@ -35,7 +35,6 @@ const entrant: EntrantRecord = {
   model,
   address: null,
   status: 'idle',
-  flags: 0,
 };
 
 journal.database.insert(runs).values({

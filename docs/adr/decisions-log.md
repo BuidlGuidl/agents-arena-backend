@@ -144,7 +144,35 @@ pointing at the site alone does not close the gap either. the challenge text is 
 
 ---
 
-## ADR-0010 — entrant status stays the four observable states; tool events carry the harness call id
+## ADR-0010 — the arena reads solves by polling contract state, not by watching logs or querying an indexer
+
+**Status:** accepted (2026-07-28) — replaces the `FlagWatcher` design; closes the #13 question
+
+**Decision:** the arena reads each entrant's flag state directly from `NFTFlags.hasMinted`, once per interval, for every (entrant, challengeId) pair. the calls batch into as few HTTP requests as the endpoint accepts. each read executes at `head - confirmations`, so a pair reads true only once the profile's confirmation depth has passed. a newly-true pair triggers one targeted `getLogs`, filtered on the indexed `minter` and `challengeId`, to recover `txHash`, `tokenId`, and `blockNumber`; `recordSolve` then writes the score row and the `score.flag` event as it does today. no log cursor, no `chain_cursors` table, no indexer in the path. the component is `SolvePoller`, and the glossary term *solve poller* retires *game-state adapter*.
+
+**Why:** the state is bounded. `NFTFlags` exposes twelve booleans per address and a run holds a handful of addresses, so the complete answer is directly readable. log watching exists to reconstruct state that cannot be read, which is not the situation here.
+
+the cursor was the real cost. it gave the watcher a lifecycle — where to start on base, whether to resume after a restart, how long to keep scanning past `stop()` — and every one of those was unwritten and untested, so "already built" covered the easy half. `startBlock` defaulted to `0n`, which on base is roughly 24,600 sequential `getLogs` calls before the first useful scan finishes. a cursor also fails silently: a wallet row written after its log was scanned, or an RPC returning an incomplete range, advances the cursor past a flag that nothing will ever look for again.
+
+hosted Ponder was the other candidate and was rejected as a source. it stays in the ai-ctf repo, where SE-2 wires its addresses and ABIs out of `deployedContracts.ts` automatically — a real advantage that argues for leaving it there. consuming it would put the race's scoring path on a separate service's uptime, stack two poll intervals, and save close to nothing: `entrantMap`, `recordSolve`, the dedup key, and the journal are identical under every option, and a GraphQL client plus its own cursor replaces most of what `scanOnce` did. nothing arena-specific can live in an indexer anyway, because `runId` is invented by this server and appears in no log.
+
+**Trade-off:** board latency is now `confirmations × block time + interval`. base sits at 5 confirmations, so ~10s plus the interval. that is slower than reading unconfirmed state, and it is the price of never recording a flag a reorg takes back — the journal is append-only and `arena-types.ts` has no un-score event, so anything recorded is permanent. the confirmation depth stays at 5 until a rehearsal gives a measured reason to lower it.
+
+the challenge count is fixed at 12 in the poll, so a changed challenge set needs a code change. cost scales with entrants × challenges: 24 reads per tick for a duel, 120 at the ten entrants #2 asks for. `mainnet.base.org` rejects a batch above 10 calls with `-32014`, measured against the live endpoint, so those are 3 and 12 requests rather than 1 — about 14,400 across a three-hour duel at a 3s interval, falling as pairs score and drop out of the poll. that is the same order as the log watcher's ~16,200, so this design is bought with the cursor going away, not with fewer requests.
+
+Multicall3 changes that where it exists. it is at `0xcA11bde05977b3631167028862bE2a173976CA11` on base and base sepolia, and absent from both local chains — anvil and the CTF's hardhat node, checked on all four. so the poller asks the chain for its code once and aggregates the tick into one `aggregate3` when the answer is yes. that makes the read cost flat rather than linear in entrants: 1 request against 3 for a duel, 1 against 12 at ten entrants. the earlier plan was to skip Multicall3 entirely because local dev has to work, but probing for it costs one read per poller and keeps local on the batched path, so both hold. probing also beats branching on the profile name, which would go stale the first time a profile is added.
+
+the same endpoint caps `eth_getLogs` at a 10,000 block span (`-32614`). in the steady state the recovery search covers the blocks since the previous tick, which is nowhere near that. the span only widens on a poller's first tick, so it is floored at 10,000 blocks. a capture older than that window is unrecoverable, which needs a mid-race restart to reach, and a restart already leaves a `running` run with no containers attached.
+
+**Consequence:** `chain_cursors` is removed — its table, its schema entry, and its index. `flag-watcher.ts` was the only reader. `confirmations` stays in `ChainProfile` because `funding-watcher.ts` uses it too. `FlagWatcher` and `test/chain/flags.test.ts` are replaced rather than extended.
+
+**Consequence — the frontend contract does not move.** `recordSolve` is untouched, so the dedup key, the `score.flag` payload, and `EntrantSummary.solves` stay exactly as #3 shipped them. ordering also survives: the recovery `getLogs` returns `blockNumber` and `logIndex`, so two solves discovered in one tick are journaled in true chain order rather than poll order.
+
+**Consequence — the arena has no runtime dependency on the ai-ctf deploy.** their Ponder can be down, mid-migration, or half-indexed on race day and the board still moves. the public leaderboard and the arena board can differ transiently on latency, never on final state, since both derive from the same chain. that also keeps the ask at tomorrow's meeting small: upgrade and host Ponder for the leaderboard, build nothing for us.
+
+---
+
+## ADR-0011 — entrant status stays the four observable states; tool events carry the harness call id
 
 **Status:** accepted (2026-07-29) — reconciles the contract with the frontend (issue #5); the glossary's state vocabulary stands
 

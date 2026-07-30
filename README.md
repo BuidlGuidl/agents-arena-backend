@@ -1,6 +1,6 @@
 # agents-arena-backend
 
-Backend for BuidlGuidl's **Agents Arena** — two coding agents race to solve the on-chain AI CTF, live, each in its own Docker container. One `codex` entrant and one `opencode` entrant. Every step streams to the frontend over server-sent events. Scores come from on-chain `FlagMinted` events, not an off-chain answer key.
+Backend for BuidlGuidl's **Agents Arena** — two coding agents race to solve the on-chain AI CTF, live, each in its own Docker container. One `codex` entrant and one `opencode` entrant. Every step streams to the frontend over server-sent events. Scores come from on-chain flag state, not an off-chain answer key.
 
 Backend only — the frontend lives in a separate ai-ctf fork. This repo ships a small mock React frontend so the backend team can exercise the full slice (SSE → browser) on its own.
 
@@ -11,9 +11,11 @@ Working today:
 - One replayable SSE feed per run. A reconnect replays from `Last-Event-ID` with no gap and no duplicate.
 - A mock React frontend renders two lanes and a run log.
 - Burner wallet + funding gate, proven against the local chain by a drill. Exactly-once scoring, tested against a local node.
+- A docker-duel run scores itself. The solve poller reads each entrant's flag state from `NFTFlags` on an interval and journals `score.flag`.
 
 Not wired yet:
-- The on-chain register → mint → score path is not connected into the run lifecycle. The agents run and stream; a full run does not yet register an identity or mint flags. That is the next pass.
+- Auto-nudge. An idle entrant that still has flags to win is not nudged.
+- The `base` profile addresses in `config/chains.json` are stale until the CTF contracts are redeployed. ADR-0009's startup cross-check throws until they are.
 
 ## How it works
 
@@ -29,7 +31,7 @@ Transport is each CLI's line-JSON stdout (`codex --json`, `opencode --format jso
 
 ## Stack
 
-TypeScript on Node, one pnpm workspace, `tsx` (no build step), vitest. Fastify (HTTP + SSE), drizzle-orm + better-sqlite3 (the journal), viem (chain watch + funding), dockerode (containers). Mock frontend: Vite + React + TanStack Query + native EventSource. One pinned Docker image carries Foundry, the `codex` and `opencode` CLIs, and the in-container runner.
+TypeScript on Node, one pnpm workspace, `tsx` (no build step), vitest. Fastify (HTTP + SSE), drizzle-orm + better-sqlite3 (the journal), viem (chain reads + funding), dockerode (containers). Mock frontend: Vite + React + TanStack Query + native EventSource. One pinned Docker image carries Foundry, the `codex` and `opencode` CLIs, and the in-container runner.
 
 ## Run it
 
@@ -96,6 +98,7 @@ If either preflight fails, the run fails and both containers are torn down. Neit
 | POST | `/runs/:id/start` | release a prepared run through the ready barrier |
 | POST | `/runs/:id/stop` | stop and tear down |
 | POST | `/runs/:id/entrants/:eid/steer` | inject a turn into one live agent |
+| POST | `/runs/:id/broadcast` | inject one director message into every live agent |
 | GET | `/runs/:id` | snapshot: state, entrants, addresses, scores, last event id |
 | GET | `/runs/:id/events` | replayable SSE feed |
 

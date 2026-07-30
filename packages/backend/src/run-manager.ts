@@ -12,7 +12,7 @@ import type {
 } from './contract.js';
 import { entrants, events, runs, scores } from './db/schema.js';
 import { ensureChainTables } from './chain/storage.js';
-import { getChainProfile } from './chain/profile.js';
+import { activeChainProfile } from './chain/profile.js';
 import { buildOpeningPrompt, type OpeningPromptBuilder } from './ctf/prompt.js';
 import { roundUsd } from './pricing.js';
 import type { EventJournal } from './journal.js';
@@ -37,6 +37,11 @@ export class UnknownPresetError extends Error {}
 export interface CreateRunResult {
   run: RunSnapshot;
   created: boolean;
+}
+
+export interface BroadcastResult {
+  delivered: string[];
+  failed: { entrantId: string; message: string }[];
 }
 
 interface PresetEntrant {
@@ -67,10 +72,19 @@ export type WalletGate = (
   entrants: readonly EntrantRecord[],
 ) => Promise<void>;
 
+// Not a gate: a gate is awaited to completion and a poll loop never resolves. The run
+// starts this once it is past funding and aborts the signal when it stops.
+export type SolveWatch = (
+  run: RunRecord,
+  entrants: readonly EntrantRecord[],
+  signal: AbortSignal,
+) => void;
+
 export interface RunManagerOptions {
   prepareTimeoutMs?: number;
   fundingTimeoutMs?: number;
   walletGate?: WalletGate;
+  solveWatch?: SolveWatch;
   promptBuilder?: OpeningPromptBuilder;
 }
 
@@ -89,20 +103,23 @@ const OPERATOR_STOP_REASON = 'stopped by operator before running';
 // The chain funding slice replaces this pass-through hook with the real gate.
 export const passThroughFundingGate: FundingGate = async () => {};
 export const passThroughWalletGate: WalletGate = async () => {};
+export const passThroughSolveWatch: SolveWatch = () => {};
 
 // The prompt names the chain's RPC and says where the challenge briefing lives,
 // so it follows the same profile the funding gate resolves (ADR-0009).
 export const profilePromptBuilder: OpeningPromptBuilder = (entrant) =>
-  buildOpeningPrompt(entrant, getChainProfile(process.env.ARENA_CHAIN_PROFILE ?? 'local'));
+  buildOpeningPrompt(entrant, activeChainProfile);
 
 export class RunManager {
   private readonly inFlightStarts = new Map<string, Promise<RunSnapshot>>();
   private readonly startControllers = new Map<string, AbortController>();
   private readonly operatorStops = new Set<string>();
   private readonly teardownPromises = new Map<string, Promise<PromiseSettledResult<void>[]>>();
+  private readonly solveWatchControllers = new Map<string, AbortController>();
   private readonly prepareTimeoutMs: number;
   private readonly fundingTimeoutMs: number;
   private readonly walletGate: WalletGate;
+  private readonly solveWatch: SolveWatch;
   private readonly promptBuilder: OpeningPromptBuilder;
 
   constructor(
@@ -114,6 +131,7 @@ export class RunManager {
     this.prepareTimeoutMs = options.prepareTimeoutMs ?? DEFAULT_PREPARE_TIMEOUT_MS;
     this.fundingTimeoutMs = options.fundingTimeoutMs ?? DEFAULT_FUNDING_TIMEOUT_MS;
     this.walletGate = options.walletGate ?? passThroughWalletGate;
+    this.solveWatch = options.solveWatch ?? passThroughSolveWatch;
     this.promptBuilder = options.promptBuilder ?? profilePromptBuilder;
     // snapshot() reads scores, which chainless presets never create otherwise.
     ensureChainTables(journal.database);
@@ -155,7 +173,6 @@ export class RunManager {
           model: entrant.model,
           address: null,
           status: 'idle' as const,
-          flags: 0,
       }))).run();
     });
     this.journal.append(id, 'run', 'run.state', { state: 'created' });
@@ -278,6 +295,8 @@ export class RunManager {
       }
 
       run = this.transition(runId, 'running');
+      // Before the entrants start, so the first mint of the race is already covered.
+      this.startSolveWatch(run, runEntrants);
       const preset = PRESETS[run.preset];
       if (preset === undefined) throw new UnknownPresetError(`Unknown preset: ${run.preset}`);
       await Promise.all(runEntrants.map(async (entrant) => {
@@ -288,6 +307,7 @@ export class RunManager {
       return this.snapshot(runId);
     } catch (error) {
       if (!controller.signal.aborted) controller.abort(asError(error));
+      this.stopSolveWatch(runId);
       let current = this.requireRun(runId);
       if (!this.operatorStops.has(runId) && current.state !== 'failed' && current.state !== 'finished') {
         current = this.transition(runId, 'failed', errorMessage(error));
@@ -305,6 +325,7 @@ export class RunManager {
 
     const runEntrants = this.entrants(runId);
     this.operatorStops.add(runId);
+    this.stopSolveWatch(runId);
     try {
       if (run.state !== 'running') {
         this.startControllers.get(runId)?.abort(new Error(OPERATOR_STOP_REASON));
@@ -343,7 +364,68 @@ export class RunManager {
     if (entrant === undefined) {
       throw new EntrantNotFoundError(`Entrant ${entrantId} does not exist in run ${runId}`);
     }
-    await this.driver.steer(run, entrant, text);
+    await this.deliver(run, entrant, text, 'Steer');
+  }
+
+  // The director speaks once and every entrant still in the fight hears it. The
+  // broadcast event lands before the fan-out so the feed reads message-then-turns,
+  // and a steer that throws is reported back instead of thrown: one wedged entrant
+  // must not swallow the message for the rest.
+  //
+  // Only a running run may be addressed. Before the opening turn the harness has no
+  // session to resume, and a steer there degrades the entrant for the rest of the
+  // run — one early broadcast would take out the whole field.
+  async broadcast(runId: string, text: string): Promise<BroadcastResult> {
+    const run = this.requireRun(runId);
+    if (run.state !== 'running') {
+      throw new InvalidTransitionError(`Cannot broadcast to run ${runId} in state ${run.state}`);
+    }
+    const live = this.entrants(runId).filter((entrant) => entrant.status !== 'done');
+    // Who the director addressed. Delivery truth is the response, not this list:
+    // a busy entrant queues the turn, and a wedged one lands in `failed`.
+    this.journal.append(runId, 'run', 'director.broadcast', {
+      text,
+      targetEntrantIds: live.map((entrant) => entrant.id),
+    });
+
+    const outcomes = await Promise.all(live.map(async (entrant) => {
+      try {
+        await this.deliver(run, entrant, text, 'Broadcast');
+        return { entrantId: entrant.id, message: undefined };
+      } catch (error) {
+        return { entrantId: entrant.id, message: errorMessage(error) };
+      }
+    }));
+
+    const delivered: string[] = [];
+    const failed: BroadcastResult['failed'] = [];
+    for (const outcome of outcomes) {
+      if (outcome.message === undefined) {
+        delivered.push(outcome.entrantId);
+        continue;
+      }
+      failed.push({ entrantId: outcome.entrantId, message: outcome.message });
+    }
+    return { delivered, failed };
+  }
+
+  // Every operator message travels this path so a miss is recorded on the lane it
+  // missed, whoever asked for it. The error keeps its type for the caller to map.
+  private async deliver(
+    run: RunRecord,
+    entrant: EntrantRecord,
+    text: string,
+    label: 'Steer' | 'Broadcast',
+  ): Promise<void> {
+    try {
+      await this.driver.steer(run, entrant, text);
+    } catch (error) {
+      this.journal.append(run.id, entrant.id, 'entrant.error', {
+        entrantId: entrant.id,
+        message: `${label} not delivered: ${errorMessage(error)}`,
+      });
+      throw error;
+    }
   }
 
   hasRun(runId: string): boolean {
@@ -373,6 +455,18 @@ export class RunManager {
     return teardown;
   }
 
+  private startSolveWatch(run: RunRecord, runEntrants: readonly EntrantRecord[]): void {
+    this.stopSolveWatch(run.id);
+    const controller = new AbortController();
+    this.solveWatchControllers.set(run.id, controller);
+    this.solveWatch(run, runEntrants, controller.signal);
+  }
+
+  private stopSolveWatch(runId: string): void {
+    this.solveWatchControllers.get(runId)?.abort();
+    this.solveWatchControllers.delete(runId);
+  }
+
   private clearTeardownWhenSafe(runId: string): void {
     if (this.inFlightStarts.has(runId) || this.operatorStops.has(runId)) return;
     this.teardownPromises.delete(runId);
@@ -386,9 +480,8 @@ export class RunManager {
     return run;
   }
 
-  // The entrants.flags column is never written after creation, so both the solved
-  // list and the count come from scores rows — recordSolve keeps those 1:1 with
-  // score.flag events, one per confirmed, deduped capture.
+  // Both the solved list and count come from scores rows because recordSolve keeps
+  // them 1:1 with score.flag events, one per confirmed, deduped capture.
   private solvesByEntrant(runId: string): Map<string, EntrantSolve[]> {
     const rows = this.journal.database
       .select({

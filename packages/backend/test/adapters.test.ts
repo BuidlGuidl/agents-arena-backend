@@ -7,7 +7,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { CodexDriver } from '../src/adapters/codex.js';
 import { OpenCodeDriver, scrubOpenCodeEnvironment } from '../src/adapters/opencode.js';
-import type { EntrantDriver, EntrantRecord, RunRecord } from '../src/adapters/types.js';
+import {
+  EntrantUnavailableError,
+  type EntrantDriver,
+  type EntrantRecord,
+  type RunRecord,
+} from '../src/adapters/types.js';
 import { createWallet, getWallet } from '../src/chain/wallet.js';
 import { entrants, runs } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
@@ -190,6 +195,31 @@ function completeTurn(harness: 'codex' | 'opencode', execution: ControlledExecut
   }
   execution.finish(0);
 }
+
+describe.each(['codex', 'opencode'] as const)('%s steer rejection', (harness) => {
+  it('rejects a steer sent before the opening turn without degrading the entrant', async () => {
+    const context = await setup(harness);
+    const sessionId = harness === 'codex' ? 'thread-1' : 'session-1';
+    try {
+      await expect(context.driver.steer(context.run, context.entrant, 'too early'))
+        .rejects.toBeInstanceOf(EntrantUnavailableError);
+      expect(context.container.turns).toHaveLength(0);
+      // The caller records the miss on the lane; the driver stays silent.
+      expect(context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.error')).toHaveLength(0);
+
+      // The early miss must not poison the entrant: once the opening turn
+      // reports a session, a steer goes through.
+      await context.driver.start(context.run, context.entrant, 'opening');
+      completeTurn(harness, context.container.turns[0] as ControlledExecution, sessionId);
+      await context.driver.steer(context.run, context.entrant, 'after start');
+      await waitFor(() => context.container.turns.length === 2);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+});
 
 describe.each(['codex', 'opencode'] as const)('%s steer queue', (harness) => {
   it('queues during a turn and injects at once while idle', async () => {

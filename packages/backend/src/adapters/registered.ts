@@ -1,4 +1,4 @@
-import { getChainProfile } from '../chain/profile.js';
+import { activeChainProfile } from '../chain/profile.js';
 import { createChallengePackResolver } from '../ctf/resolve.js';
 import type { EventJournal } from '../journal.js';
 import { DockerEntrantDriver } from './docker.js';
@@ -13,9 +13,7 @@ export class RegisteredEntrantDriver implements EntrantDriver {
     this.fake = new FakeDriver(journal, schedule);
     // Same profile the funding gate and the opening prompt read. A profile with
     // a briefing URL resolves to undefined and mounts nothing (ADR-0009).
-    const resolveChallengePack = createChallengePackResolver(
-      getChainProfile(process.env.ARENA_CHAIN_PROFILE ?? 'local'),
-    );
+    const resolveChallengePack = createChallengePackResolver(activeChainProfile);
     this.docker = new DockerEntrantDriver(
       journal,
       resolveChallengePack === undefined ? {} : { resolveChallengePack },

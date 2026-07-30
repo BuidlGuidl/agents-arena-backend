@@ -33,5 +33,22 @@ export function projectSnapshot(current: RunSnapshot | undefined, event: ArenaEv
         : entrant),
     };
   }
+  if (event.type === 'usage') {
+    const { entrantId, inputTokens, outputTokens, costUsd } = event.payload;
+    return {
+      ...current,
+      lastEventId: event.id,
+      entrants: current.entrants.map((entrant) => entrant.id === entrantId
+        ? {
+          ...entrant,
+          inputTokens: entrant.inputTokens + inputTokens,
+          outputTokens: entrant.outputTokens + outputTokens,
+          // A priced turn starts the total; unpriced turns leave it alone, so a
+          // lane that never reports cost stays blank instead of showing $0.
+          costUsd: costUsd === null ? entrant.costUsd : (entrant.costUsd ?? 0) + costUsd,
+        }
+        : entrant),
+    };
+  }
   return { ...current, lastEventId: event.id };
 }

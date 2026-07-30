@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"019fad0a-599f-7ef2-bc61-80c5757cb26e"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hi"}}
+{"type":"turn.completed","usage":{"input_tokens":12937,"cached_input_tokens":10496,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}
+{"type":"thread.started","thread_id":"019fad0a-599f-7ef2-bc61-80c5757cb26e"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"again"}}
+{"type":"turn.completed","usage":{"input_tokens":25892,"cached_input_tokens":23040,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0}}

@@ -70,6 +70,21 @@ private key and chain RPC URL into its container, and self-funds both burners on
 the local chain profile. The run stays in `awaiting_funding` until both balances
 clear the local threshold, then it moves to ready and starts both entrants.
 
+The backend also assembles a challenge pack from `$AI_CTF_REPO` and mounts it
+read-only at `/ctf` in both containers: `BRIEFING.md` (the twelve challenge
+descriptions plus the address each contract was deployed at), `contracts/`, and
+the deploy script. The opening prompt points the entrant at that pack. Prepare
+fails if `AI_CTF_REPO` is unset, or if the deployed addresses disagree with the
+active chain profile — redeploy the chain and restart the run if that happens.
+
+On the `base` chain profile no pack is mounted. The prompt points the entrant at
+the public CTF site instead. See ADR-0009.
+
+Once the run is active the backend polls each entrant's flag state every 3 seconds,
+reading at `head - confirmations`. A mint reaches the board a few seconds after it
+lands: the local profile confirms at 1 block, `base` at 5. The lane and the run log
+both update from the same `score.flag` event. See ADR-0010.
+
 Open the printed frontend URL. The Codex and OpenCode lanes enter the ready
 barrier, start together, and stream their status and tool events into the run log.
 

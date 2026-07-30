@@ -16,7 +16,6 @@ export interface EntrantRecord {
   model: string;
   address: string | null;
   status: EntrantStatus;
-  flags: number;
 }
 
 // The entrant exists but cannot take a turn right now — stopping, or degraded.

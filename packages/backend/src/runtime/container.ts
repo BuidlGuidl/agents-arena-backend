@@ -25,8 +25,13 @@ export interface ContainerOptions {
   env?: Record<string, string>;
   credentialDir?: string;
   credentialTarget?: string;
+  challengePackDir?: string;
+  challengePackTarget?: string;
   readyTimeoutMs?: number;
 }
+
+// The opening prompt names this path, so it has one definition.
+export const CHALLENGE_PACK_MOUNT = '/ctf';
 
 export interface EntrantContainer {
   exec(argv: string[], env?: Record<string, string>): Promise<RuntimeExecution>;
@@ -214,9 +219,16 @@ export class DockerEntrantContainer implements EntrantContainer {
 
     let container: Docker.Container | undefined;
     try {
-      const binds = options.credentialDir === undefined
-        ? []
-        : [`${resolve(options.credentialDir)}:${options.credentialTarget ?? '/creds'}:rw`];
+      const binds = [
+        ...(options.credentialDir === undefined
+          ? []
+          : [`${resolve(options.credentialDir)}:${options.credentialTarget ?? '/creds'}:rw`]),
+        // hardening: the challenge pack is read-only so an entrant cannot edit the
+        // briefing or the sources its rival reads from the same assembled pack.
+        ...(options.challengePackDir === undefined
+          ? []
+          : [`${resolve(options.challengePackDir)}:${options.challengePackTarget ?? CHALLENGE_PACK_MOUNT}:ro`]),
+      ];
 
       container = await docker.createContainer({
         Image: options.image ?? 'arena-entrant:dev',

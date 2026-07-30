@@ -13,7 +13,7 @@ const runStates = [
 
 const harnessIds = ['codex', 'opencode', 'claude'] as const;
 const entrantStatuses = ['working', 'idle', 'blocked', 'done'] as const;
-const eventTypes = [
+export const eventTypes = [
   'run.state',
   'entrant.status',
   'agent.message',
@@ -49,7 +49,6 @@ export const entrants = sqliteTable('entrants', {
   model: text('model').notNull(),
   address: text('address'),
   status: text('status', { enum: entrantStatuses }).notNull(),
-  flags: integer('flags').notNull().default(0),
 }, (table) => [
   uniqueIndex('entrants_run_id_id').on(table.runId, table.id),
 ]);
@@ -65,6 +64,8 @@ export const events = sqliteTable('events', {
 }, (table) => [
   uniqueIndex('events_run_id_source_seq').on(table.runId, table.source, table.seq),
   index('events_run_id_id').on(table.runId, table.id),
+  index('events_run_id_type_id').on(table.runId, table.type, table.id),
+  index('events_run_id_source_id').on(table.runId, table.source, table.id),
 ]);
 
 export const wallets = sqliteTable('wallets', {
@@ -95,15 +96,4 @@ export const scores = sqliteTable('scores', {
   index('scores_run_id_entrant_id').on(table.runId, table.entrantId),
 ]);
 
-export const chainCursors = sqliteTable('chain_cursors', {
-  runId: text('run_id').notNull(),
-  contractAddress: text('contract_address').notNull(),
-  lastProcessedBlock: integer('last_processed_block').notNull(),
-}, (table) => [
-  uniqueIndex('chain_cursors_run_id_contract_address').on(
-    table.runId,
-    table.contractAddress,
-  ),
-]);
-
-export const schema = { events, runs, entrants, wallets, scores, chainCursors };
+export const schema = { events, runs, entrants, wallets, scores };

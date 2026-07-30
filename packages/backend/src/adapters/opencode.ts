@@ -22,7 +22,6 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
   private readonly apiKey: string | undefined;
   private readonly authPath: string;
   private readonly turnTimeout: number;
-  private readonly parsers = new Map<string, OpenCodeEventParser>();
 
   constructor(journal: EventJournal, options: OpenCodeDriverOptions = {}) {
     super(journal, options);
@@ -84,13 +83,8 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
     return ['opencode', 'run', '--format', 'json', '--auto', '-s', sessionId, text];
   }
 
-  protected parseLine(entrantId: string, line: string) {
-    let parser = this.parsers.get(entrantId);
-    if (parser === undefined) {
-      parser = new OpenCodeEventParser(entrantId, this.logger);
-      this.parsers.set(entrantId, parser);
-    }
-    return parser.parse(line);
+  protected createParser(entrant: EntrantRecord): OpenCodeEventParser {
+    return new OpenCodeEventParser(entrant.id, this.logger);
   }
 
   protected watchdogMs(): number {

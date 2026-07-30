@@ -1,3 +1,5 @@
+import { activeChainProfile } from '../chain/profile.js';
+import { createChallengePackResolver } from '../ctf/resolve.js';
 import type { EventJournal } from '../journal.js';
 import { DockerEntrantDriver } from './docker.js';
 import { FakeDriver, type Schedule } from './fake.js';
@@ -9,7 +11,13 @@ export class RegisteredEntrantDriver implements EntrantDriver {
 
   constructor(journal: EventJournal, schedule?: Schedule) {
     this.fake = new FakeDriver(journal, schedule);
-    this.docker = new DockerEntrantDriver(journal);
+    // Same profile the funding gate and the opening prompt read. A profile with
+    // a briefing URL resolves to undefined and mounts nothing (ADR-0009).
+    const resolveChallengePack = createChallengePackResolver(activeChainProfile);
+    this.docker = new DockerEntrantDriver(
+      journal,
+      resolveChallengePack === undefined ? {} : { resolveChallengePack },
+    );
   }
 
   async prepare(run: RunRecord, entrant: EntrantRecord): Promise<void> {

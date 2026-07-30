@@ -148,8 +148,10 @@ export function describeEvent(event: ArenaEvent): string {
       return `error: ${event.payload.message}`;
     case 'run.error':
       return `run error: ${event.payload.message}`;
-    case 'usage':
-      return `usage in ${event.payload.inputTokens} / out ${event.payload.outputTokens}`;
+    case 'usage': {
+      const cost = event.payload.costUsd === null ? '' : ` · $${event.payload.costUsd.toFixed(4)}`;
+      return `usage in ${event.payload.inputTokens} / out ${event.payload.outputTokens}${cost}`;
+    }
     default:
       // Unknown-to-the-UI type: never blank the row, show the raw payload.
       return rawFallback(event);

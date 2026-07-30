@@ -1,4 +1,5 @@
 import type { EventJournal } from '../journal.js';
+import type { ChallengePackResolver } from '../ctf/resolve.js';
 import { CodexDriver, type CodexDriverOptions } from './codex.js';
 import { OpenCodeDriver, type OpenCodeDriverOptions } from './opencode.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
@@ -6,6 +7,7 @@ import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
 export interface DockerEntrantDriverOptions {
   codex?: CodexDriverOptions;
   opencode?: OpenCodeDriverOptions;
+  resolveChallengePack?: ChallengePackResolver;
 }
 
 export class DockerEntrantDriver implements EntrantDriver {
@@ -13,8 +15,13 @@ export class DockerEntrantDriver implements EntrantDriver {
   private readonly opencode: OpenCodeDriver;
 
   constructor(journal: EventJournal, options: DockerEntrantDriverOptions = {}) {
-    this.codex = new CodexDriver(journal, options.codex);
-    this.opencode = new OpenCodeDriver(journal, options.opencode);
+    // Both entrants read the same pack, so the resolver is shared unless a
+    // per-harness option overrides it.
+    const shared = options.resolveChallengePack === undefined
+      ? {}
+      : { resolveChallengePack: options.resolveChallengePack };
+    this.codex = new CodexDriver(journal, { ...shared, ...options.codex });
+    this.opencode = new OpenCodeDriver(journal, { ...shared, ...options.opencode });
   }
 
   async prepare(run: RunRecord, entrant: EntrantRecord): Promise<void> {

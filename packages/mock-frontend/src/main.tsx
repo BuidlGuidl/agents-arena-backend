@@ -17,7 +17,7 @@ import {
   type FeedEntry,
   type FeedState,
 } from './feed-projection';
-import { runPhase, styleForEntry, totalUsage } from './event-style';
+import { runPhase, styleForEntry } from './event-style';
 import './styles.css';
 
 const queryClient = new QueryClient();
@@ -228,6 +228,12 @@ function solveTitle(solve: EntrantSolve, startedAt: string | null): string {
   return `challenge ${solve.challengeId} · ${at} · ${truncateAddress(solve.txHash)}`;
 }
 
+// Harnesses on a subscription login report tokens without a price, so a lane
+// with no priced turn shows a dash rather than a misleading $0.00.
+function formatCost(costUsd: number | null): string {
+  return costUsd === null ? '—' : `$${costUsd.toFixed(costUsd < 1 ? 4 : 2)}`;
+}
+
 function formatElapsed(startedAt: string, ts: string): string {
   const totalSeconds = Math.max(0, Math.floor((new Date(ts).getTime() - new Date(startedAt).getTime()) / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -264,7 +270,6 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, side }: {
     () => (entrant ? gapsForSource(feed.gaps, entrant.id) : []),
     [entrant, feed.gaps],
   );
-  const usage = useMemo(() => totalUsage(laneEvents), [laneEvents]);
   const wallet = useMemo(
     () => deriveLaneWallet(laneEvents, entrant?.address ?? null, runState),
     [laneEvents, entrant?.address, runState],
@@ -307,7 +312,10 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, side }: {
           flags <b>{entrant.flags}</b>
         </span>
         <span className="stat">
-          tokens <b>{usage.input}</b> in / <b>{usage.output}</b> out
+          tokens <b>{entrant.inputTokens}</b> in / <b>{entrant.outputTokens}</b> out
+        </span>
+        <span className="stat" data-testid={`lane-cost-${entrant.id}`}>
+          cost <b>{formatCost(entrant.costUsd)}</b>
         </span>
       </div>
 

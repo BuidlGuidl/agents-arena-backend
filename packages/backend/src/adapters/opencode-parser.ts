@@ -47,20 +47,26 @@ export class OpenCodeEventParser {
       ], sessionId);
     }
     if (type === 'step_finish') {
-      const reason = stringValue(part?.reason);
-      if (reason === 'tool-calls') return withSession([], sessionId);
       const tokens = objectValue(part?.tokens);
-      return {
-        ...withSession([{
-          type: 'usage',
-          payload: {
-            entrantId: this.entrantId,
-            inputTokens: numberValue(tokens?.input),
-            outputTokens: numberValue(tokens?.output),
-          },
-        }], sessionId),
-        turnEnded: true,
+      // Tokens and cost are per step, and opencode prices each step itself.
+      // `tokens.input` counts only what was not served from cache — the fixture's
+      // total adds up as input + output + reasoning + cache.read. codex instead
+      // counts cache reads inside its input, so the prompt total goes on the wire
+      // and the two lanes' token counts mean the same thing on the board.
+      const cachedInputTokens = numberValue(objectValue(tokens?.cache)?.read);
+      const usage: ParsedArenaEvent = {
+        type: 'usage',
+        payload: {
+          entrantId: this.entrantId,
+          inputTokens: numberValue(tokens?.input) + cachedInputTokens,
+          outputTokens: numberValue(tokens?.output),
+          cachedInputTokens,
+          costUsd: reportedCost(part?.cost),
+        },
       };
+      // A tool-calls step is mid-turn: its spend counts, but the turn is not over.
+      if (stringValue(part?.reason) === 'tool-calls') return withSession([usage], sessionId);
+      return { ...withSession([usage], sessionId), turnEnded: true };
     }
     if (type === 'error') {
       return withSession([{
@@ -107,4 +113,12 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+// A subscription or local-model login reports cost 0 for every step, which is
+// "no price", not "this turn was free". Passing the 0 through would print
+// $0.0000 on the board; unknown prints a dash. A genuinely free OpenRouter model
+// gets the dash too — the cheaper mistake of the two.
+function reportedCost(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 }

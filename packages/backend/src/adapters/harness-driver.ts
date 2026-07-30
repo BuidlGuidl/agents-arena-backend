@@ -3,6 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import type { EntrantStatus } from '../contract.js';
 import { entrants } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
+import { costForTokens } from '../pricing.js';
 import type {
   ContainerFactory,
   EntrantContainer,
@@ -11,7 +12,7 @@ import type {
 import { createDockerContainer } from '../runtime/container.js';
 import type { ChallengePackResolver } from '../ctf/resolve.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
-import type { ParsedArenaEvent, ParsedHarnessLine, ParserLogger } from './parser-types.js';
+import type { HarnessLineParser, ParsedArenaEvent, ParserLogger } from './parser-types.js';
 
 export interface HarnessDriverOptions {
   containerFactory?: ContainerFactory;
@@ -41,6 +42,10 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   protected readonly rpcUrl: string;
   protected readonly logger: ParserLogger;
   private readonly states = new Map<string, EntrantRuntimeState>();
+  // Keyed like states — by run and entrant, not by entrant alone. Entrant ids are
+  // preset literals, so two runs in flight would otherwise share one parser and
+  // interleave their sessions through its state.
+  private readonly parsers = new Map<string, HarnessLineParser>();
 
   protected constructor(
     protected readonly journal: EventJournal,
@@ -132,6 +137,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     await state.turnTask;
     await state.container.teardown();
     this.states.delete(key);
+    this.parsers.delete(key);
     this.setStatus(run.id, entrant.id, 'done');
   }
 
@@ -141,7 +147,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   protected abstract versionArgv(): string[];
   protected abstract startArgv(entrant: EntrantRecord, prompt: string): string[];
   protected abstract resumeArgv(entrant: EntrantRecord, sessionId: string, text: string): string[];
-  protected abstract parseLine(entrantId: string, line: string): ParsedHarnessLine;
+  protected abstract createParser(entrant: EntrantRecord): HarnessLineParser;
 
   protected watchdogMs(): number | undefined {
     return undefined;
@@ -224,8 +230,8 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
           continue;
         }
 
-        const parsed = this.parseLine(state.entrant.id, output.line);
-        for (const event of parsed.events) this.appendParsed(state.run.id, state.entrant.id, event);
+        const parsed = this.parserFor(state).parse(output.line);
+        for (const event of parsed.events) this.appendParsed(state, event);
         if (parsed.turnEnded === true) {
           sawTurnEnd = true;
           // Disarm the watchdog once the turn actually ends. A slow process close
@@ -301,14 +307,25 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     }
   }
 
-  private appendParsed(runId: string, entrantId: string, event: ParsedArenaEvent): void {
+  private appendParsed(state: EntrantRuntimeState, event: ParsedArenaEvent): void {
+    const runId = state.run.id;
+    const entrantId = state.entrant.id;
     switch (event.type) {
       case 'agent.message': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'agent.reasoning': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'tool.call': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'tool.result': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'entrant.error': this.journal.append(runId, entrantId, event.type, event.payload); break;
-      case 'usage': this.journal.append(runId, entrantId, event.type, event.payload); break;
+      // A harness that prices its own turns wins; otherwise the rate table fills in.
+      case 'usage': this.journal.append(runId, entrantId, event.type, {
+        ...event.payload,
+        costUsd: event.payload.costUsd ?? costForTokens(
+          state.entrant.model,
+          event.payload.inputTokens,
+          event.payload.outputTokens,
+          event.payload.cachedInputTokens,
+        ),
+      }); break;
       default: this.logger.warn(`[${this.harnessName()}] parser returned unsupported event ${event.type}`);
     }
   }
@@ -333,6 +350,16 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       .where(and(eq(entrants.runId, runId), eq(entrants.id, entrantId)))
       .run();
     this.journal.append(runId, entrantId, 'entrant.status', { entrantId, status });
+  }
+
+  private parserFor(state: EntrantRuntimeState): HarnessLineParser {
+    const key = this.key(state.run.id, state.entrant.id);
+    let parser = this.parsers.get(key);
+    if (parser === undefined) {
+      parser = this.createParser(state.entrant);
+      this.parsers.set(key, parser);
+    }
+    return parser;
   }
 
   private requireState(runId: string, entrantId: string): EntrantRuntimeState {

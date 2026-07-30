@@ -16,3 +16,10 @@ export interface ParserLogger {
   info(message: string): void;
   warn(message: string): void;
 }
+
+// One per entrant of a run, kept alive by the driver across the processes that
+// harness's turns run in — a parser may carry state that spans them, as codex's
+// does for its cumulative token counts.
+export interface HarnessLineParser {
+  parse(line: string): ParsedHarnessLine;
+}

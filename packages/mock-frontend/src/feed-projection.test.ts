@@ -356,7 +356,7 @@ describe('describeEvent — all 14 contract types render', () => {
     { ...base, type: 'score.flag', payload: { entrantId: 'codex-1', challengeId: 1, txHash: '0xtx', tokenId: '7' } },
     { ...base, type: 'entrant.error', payload: { entrantId: 'codex-1', message: 'boom' } },
     { ...base, source: RUN_SOURCE, type: 'run.error', payload: { message: 'fatal' } },
-    { ...base, type: 'usage', payload: { entrantId: 'codex-1', inputTokens: 10, outputTokens: 5 } },
+    { ...base, type: 'usage', payload: { entrantId: 'codex-1', inputTokens: 10, outputTokens: 5, cachedInputTokens: 4, costUsd: 0.001 } },
   ];
 
   it('covers every contract event type', () => {

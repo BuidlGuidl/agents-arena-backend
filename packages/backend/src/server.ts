@@ -3,7 +3,13 @@ import { z } from 'zod';
 
 import type { ArenaEvent, BroadcastResponse, CreateRunRequest } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
-import { operatorAuth } from './auth.js';
+import {
+  isSecureRequest,
+  operatorAuth,
+  serializeSessionCookie,
+  sessionCookie,
+} from './auth.js';
+import { SiweLogin, type SiweLoginOptions } from './siwe.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
 import { EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
 import { eventTypes } from './db/schema.js';
@@ -28,6 +34,10 @@ const createRunSchema = z.object({
 
 // Steer and broadcast carry the same body; only the fan-out differs.
 const textSchema = z.object({ text: z.string().min(1) }).strict();
+const verifySchema = z.object({
+  message: z.string().min(1),
+  signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
+}).strict();
 const eventsQuerySchema = z.object({ after: z.coerce.number().int().nonnegative().optional() });
 const decimalIntegerSchema = z.string()
   .regex(/^\d+$/)
@@ -43,6 +53,8 @@ const historyQuerySchema = z.object({
 export interface ServerOptions {
   /** Required: every mutating route rejects a request that does not carry it. */
   operatorToken: string;
+  /** Wallet login for the operator. Omit, or pass no addresses, to serve token-only. */
+  siwe?: SiweLoginOptions;
   dbPath?: string;
   schedule?: Schedule;
   driverFactory?: (journal: EventJournal) => EntrantDriver;
@@ -60,7 +72,8 @@ export interface ArenaServer {
 
 export function createServer(options: ServerOptions): ArenaServer {
   const app = Fastify({ logger: options.logger ?? false });
-  app.addHook('onRequest', operatorAuth(options.operatorToken));
+  const login = new SiweLogin(options.siwe ?? { operatorAddresses: [] });
+  app.addHook('onRequest', operatorAuth({ token: options.operatorToken, login }));
   const journal = new EventJournal(options.dbPath);
   const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(journal, options.schedule);
   const runManagerOptions: RunManagerOptions = {
@@ -94,6 +107,53 @@ export function createServer(options: ServerOptions): ArenaServer {
     }
     app.log.error(error);
     void reply.status(500).send({ error: 'Internal server error' });
+  });
+
+  app.get('/auth/nonce', async (_request, reply) => {
+    if (!login.enabled) return siweDisabled(reply);
+    // A nonce is one-shot and short-lived, so it must never sit in a cache.
+    return reply.header('Cache-Control', 'no-store').send({ nonce: login.issueNonce() });
+  });
+
+  app.post('/auth/verify', async (request, reply) => {
+    if (!login.enabled) return siweDisabled(reply);
+    const body = parseBody(verifySchema, request.body, reply);
+    if (body === undefined) return;
+    const result = await login.login({
+      message: body.message,
+      // The schema already pinned the 0x-hex shape zod cannot express as a type.
+      signature: body.signature as `0x${string}`,
+      requestHost: request.headers.host,
+    });
+    if (!result.ok) {
+      return reply.status(401).send({ error: result.reason });
+    }
+    const maxAgeSeconds = Math.max(1, Math.round((result.session.expiresAt - Date.now()) / 1_000));
+    return reply
+      .header('Set-Cookie', serializeSessionCookie(result.sessionId, {
+        maxAgeSeconds,
+        secure: isSecureRequest(request),
+      }))
+      .send({ address: result.session.address, expiresAt: new Date(result.session.expiresAt).toISOString() });
+  });
+
+  app.get('/auth/session', async (request, reply) => {
+    const session = login.session(sessionCookie(request.headers.cookie));
+    if (session === undefined) {
+      return reply.header('Cache-Control', 'no-store').send({ authenticated: false });
+    }
+    return reply.header('Cache-Control', 'no-store').send({
+      authenticated: true,
+      address: session.address,
+      expiresAt: new Date(session.expiresAt).toISOString(),
+    });
+  });
+
+  app.post('/auth/logout', async (request, reply) => {
+    login.logout(sessionCookie(request.headers.cookie));
+    return reply
+      .header('Set-Cookie', serializeSessionCookie('', { maxAgeSeconds: 0, secure: isSecureRequest(request) }))
+      .send({ authenticated: false });
   });
 
   app.post('/runs', async (request, reply) => {
@@ -220,6 +280,12 @@ export function createServer(options: ServerOptions): ArenaServer {
   });
 
   return { app, journal, manager };
+}
+
+// No allowlist means no wallet can be the operator, so the route says so rather
+// than 404 — the frontend needs to tell "not configured" from "wrong URL".
+function siweDisabled(reply: FastifyReply): FastifyReply {
+  return reply.status(503).send({ error: 'Wallet login is not configured' });
 }
 
 function parseBody<T>(schema: z.ZodType<T>, value: unknown, reply: FastifyReply): T | undefined {

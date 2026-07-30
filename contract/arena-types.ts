@@ -118,3 +118,22 @@ export interface BroadcastResponse {
   delivered: string[];
   failed: { entrantId: string; message: string }[];
 }
+
+export interface NonceResponse {
+  nonce: string;
+}
+
+// The EIP-4361 message the operator's wallet signed, verbatim, plus its signature.
+export interface VerifyRequest {
+  message: string;
+  signature: string;
+}
+
+export interface VerifyResponse {
+  address: string;
+  expiresAt: string;
+}
+
+export type SessionResponse =
+  | { authenticated: false }
+  | { authenticated: true; address: string; expiresAt: string };

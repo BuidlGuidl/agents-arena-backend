@@ -114,5 +114,8 @@ If either preflight fails, the run fails and both containers are torn down. Neit
 | POST | `/runs/:id/broadcast` | inject one director message into every live agent |
 | GET | `/runs/:id` | snapshot: state, entrants, addresses, scores, last event id |
 | GET | `/runs/:id/events` | replayable SSE feed |
+| GET/POST | `/auth/*` | wallet login: `nonce`, `verify`, `session`, `logout` |
 
-Control endpoints are operator-only: every POST needs `Authorization: Bearer $ARENA_OPERATOR_TOKEN` and answer `401` without it, while the snapshot and the SSE feed stay open for spectators. The backend refuses to start when `ARENA_OPERATOR_TOKEN` is unset, so a deploy cannot leave the controls open. A frontend should hold the token on its own server and proxy the control calls rather than ship it to the browser — see [ADR-0011](docs/adr/decisions-log.md). The API contract travels as checked-in files (`contract/API.md` + `contract/arena-types.ts`); the frontend fork copies the types.
+Control endpoints are operator-only. Every POST needs one of two credentials — `Authorization: Bearer $ARENA_OPERATOR_TOKEN` for scripts and server-side proxies, or the `arena_operator` session cookie the operator gets by signing in with his wallet — and answers `401` with neither, while the snapshot and the SSE feed stay open for spectators. The backend refuses to start when `ARENA_OPERATOR_TOKEN` is unset, so a deploy cannot leave the controls open.
+
+Wallet login is Sign-In with Ethereum and stays off until `ARENA_OPERATOR_ADDRESSES` lists the operator's address; set `ARENA_SIWE_DOMAINS` too when a frontend proxies the arena under its own hostname. Whichever credential a frontend uses, the secret stays out of the page — see [ADR-0011](docs/adr/decisions-log.md). The API contract travels as checked-in files (`contract/API.md` + `contract/arena-types.ts`); the frontend fork copies the types.

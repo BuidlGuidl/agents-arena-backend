@@ -78,6 +78,18 @@ pnpm --filter mock-frontend dev
 
 `scripts/demo.sh` does all of this for you (see [DEMO.md](DEMO.md)).
 
+To try the wallet login instead, list your address before starting the backend:
+
+```bash
+export ARENA_OPERATOR_ADDRESSES=0xYourAddress
+export ARENA_SIWE_DOMAINS=localhost:5173   # the host the wallet will show you
+```
+
+"sign in with wallet" then appears in the mock frontend's header. Once you are signed
+in the dev proxy stops adding the token, so the buttons run on the session cookie and
+you are exercising the real path rather than a masked one. Without an allowlist the
+`/auth` routes answer `503` and the arena stays token-only.
+
 Smoke one real agent, or the funding gate, without a full run:
 
 ```bash

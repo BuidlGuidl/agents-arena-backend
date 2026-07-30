@@ -24,6 +24,7 @@ import {
   type FeedState,
 } from './feed-projection';
 import { runPhase, styleForEvent } from './event-style';
+import { OperatorLogin } from './operator-login';
 import './styles.css';
 
 const queryClient = new QueryClient();
@@ -103,6 +104,7 @@ function App() {
           <p className="tagline">two coding agents race an on-chain ctf. one operator, live.</p>
         </div>
         <div className="link-status">
+          <OperatorLogin />
           <span className={`dot ${connClass}`} />
           <span data-testid="connection">{connection}</span>
         </div>

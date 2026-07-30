@@ -1,5 +1,6 @@
 export type RunState =
   | 'created'
+  | 'awaiting_signature'
   | 'preparing'
   | 'awaiting_funding'
   | 'ready'

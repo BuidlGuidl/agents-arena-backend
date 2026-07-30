@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-import { getAddress, isAddress, type Address } from 'viem';
+import { getAddress, isAddress, parseEther, type Address } from 'viem';
 
 export interface ChainProfile {
   name: string;
@@ -11,15 +11,23 @@ export interface ChainProfile {
   nftFlags: Address;
   challenge1: Address;
   identityRegistry: Address;
+  funderAddress: Address;
+  fundingThresholdWei: bigint;
+  fundingTimeoutMs?: number;
   // Set when the chain has a public briefing the entrant can fetch. Absent means
   // the arena mounts a challenge pack instead (ADR-0009).
   briefingUrl?: string;
 }
 
-interface RawChainProfile extends Omit<ChainProfile, 'nftFlags' | 'challenge1' | 'identityRegistry'> {
+interface RawChainProfile extends Omit<
+  ChainProfile,
+  'nftFlags' | 'challenge1' | 'identityRegistry' | 'funderAddress' | 'fundingThresholdWei'
+> {
   nftFlags: string;
   challenge1: string;
   identityRegistry: string;
+  funderAddress: string;
+  fundingThresholdEth: string;
 }
 
 const configUrl = new URL('../../config/chains.json', import.meta.url);
@@ -31,6 +39,14 @@ function parseAddress(value: string, field: string): Address {
   return getAddress(value);
 }
 
+function parseChecksummedAddress(value: string, field: string): Address {
+  const address = parseAddress(value, field);
+  if (address !== value) {
+    throw new Error(`Address ${field} must use its checksum: ${address}`);
+  }
+  return address;
+}
+
 function parseProfile(name: string, value: RawChainProfile): ChainProfile {
   if (value.name !== name) {
     throw new Error(`Chain profile key ${name} does not match its name ${value.name}`);
@@ -40,6 +56,24 @@ function parseProfile(name: string, value: RawChainProfile): ChainProfile {
   }
   if (!Number.isSafeInteger(value.confirmations) || value.confirmations < 0) {
     throw new Error(`Invalid confirmation count for profile ${name}`);
+  }
+  if (
+    value.fundingTimeoutMs !== undefined
+    && (!Number.isSafeInteger(value.fundingTimeoutMs) || value.fundingTimeoutMs <= 0)
+  ) {
+    throw new Error(`Invalid funding timeout for profile ${name}`);
+  }
+  if (typeof value.fundingThresholdEth !== 'string' || value.fundingThresholdEth.trim() === '') {
+    throw new Error(`Invalid funding threshold for profile ${name}`);
+  }
+  let fundingThresholdWei: bigint;
+  try {
+    fundingThresholdWei = parseEther(value.fundingThresholdEth);
+  } catch {
+    throw new Error(`Invalid funding threshold for profile ${name}`);
+  }
+  if (fundingThresholdWei <= 0n) {
+    throw new Error(`Invalid funding threshold for profile ${name}`);
   }
   // Presence of briefingUrl selects a prompt variant, so an empty one would send
   // the entrant to fetch nothing rather than fall back to the pack.
@@ -56,6 +90,11 @@ function parseProfile(name: string, value: RawChainProfile): ChainProfile {
     nftFlags: parseAddress(value.nftFlags, `${name}.nftFlags`),
     challenge1: parseAddress(value.challenge1, `${name}.challenge1`),
     identityRegistry: parseAddress(value.identityRegistry, `${name}.identityRegistry`),
+    funderAddress: parseChecksummedAddress(value.funderAddress, `${name}.funderAddress`),
+    fundingThresholdWei,
+    ...(value.fundingTimeoutMs === undefined
+      ? {}
+      : { fundingTimeoutMs: value.fundingTimeoutMs }),
     ...(value.briefingUrl === undefined ? {} : { briefingUrl: value.briefingUrl }),
   };
 }

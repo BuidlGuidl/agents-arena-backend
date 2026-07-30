@@ -1,73 +1,102 @@
-import { isAddress, isHex } from 'viem';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { concat, hexToBytes, keccak256, stringToBytes } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
+import { afterEach, describe, expect, it } from 'vitest';
 
-import { createWallet, exportKeyfile, getWallet, WalletStore } from '../../src/chain/wallet.js';
-import { openArenaDatabase, type ArenaDatabase } from '../../src/db/index.js';
+import { ensureChainTables } from '../../src/chain/storage.js';
+import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../../src/chain/local-dev.js';
+import {
+  deriveEntrantKeys,
+  dropRunKeys,
+  getWallet,
+  seedMessage,
+} from '../../src/chain/wallet.js';
+import { openArenaDatabase } from '../../src/db/index.js';
 
-describe('wallet store', () => {
-  let database: ArenaDatabase;
-  let close: () => void;
+const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+const runIds = ['run-1', 'run-2'];
 
-  beforeEach(() => {
+afterEach(() => {
+  for (const runId of runIds) dropRunKeys(runId);
+});
+
+describe('derived entrant wallets', () => {
+  it('builds the pinned seed message with a literal newline', () => {
+    expect(seedMessage('run-1')).toBe('agents-arena seed v1\nrun: run-1');
+  });
+
+  it('uses the pinned signature and entrant derivation', async () => {
+    const signature = await account.signMessage({ message: seedMessage('run-1') });
+    const addresses = deriveEntrantKeys('run-1', signature, ['e1']);
+    const wallet = getWallet('run-1', 'e1');
+    const expectedKey = keccak256(concat([
+      hexToBytes(signature),
+      stringToBytes('e1'),
+    ]));
+
+    expect(wallet?.privateKey).toBe(expectedKey);
+    expect(wallet?.address).toBe(privateKeyToAccount(expectedKey).address);
+    expect(addresses.get('e1')).toBe(wallet?.address);
+  });
+
+  it('derives the same wallet again from the same signature and entrant id', async () => {
+    const signature = await account.signMessage({ message: seedMessage('run-1') });
+    deriveEntrantKeys('run-1', signature, ['e1']);
+    const first = getWallet('run-1', 'e1');
+
+    dropRunKeys('run-1');
+    deriveEntrantKeys('run-1', signature, ['e1']);
+
+    expect(getWallet('run-1', 'e1')).toEqual(first);
+  });
+
+  it('derives distinct wallets for entrant ids and run messages', async () => {
+    const firstSignature = await account.signMessage({ message: seedMessage('run-1') });
+    const secondSignature = await account.signMessage({ message: seedMessage('run-2') });
+    deriveEntrantKeys('run-1', firstSignature, ['e1', 'e2']);
+    deriveEntrantKeys('run-2', secondSignature, ['e1']);
+
+    const wallets = [
+      getWallet('run-1', 'e1'),
+      getWallet('run-1', 'e2'),
+      getWallet('run-2', 'e1'),
+    ];
+    expect(new Set(wallets.map((wallet) => wallet?.address)).size).toBe(3);
+    expect(new Set(wallets.map((wallet) => wallet?.privateKey)).size).toBe(3);
+  });
+
+  it('drops every key for one run', async () => {
+    const signature = await account.signMessage({ message: seedMessage('run-1') });
+    deriveEntrantKeys('run-1', signature, ['e1', 'e2']);
+
+    dropRunKeys('run-1');
+
+    expect(getWallet('run-1', 'e1')).toBeNull();
+    expect(getWallet('run-1', 'e2')).toBeNull();
+  });
+});
+
+describe('legacy wallet migration', () => {
+  it('drops a wallets table that contains plaintext keys', () => {
     const opened = openArenaDatabase(':memory:');
-    database = opened.database;
-    close = () => opened.sqlite.close();
-  });
+    try {
+      opened.sqlite.exec(`
+        CREATE TABLE wallets (
+          run_id TEXT NOT NULL,
+          entrant_id TEXT NOT NULL,
+          address TEXT NOT NULL,
+          private_key TEXT NOT NULL
+        );
+        INSERT INTO wallets VALUES ('run-1', 'e1', '0x1', 'fake-key');
+      `);
 
-  afterEach(() => {
-    close();
-  });
+      ensureChainTables(opened.database);
 
-  it('round-trips create and get for the same run and entrant', () => {
-    const address = createWallet('run-1', 'e1', database);
-    expect(isAddress(address)).toBe(true);
-
-    const record = getWallet('run-1', 'e1', database);
-    expect(record).not.toBeNull();
-    expect(record?.runId).toBe('run-1');
-    expect(record?.entrantId).toBe('e1');
-    // getWallet returns the checksummed address; both sides normalize the same way.
-    expect(record?.address).toBe(address);
-    expect(isHex(record?.privateKey ?? '0x')).toBe(true);
-    expect(record?.privateKey).toHaveLength(66);
-  });
-
-  it('returns null for an entrant with no wallet', () => {
-    createWallet('run-1', 'e1', database);
-    expect(getWallet('run-1', 'missing', database)).toBeNull();
-  });
-
-  it('throws when regenerating a wallet for the same run and entrant', () => {
-    createWallet('run-1', 'e1', database);
-    expect(() => createWallet('run-1', 'e1', database)).toThrow(/already exists/);
-  });
-
-  it('keeps distinct wallets per entrant and per run', () => {
-    const a = createWallet('run-1', 'e1', database);
-    const b = createWallet('run-1', 'e2', database);
-    const c = createWallet('run-2', 'e1', database);
-    expect(new Set([a, b, c]).size).toBe(3);
-  });
-
-  it('exports a keyfile with exactly address and privateKey', () => {
-    const address = createWallet('run-1', 'e1', database);
-    const keyfile = exportKeyfile('run-1', 'e1', database);
-
-    expect(Object.keys(keyfile).sort()).toEqual(['address', 'privateKey']);
-    expect(keyfile.address).toBe(address);
-    expect(isHex(keyfile.privateKey)).toBe(true);
-    expect(keyfile.privateKey).toHaveLength(66);
-  });
-
-  it('exposes the same behavior through WalletStore', () => {
-    const store = new WalletStore(database);
-    const address = store.createWallet('run-3', 'e1');
-    expect(store.getWallet('run-3', 'e1')?.address).toBe(address);
-    expect(() => store.createWallet('run-3', 'e1')).toThrow(/already exists/);
-    expect(store.exportKeyfile('run-3', 'e1').address).toBe(address);
-  });
-
-  it('throws when exporting a keyfile that does not exist', () => {
-    expect(() => exportKeyfile('run-1', 'ghost', database)).toThrow(/No wallet/);
+      const table = opened.sqlite
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wallets'")
+        .get();
+      expect(table).toBeUndefined();
+    } finally {
+      opened.sqlite.close();
+    }
   });
 });

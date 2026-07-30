@@ -61,6 +61,7 @@ export function runPhase(state: string | undefined): 'idle' | 'preparing' | 'run
     case undefined:
     case 'created':
       return 'idle';
+    case 'awaiting_signature':
     case 'preparing':
     case 'awaiting_funding':
     case 'ready':

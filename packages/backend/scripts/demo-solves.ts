@@ -29,12 +29,13 @@ import { privateKeyToAccount } from 'viem/accounts';
 
 import type { ChainProfile } from '../src/chain/profile.js';
 import { SolvePoller } from '../src/chain/solve-poller.js';
-import { createWallet, getWallet } from '../src/chain/wallet.js';
+import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
+import { deriveEntrantKeys, getWallet, seedMessage } from '../src/chain/wallet.js';
+import { entrants, runs } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 
 const CONFIRMATIONS = Number(process.argv[2] ?? 5);
 const RPC_URL = 'http://127.0.0.1:8599';
-const DEV_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80' as const;
 
 const chainRepo = process.env.AI_CTF_REPO;
 if (chainRepo === undefined || chainRepo.trim() === '') {
@@ -56,7 +57,7 @@ function artifact(name: string): { abi: readonly unknown[]; bytecode: Hex } {
 const anvil = spawn('anvil', ['--port', '8599', '--block-time', '1', '--silent'], { stdio: 'ignore' });
 process.on('exit', () => anvil.kill('SIGKILL'));
 
-const account = privateKeyToAccount(DEV_KEY);
+const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
 const chain = {
   id: 31337,
   name: 'e2e',
@@ -109,9 +110,28 @@ console.log(`deployed NFTFlags=${nftFlags} registry=${registry} challenge1=${cha
 
 const journal = new EventJournal(':memory:');
 const runId = 'e2e-run';
-const burnerAddress = createWallet(runId, 'codex-1', journal.database);
+const signature = await account.signMessage({ message: seedMessage(runId) });
+const burnerAddress = deriveEntrantKeys(runId, signature, ['codex-1']).get('codex-1')!;
 const burnerKey = getWallet(runId, 'codex-1', journal.database)!.privateKey;
 const burner = privateKeyToAccount(burnerKey);
+const createdAt = new Date().toISOString();
+journal.database.insert(runs).values({
+  id: runId,
+  state: 'created',
+  preset: 'docker-duel',
+  startedAt: null,
+  deadlineAt: null,
+  idempotencyKey: null,
+  createdAt,
+}).run();
+journal.database.insert(entrants).values({
+  runId,
+  id: 'codex-1',
+  harness: 'codex',
+  model: 'demo',
+  address: burnerAddress,
+  status: 'idle',
+}).run();
 
 const fundHash = await deployer.sendTransaction({ account, chain, to: burnerAddress, value: parseEther('1') });
 await publicClient.waitForTransactionReceipt({ hash: fundHash });
@@ -126,6 +146,8 @@ const profile: ChainProfile = {
   nftFlags,
   challenge1,
   identityRegistry: registry,
+  funderAddress: account.address,
+  fundingThresholdWei: parseEther('0.05'),
 };
 
 const controller = new AbortController();

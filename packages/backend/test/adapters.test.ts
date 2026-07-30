@@ -3,12 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { and, eq } from 'drizzle-orm';
+import { privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CodexDriver } from '../src/adapters/codex.js';
 import { OpenCodeDriver, scrubOpenCodeEnvironment } from '../src/adapters/opencode.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from '../src/adapters/types.js';
-import { createWallet, getWallet } from '../src/chain/wallet.js';
+import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
+import { deriveEntrantKeys, getWallet, seedMessage } from '../src/chain/wallet.js';
 import { entrants, runs } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import { RunManager } from '../src/run-manager.js';
@@ -134,7 +136,9 @@ async function setup(
   // rate table lists (or one it does not).
   if (model !== undefined) entrant = { ...entrant, model };
   if (withWallet) {
-    createWallet(run.id, entrant.id, journal.database);
+    const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+    const signature = await account.signMessage({ message: seedMessage(run.id) });
+    deriveEntrantKeys(run.id, signature, [entrant.id]);
   }
 
   const container = new ControlledContainer();

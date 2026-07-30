@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
 import { and, asc, count, eq, max, sql } from 'drizzle-orm';
+import { recoverMessageAddress, type Hex } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 
 import type {
   CreateRunRequest,
@@ -13,13 +15,21 @@ import type {
 import { entrants, events, runs, scores } from './db/schema.js';
 import { ensureChainTables } from './chain/storage.js';
 import { activeChainProfile } from './chain/profile.js';
+import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from './chain/local-dev.js';
+import {
+  canonicalizeSeedSignature,
+  deriveEntrantKeys,
+  dropRunKeys,
+  seedMessage,
+} from './chain/wallet.js';
 import { buildOpeningPrompt, type OpeningPromptBuilder } from './ctf/prompt.js';
 import { roundUsd } from './pricing.js';
 import type { EventJournal } from './journal.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './adapters/types.js';
 
 export const LEGAL_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> = {
-  created: ['preparing', 'failed'],
+  created: ['awaiting_signature', 'preparing', 'failed'],
+  awaiting_signature: ['preparing', 'stopping', 'failed'],
   preparing: ['awaiting_funding', 'failed'],
   awaiting_funding: ['ready', 'failed'],
   ready: ['running', 'failed'],
@@ -33,6 +43,8 @@ export class RunNotFoundError extends Error {}
 export class EntrantNotFoundError extends Error {}
 export class InvalidTransitionError extends Error {}
 export class UnknownPresetError extends Error {}
+export class SeedStateConflictError extends Error {}
+export class SeedSignatureError extends Error {}
 
 export interface CreateRunResult {
   run: RunSnapshot;
@@ -62,11 +74,6 @@ export type FundingGate = (
   signal?: AbortSignal,
 ) => Promise<void>;
 
-export type WalletGate = (
-  run: RunRecord,
-  entrants: readonly EntrantRecord[],
-) => Promise<void>;
-
 // Not a gate: a gate is awaited to completion and a poll loop never resolves. The run
 // starts this once it is past funding and aborts the signal when it stops.
 export type SolveWatch = (
@@ -78,7 +85,6 @@ export type SolveWatch = (
 export interface RunManagerOptions {
   prepareTimeoutMs?: number;
   fundingTimeoutMs?: number;
-  walletGate?: WalletGate;
   solveWatch?: SolveWatch;
   promptBuilder?: OpeningPromptBuilder;
 }
@@ -89,15 +95,19 @@ interface EntrantUsage {
   costUsd: number | null;
 }
 
+interface SeedWaiter {
+  promise: Promise<void>;
+  resolve(): void;
+  submitting: boolean;
+}
+
 const EMPTY_USAGE: EntrantUsage = { inputTokens: 0, outputTokens: 0, costUsd: null };
 
 const DEFAULT_PREPARE_TIMEOUT_MS = 300_000;
-const DEFAULT_FUNDING_TIMEOUT_MS = 900_000;
 const OPERATOR_STOP_REASON = 'stopped by operator before running';
 
 // The chain funding slice replaces this pass-through hook with the real gate.
 export const passThroughFundingGate: FundingGate = async () => {};
-export const passThroughWalletGate: WalletGate = async () => {};
 export const passThroughSolveWatch: SolveWatch = () => {};
 
 // The prompt names the chain's RPC and says where the challenge briefing lives,
@@ -108,12 +118,12 @@ export const profilePromptBuilder: OpeningPromptBuilder = (entrant) =>
 export class RunManager {
   private readonly inFlightStarts = new Map<string, Promise<RunSnapshot>>();
   private readonly startControllers = new Map<string, AbortController>();
+  private readonly seedWaiters = new Map<string, SeedWaiter>();
   private readonly operatorStops = new Set<string>();
   private readonly teardownPromises = new Map<string, Promise<PromiseSettledResult<void>[]>>();
   private readonly solveWatchControllers = new Map<string, AbortController>();
   private readonly prepareTimeoutMs: number;
-  private readonly fundingTimeoutMs: number;
-  private readonly walletGate: WalletGate;
+  private readonly fundingTimeoutMs: number | undefined;
   private readonly solveWatch: SolveWatch;
   private readonly promptBuilder: OpeningPromptBuilder;
 
@@ -124,8 +134,7 @@ export class RunManager {
     options: RunManagerOptions = {},
   ) {
     this.prepareTimeoutMs = options.prepareTimeoutMs ?? DEFAULT_PREPARE_TIMEOUT_MS;
-    this.fundingTimeoutMs = options.fundingTimeoutMs ?? DEFAULT_FUNDING_TIMEOUT_MS;
-    this.walletGate = options.walletGate ?? passThroughWalletGate;
+    this.fundingTimeoutMs = options.fundingTimeoutMs ?? activeChainProfile.fundingTimeoutMs;
     this.solveWatch = options.solveWatch ?? passThroughSolveWatch;
     this.promptBuilder = options.promptBuilder ?? profilePromptBuilder;
     // snapshot() reads scores, which chainless presets never create otherwise.
@@ -173,7 +182,7 @@ export class RunManager {
     this.journal.append(id, 'run', 'run.state', { state: 'created' });
 
     if (input.autoStart === true) {
-      await this.start(id);
+      await this.startForRequest(id);
     }
     return { run: this.snapshot(id), created: true };
   }
@@ -237,6 +246,83 @@ export class RunManager {
     return this.requireRun(runId);
   }
 
+  async submitSeed(runId: string, signature: Hex): Promise<RunSnapshot> {
+    const run = this.requireRun(runId);
+    const waiter = this.seedWaiters.get(runId);
+    if (run.state !== 'awaiting_signature' || waiter === undefined || waiter.submitting) {
+      throw new SeedStateConflictError('Run is not awaiting a seed signature');
+    }
+    waiter.submitting = true;
+
+    let canonicalSignature: Hex;
+    let recovered: string;
+    try {
+      canonicalSignature = canonicalizeSeedSignature(signature);
+      recovered = await recoverMessageAddress({
+        message: seedMessage(runId),
+        signature: canonicalSignature,
+      });
+    } catch {
+      waiter.submitting = false;
+      throw new SeedSignatureError('Seed signature is not authorized');
+    }
+    if (recovered.toLowerCase() !== activeChainProfile.funderAddress.toLowerCase()) {
+      waiter.submitting = false;
+      throw new SeedSignatureError('Seed signature is not authorized');
+    }
+
+    const current = this.requireRun(runId);
+    if (current.state !== 'awaiting_signature' || this.seedWaiters.get(runId) !== waiter) {
+      throw new SeedStateConflictError('Run is not awaiting a seed signature');
+    }
+
+    const runEntrants = this.entrants(runId);
+    let addresses: ReadonlyMap<string, string>;
+    try {
+      addresses = deriveEntrantKeys(
+        runId,
+        canonicalSignature,
+        runEntrants.map((entrant) => entrant.id),
+      );
+    } catch {
+      waiter.submitting = false;
+      throw new SeedSignatureError('Seed signature is not authorized');
+    }
+
+    try {
+      this.journal.database.transaction((transaction) => {
+        for (const entrant of runEntrants) {
+          const address = addresses.get(entrant.id);
+          if (address === undefined) {
+            throw new Error(`No derived address for entrant ${entrant.id}`);
+          }
+          transaction
+            .update(entrants)
+            .set({ address })
+            .where(and(eq(entrants.runId, runId), eq(entrants.id, entrant.id)))
+            .run();
+        }
+      });
+      for (const entrant of runEntrants) {
+        const address = addresses.get(entrant.id);
+        if (address === undefined) {
+          throw new Error(`No derived address for entrant ${entrant.id}`);
+        }
+        this.journal.append(runId, entrant.id, 'wallet.assigned', {
+          entrantId: entrant.id,
+          address,
+        });
+      }
+    } catch (error) {
+      dropRunKeys(runId);
+      waiter.submitting = false;
+      throw error;
+    }
+
+    waiter.resolve();
+    return this.snapshot(runId);
+  }
+
   start(runId: string): Promise<RunSnapshot> {
     const existing = this.inFlightStarts.get(runId);
     if (existing !== undefined) return existing;
@@ -257,13 +343,40 @@ export class RunManager {
     return starting;
   }
 
+  async startForRequest(runId: string): Promise<RunSnapshot> {
+    const starting = this.start(runId);
+    if (localAutoSignEnabled()) {
+      return starting;
+    }
+    void starting.catch(() => {});
+    return this.snapshot(runId);
+  }
+
   private async startOwned(runId: string, controller: AbortController): Promise<RunSnapshot> {
     let run = this.requireRun(runId);
-    const runEntrants = this.entrants(runId);
+    let runEntrants = this.entrants(runId);
     try {
       if (run.state === 'created') {
+        if (run.preset === 'docker-duel') {
+          const seedWaiter = createSeedWaiter();
+          this.seedWaiters.set(runId, seedWaiter);
+          run = this.transition(runId, 'awaiting_signature');
+          try {
+            if (localAutoSignEnabled()) {
+              const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+              const signature = await account.signMessage({ message: seedMessage(runId) });
+              await this.submitSeed(runId, signature);
+            }
+            await withAbort(seedWaiter.promise, controller);
+          } finally {
+            if (this.seedWaiters.get(runId) === seedWaiter) {
+              this.seedWaiters.delete(runId);
+            }
+          }
+        }
+
+        runEntrants = this.entrants(runId);
         run = this.transition(runId, 'preparing');
-        await this.walletGate(run, runEntrants);
         const prepareResults = await withPhaseTimeout(
           Promise.allSettled(runEntrants.map((entrant) => this.driver.prepare(run, entrant))),
           this.prepareTimeoutMs,
@@ -314,14 +427,27 @@ export class RunManager {
 
   async stop(runId: string): Promise<RunSnapshot> {
     let run = this.requireRun(runId);
-    if (!(['preparing', 'awaiting_funding', 'ready', 'running'] as RunState[]).includes(run.state)) {
+    if (!(
+      ['awaiting_signature', 'preparing', 'awaiting_funding', 'ready', 'running'] as RunState[]
+    ).includes(run.state)) {
       throw new InvalidTransitionError(`Cannot stop run ${runId} from ${run.state}`);
     }
 
     const runEntrants = this.entrants(runId);
     this.operatorStops.add(runId);
     this.stopSolveWatch(runId);
+    dropRunKeys(runId);
     try {
+      if (run.state === 'awaiting_signature') {
+        this.startControllers.get(runId)?.abort(new Error(OPERATOR_STOP_REASON));
+        run = this.transition(runId, 'stopping');
+        const stopResults = await this.teardownEntrants(runId, run, runEntrants);
+        const stopError = aggregateStopErrors(stopResults);
+        if (stopError !== undefined) throw stopError;
+        this.transition(runId, 'finished');
+        return this.snapshot(runId);
+      }
+
       if (run.state !== 'running') {
         this.startControllers.get(runId)?.abort(new Error(OPERATOR_STOP_REASON));
         run = this.transition(runId, 'failed', OPERATOR_STOP_REASON);
@@ -384,7 +510,9 @@ export class RunManager {
 
     const teardown = Promise.allSettled(
       runEntrants.map((entrant) => this.driver.stop(run, entrant)),
-    );
+    ).finally(() => {
+      dropRunKeys(runId);
+    });
     this.teardownPromises.set(runId, teardown);
     return teardown;
   }
@@ -475,7 +603,7 @@ export class RunManager {
 
 function withPhaseTimeout<T>(
   action: Promise<T>,
-  timeoutMs: number,
+  timeoutMs: number | undefined,
   phase: 'prepare' | 'funding',
   controller: AbortController,
 ): Promise<T> {
@@ -484,8 +612,14 @@ function withPhaseTimeout<T>(
 
   return new Promise<T>((resolve, reject) => {
     let settled = false;
+    const timer = timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => {
+        controller.abort(new Error(`${phase} phase timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+    timer?.unref();
     const cleanup = (): void => {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
     };
     const resolveOnce = (value: T): void => {
@@ -501,13 +635,44 @@ function withPhaseTimeout<T>(
       reject(error);
     };
     const onAbort = (): void => rejectOnce(abortReason(signal));
-    const timer = setTimeout(() => {
-      controller.abort(new Error(`${phase} phase timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    timer.unref();
     signal.addEventListener('abort', onAbort, { once: true });
     action.then(resolveOnce, rejectOnce);
   });
+}
+
+function withAbort<T>(action: Promise<T>, controller: AbortController): Promise<T> {
+  const { signal } = controller;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort);
+      reject(abortReason(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    action.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function createSeedWaiter(): SeedWaiter {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve, submitting: false };
+}
+
+function localAutoSignEnabled(): boolean {
+  return activeChainProfile.name === 'local' && process.env.ARENA_AUTO_SIGN !== 'false';
 }
 
 function abortReason(signal: AbortSignal): Error {

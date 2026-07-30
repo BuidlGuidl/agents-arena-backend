@@ -5,18 +5,7 @@ import { scores } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
 
 export function ensureChainTables(database: ArenaDatabase): void {
-  database.run(sql`
-    CREATE TABLE IF NOT EXISTS wallets (
-      run_id TEXT NOT NULL,
-      entrant_id TEXT NOT NULL,
-      address TEXT NOT NULL,
-      private_key TEXT NOT NULL
-    )
-  `);
-  database.run(sql`
-    CREATE UNIQUE INDEX IF NOT EXISTS wallets_run_id_entrant_id
-    ON wallets (run_id, entrant_id)
-  `);
+  database.run(sql`DROP TABLE IF EXISTS wallets`);
 
   database.run(sql`
     CREATE TABLE IF NOT EXISTS scores (

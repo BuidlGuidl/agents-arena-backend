@@ -1,10 +1,16 @@
-import { and, eq } from 'drizzle-orm';
-import { getAddress, type Address, type Hex } from 'viem';
-import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
+import {
+  concat,
+  hexToBytes,
+  keccak256,
+  parseSignature,
+  serializeSignature,
+  stringToBytes,
+  type Address,
+  type Hex,
+} from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 
-import { openArenaDatabase, type ArenaDatabase } from '../db/index.js';
-import { wallets } from '../db/schema.js';
-import { ensureChainTables } from './storage.js';
+import type { ArenaDatabase } from '../db/index.js';
 
 export interface WalletRecord {
   runId: string;
@@ -13,105 +19,56 @@ export interface WalletRecord {
   privateKey: Hex;
 }
 
-export interface Keyfile {
-  address: Address;
-  privateKey: Hex;
+const runKeys = new Map<string, Map<string, WalletRecord>>();
+const SECP256K1_N =
+  0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
+export function seedMessage(runId: string): string {
+  return `agents-arena seed v1\nrun: ${runId}`;
 }
 
-function useDatabase<T>(database: ArenaDatabase | undefined, action: (db: ArenaDatabase) => T): T {
-  if (database) {
-    ensureChainTables(database);
-    return action(database);
+export function canonicalizeSeedSignature(signature: Hex): Hex {
+  const parsed = parseSignature(signature);
+  if (BigInt(parsed.s) > SECP256K1_N / 2n) {
+    throw new Error('Seed signature has a high s value');
   }
-
-  const opened = openArenaDatabase();
-  try {
-    ensureChainTables(opened.database);
-    return action(opened.database);
-  } finally {
-    opened.sqlite.close();
-  }
+  return serializeSignature({
+    r: parsed.r,
+    s: parsed.s,
+    v: BigInt(27 + parsed.yParity),
+  });
 }
 
-function insertWallet(database: ArenaDatabase, runId: string, entrantId: string): Address {
-  const privateKey = generatePrivateKey();
-  const address = privateKeyToAccount(privateKey).address;
-  const inserted = database
-    .insert(wallets)
-    .values({ runId, entrantId, address: address.toLowerCase(), privateKey })
-    .onConflictDoNothing()
-    .returning({ address: wallets.address })
-    .get();
-
-  if (!inserted) {
-    throw new Error(`Wallet already exists for run ${runId}, entrant ${entrantId}`);
-  }
-  return getAddress(inserted.address);
-}
-
-function selectWallet(database: ArenaDatabase, runId: string, entrantId: string): WalletRecord | null {
-  const row = database
-    .select()
-    .from(wallets)
-    .where(and(eq(wallets.runId, runId), eq(wallets.entrantId, entrantId)))
-    .get();
-  if (!row) {
-    return null;
-  }
-  return {
-    runId: row.runId,
-    entrantId: row.entrantId,
-    address: getAddress(row.address),
-    privateKey: row.privateKey as Hex,
-  };
-}
-
-export function createWallet(
+export function deriveEntrantKeys(
   runId: string,
-  entrantId: string,
-  database?: ArenaDatabase,
-): Address {
-  return useDatabase(database, (db) => insertWallet(db, runId, entrantId));
+  signature: Hex,
+  entrantIds: readonly string[],
+): ReadonlyMap<string, Address> {
+  const entrantKeys = new Map<string, WalletRecord>();
+
+  for (const entrantId of entrantIds) {
+    // Offline recovery must first serialize the signature as low-s with v 27 or 28,
+    // then hash those canonical bytes with the UTF-8 entrant ID.
+    const privateKey = keccak256(concat([
+      hexToBytes(signature),
+      stringToBytes(entrantId),
+    ]));
+    const address = privateKeyToAccount(privateKey).address;
+    entrantKeys.set(entrantId, { runId, entrantId, address, privateKey });
+  }
+
+  runKeys.set(runId, entrantKeys);
+  return new Map([...entrantKeys].map(([entrantId, wallet]) => [entrantId, wallet.address]));
 }
 
 export function getWallet(
   runId: string,
   entrantId: string,
-  database?: ArenaDatabase,
+  _database?: ArenaDatabase,
 ): WalletRecord | null {
-  return useDatabase(database, (db) => selectWallet(db, runId, entrantId));
+  return runKeys.get(runId)?.get(entrantId) ?? null;
 }
 
-export function exportKeyfile(
-  runId: string,
-  entrantId: string,
-  database?: ArenaDatabase,
-): Keyfile {
-  const wallet = getWallet(runId, entrantId, database);
-  if (!wallet) {
-    throw new Error(`No wallet for run ${runId}, entrant ${entrantId}`);
-  }
-  return { address: wallet.address, privateKey: wallet.privateKey };
-}
-
-export class WalletStore {
-  constructor(private readonly database: ArenaDatabase) {
-    ensureChainTables(database);
-  }
-
-  createWallet(runId: string, entrantId: string): Address {
-    return insertWallet(this.database, runId, entrantId);
-  }
-
-  getWallet(runId: string, entrantId: string): WalletRecord | null {
-    return selectWallet(this.database, runId, entrantId);
-  }
-
-  exportKeyfile(runId: string, entrantId: string): Keyfile {
-    const wallet = this.getWallet(runId, entrantId);
-    if (!wallet) {
-      throw new Error(`No wallet for run ${runId}, entrant ${entrantId}`);
-    }
-    return { address: wallet.address, privateKey: wallet.privateKey };
-  }
+export function dropRunKeys(runId: string): void {
+  runKeys.delete(runId);
 }

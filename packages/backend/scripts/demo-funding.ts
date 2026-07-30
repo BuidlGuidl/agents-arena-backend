@@ -16,11 +16,13 @@ import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 
 import { formatEther, parseEther } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 
 import type { ArenaEvent } from '../src/contract.js';
 import { awaitFunding, type FundingEntry } from '../src/chain/funding-watcher.js';
+import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import { getChainProfile } from '../src/chain/profile.js';
-import { WalletStore } from '../src/chain/wallet.js';
+import { deriveEntrantKeys, seedMessage } from '../src/chain/wallet.js';
 import { EventJournal } from '../src/journal.js';
 
 const thresholdEth = process.argv[2] ?? '0.05';
@@ -28,11 +30,13 @@ const profile = getChainProfile('local');
 const runId = `drill-${randomUUID().slice(0, 8)}`;
 
 const journal = new EventJournal(':memory:');
-const wallets = new WalletStore(journal.database);
+const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+const signature = await account.signMessage({ message: seedMessage(runId) });
+const addresses = deriveEntrantKeys(runId, signature, ['codex-1', 'opencode-1']);
 
 const entries: FundingEntry[] = [
-  { entrantId: 'codex-1', address: wallets.createWallet(runId, 'codex-1') },
-  { entrantId: 'opencode-1', address: wallets.createWallet(runId, 'opencode-1') },
+  { entrantId: 'codex-1', address: addresses.get('codex-1')! },
+  { entrantId: 'opencode-1', address: addresses.get('opencode-1')! },
 ];
 const thresholdWei = parseEther(thresholdEth);
 
@@ -62,11 +66,11 @@ for (const e of entries) console.log(`  ${e.entrantId.padEnd(11)} ${e.address}`)
 console.log(rule);
 console.log('  In another terminal, fund them:');
 console.log('      scripts/fund-drill.sh');
-console.log(`  or by hand (the funder is default dev account 0 from the hardhat/anvil mnemonic):`);
+console.log('  or by hand with unlocked local account 0:');
 for (const e of entries) {
   console.log(
     `      cast send ${e.address} --value ${thresholdEth}ether \\\n` +
-      `        --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \\\n` +
+      `        --unlocked --from ${profile.funderAddress} \\\n` +
       `        --rpc-url ${profile.rpcUrl}`,
   );
 }

@@ -1,9 +1,12 @@
 import { createPublicClient, http, type Address, type PublicClient } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { ChainProfile } from '../../src/chain/profile.js';
 import { CHALLENGE_IDS, SolvePoller } from '../../src/chain/solve-poller.js';
-import { createWallet } from '../../src/chain/wallet.js';
+import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../../src/chain/local-dev.js';
+import { deriveEntrantKeys, seedMessage } from '../../src/chain/wallet.js';
+import { entrants, runs } from '../../src/db/schema.js';
 import { EventJournal } from '../../src/journal.js';
 import {
   deployFlagFixture,
@@ -23,6 +26,34 @@ interface ScoreEvent {
   challengeId: number;
   txHash: string;
   tokenId: string;
+}
+
+async function seedEntrants(
+  journal: EventJournal,
+  runId: string,
+  entrantIds: readonly string[],
+) {
+  const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+  const signature = await account.signMessage({ message: seedMessage(runId) });
+  const addresses = deriveEntrantKeys(runId, signature, entrantIds);
+  journal.database.insert(runs).values({
+    id: runId,
+    state: 'created',
+    preset: 'docker-duel',
+    startedAt: null,
+    deadlineAt: null,
+    idempotencyKey: null,
+    createdAt: new Date().toISOString(),
+  }).run();
+  journal.database.insert(entrants).values(entrantIds.map((entrantId) => ({
+    runId,
+    id: entrantId,
+    harness: 'codex' as const,
+    model: 'test',
+    address: addresses.get(entrantId)!,
+    status: 'idle' as const,
+  }))).run();
+  return addresses;
 }
 
 describe('solve poller', () => {
@@ -82,7 +113,7 @@ describe('solve poller', () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-confirm';
     try {
-      const address = createWallet(runId, 'e1', journal.database);
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
       const poll = poller(journal, runId);
 
       await mintFlag(anvil, contract, address, 3n);
@@ -105,7 +136,7 @@ describe('solve poller', () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-repeat';
     try {
-      const address = createWallet(runId, 'e1', journal.database);
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
       const poll = poller(journal, runId);
 
       await mintFlag(anvil, contract, address, 3n);
@@ -128,7 +159,7 @@ describe('solve poller', () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-stranger';
     try {
-      createWallet(runId, 'e1', journal.database);
+      await seedEntrants(journal, runId, ['e1']);
       const poll = poller(journal, runId);
       const stranger = '0x00000000000000000000000000000000deadbeef' as Address;
 
@@ -146,7 +177,7 @@ describe('solve poller', () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-predeploy';
     try {
-      const address = createWallet(runId, 'e1', journal.database);
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
       await mintFlag(anvil, contract, address, 6n);
 
       // A chain started minutes ago puts head - confirmations before the deploy, where
@@ -171,7 +202,7 @@ describe('solve poller', () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-recover';
     try {
-      const address = createWallet(runId, 'e1', journal.database);
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
 
       // Three logs for one minter. The earliest belongs to another challenge, so a
       // recovery that filtered on minter alone would report it. Of the two that do
@@ -199,7 +230,7 @@ describe('solve poller', () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-order';
     try {
-      const address = createWallet(runId, 'e1', journal.database);
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
 
       // The poll walks challenge ids ascending, so it meets 2 before 9. The chain
       // saw 9 first, and that is the order the journal must carry.
@@ -218,7 +249,7 @@ describe('solve poller', () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-restart';
     try {
-      const address = createWallet(runId, 'e1', journal.database);
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
       await mintFlag(anvil, contract, address, 7n);
       await anvil.mine(CONFIRMATIONS);
       expect(await poller(journal, runId).pollOnce()).toBe(1);
@@ -243,8 +274,7 @@ describe('solve poller', () => {
     const runId = 'run-batch';
     const proxy = await startRpcProxy(anvil.rpcUrl);
     try {
-      createWallet(runId, 'e1', journal.database);
-      createWallet(runId, 'e2', journal.database);
+      await seedEntrants(journal, runId, ['e1', 'e2']);
       const batching = new SolvePoller({
         profile: testProfile(proxy.url, CONFIRMATIONS, contract),
         runId,
@@ -275,7 +305,7 @@ describe('solve poller', () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-late-tick';
     try {
-      const address = createWallet(runId, 'e1', journal.database);
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
       await mintFlag(anvil, contract, address, 10n);
       await anvil.mine(CONFIRMATIONS);
 
@@ -298,8 +328,8 @@ describe('solve poller', () => {
     const runId = 'run-multicall';
     const proxy = await startRpcProxy(anvil.rpcUrl);
     try {
-      const address = createWallet(runId, 'e1', journal.database);
-      createWallet(runId, 'e2', journal.database);
+      const seeded = await seedEntrants(journal, runId, ['e1', 'e2']);
+      const address = seeded.get('e1')!;
       await mintFlag(anvil, contract, address, 6n);
 
       await withMulticall3(anvil, async () => {
@@ -338,7 +368,7 @@ describe('solve poller', () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-no-multicall';
     try {
-      const address = createWallet(runId, 'e1', journal.database);
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
       await mintFlag(anvil, contract, address, 12n);
       await anvil.mine(CONFIRMATIONS);
 
@@ -355,7 +385,7 @@ describe('solve poller', () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-dead-rpc';
     try {
-      createWallet(runId, 'e1', journal.database);
+      await seedEntrants(journal, runId, ['e1']);
       const dead = new SolvePoller({
         // Nothing listens here, so every tick throws the way a wrong address on base would.
         profile: testProfile('http://127.0.0.1:1', CONFIRMATIONS, contract),
@@ -385,7 +415,7 @@ describe('solve poller', () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-stuck-pair';
     try {
-      const address = createWallet(runId, 'e1', journal.database);
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
       const mint = await mintFlag(anvil, contract, address, 8n);
       await anvil.mine(CONFIRMATIONS + 2);
 
@@ -417,7 +447,7 @@ describe('solve poller', () => {
     const runId = 'run-probe-retry';
     const proxy = await startRpcProxy(anvil.rpcUrl);
     try {
-      const address = createWallet(runId, 'e1', journal.database);
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
       await mintFlag(anvil, contract, address, 9n);
 
       await withMulticall3(anvil, async () => {
@@ -469,7 +499,7 @@ describe('solve poller', () => {
     const journal = new EventJournal(':memory:');
     const runId = 'run-watch';
     try {
-      const address = createWallet(runId, 'e1', journal.database);
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
       const controller = new AbortController();
       const loop = poller(journal, runId, 20).watch(controller.signal);
 

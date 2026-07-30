@@ -65,10 +65,12 @@ Create the Docker duel:
 ./scripts/demo.sh real
 ```
 
-During startup the backend assigns each entrant a burner wallet, injects the
-private key and chain RPC URL into its container, and self-funds both burners on
-the local chain profile. The run stays in `awaiting_funding` until both balances
-clear the local threshold, then it moves to ready and starts both entrants.
+During startup the backend auto-signs the run's EIP-191 seed message with anvil
+account 0. It derives each entrant key from that signature, keeps the keys in
+process memory, and injects the key and chain RPC URL into its container. An
+explicit local dev faucet funds both burners while the watcher-only gate waits
+for each balance to clear the local threshold. The run then moves to ready and
+starts both entrants. Set `ARENA_AUTO_SIGN=false` to exercise the seed endpoint.
 
 The backend also assembles a challenge pack from `$AI_CTF_REPO` and mounts it
 read-only at `/ctf` in both containers: `BRIEFING.md` (the twelve challenge
@@ -78,7 +80,8 @@ fails if `AI_CTF_REPO` is unset, or if the deployed addresses disagree with the
 active chain profile — redeploy the chain and restart the run if that happens.
 
 On the `base` chain profile no pack is mounted. The prompt points the entrant at
-the public CTF site instead. See ADR-0009.
+the public CTF site instead. A funder must sign the seed message and fund the
+displayed addresses; the gate never sends funds. See ADR-0009 and ADR-0012.
 
 Once the run is active the backend polls each entrant's flag state every 3 seconds,
 reading at `head - confirmations`. A mint reaches the board a few seconds after it
@@ -114,7 +117,8 @@ The standalone funding drill still exists for watcher checks:
 fnm exec --using=22.20.0 pnpm --filter backend exec tsx scripts/demo-funding.ts
 ```
 
-Run `packages/backend/scripts/fund-drill.sh` in another terminal when the drill prints the burner
+The drill derives burner addresses from a local seed signature. Run
+`packages/backend/scripts/fund-drill.sh` in another terminal when it prints the
 addresses. The drill does not start a duel.
 
 Problems seen during setup and their fixes:

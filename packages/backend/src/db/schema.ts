@@ -23,6 +23,7 @@ export const eventTypes = [
   'entrant.steered',
   'entrant.prompt',
   'entrant.nudged',
+  'director.broadcast',
   'wallet.assigned',
   'funding.balance',
   'score.flag',

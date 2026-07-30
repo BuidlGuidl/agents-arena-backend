@@ -136,6 +136,8 @@ export function describeEvent(event: ArenaEvent): string {
       return `task: ${event.payload.text}`;
     case 'entrant.nudged':
       return `nudged (flags ${event.payload.flags}): ${event.payload.text}`;
+    case 'director.broadcast':
+      return `broadcast (${event.payload.targetEntrantIds.length} entrants): ${event.payload.text}`;
     case 'wallet.assigned':
       return `wallet ${event.payload.address}`;
     case 'funding.balance':

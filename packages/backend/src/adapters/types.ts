@@ -18,6 +18,11 @@ export interface EntrantRecord {
   status: EntrantStatus;
 }
 
+// The entrant exists but cannot take a turn right now — stopping, or degraded.
+// Thrown rather than swallowed so a steer never reports success it did not have,
+// and so a broadcast can name the lane that missed the message.
+export class EntrantUnavailableError extends Error {}
+
 export interface EntrantDriver {
   prepare(run: RunRecord, entrant: EntrantRecord): Promise<void>;
   start(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void>;

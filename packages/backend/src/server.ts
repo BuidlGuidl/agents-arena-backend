@@ -140,7 +140,12 @@ export function createServer(options: ServerOptions): ArenaServer {
   app.get('/auth/session', async (request, reply) => {
     const session = login.session(sessionCookie(request.headers.cookie));
     if (session === undefined) {
-      return reply.header('Cache-Control', 'no-store').send({ authenticated: false });
+      // `configured` lets a page hide its sign-in control rather than offer one
+      // that can only answer 503.
+      return reply.header('Cache-Control', 'no-store').send({
+        authenticated: false,
+        configured: login.enabled,
+      });
     }
     return reply.header('Cache-Control', 'no-store').send({
       authenticated: true,
@@ -153,7 +158,7 @@ export function createServer(options: ServerOptions): ArenaServer {
     login.logout(sessionCookie(request.headers.cookie));
     return reply
       .header('Set-Cookie', serializeSessionCookie('', { maxAgeSeconds: 0, secure: isSecureRequest(request) }))
-      .send({ authenticated: false });
+      .send({ authenticated: false, configured: login.enabled });
   });
 
   app.post('/runs', async (request, reply) => {

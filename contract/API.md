@@ -58,7 +58,11 @@ Only externally owned accounts are verified. A smart-contract wallet (ERC-1271 /
 {"authenticated":true,"address":"0x…","expiresAt":"2026-07-31T04:12:00.000Z"}
 ```
 
-`{"authenticated":false}` when there is no live session. Open to anyone, so a page can render its own login state.
+```json
+{"authenticated":false,"configured":true}
+```
+
+Open to anyone, so a page can render its own login state. `configured` is `false` when the backend has no operator allowlist — hide the sign-in control rather than offer one that can only answer `503`.
 
 ### `POST /auth/logout`
 

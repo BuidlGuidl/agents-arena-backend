@@ -134,6 +134,8 @@ export interface VerifyResponse {
   expiresAt: string;
 }
 
+// `configured` is false when the backend has no operator allowlist, so a page can
+// hide its sign-in control instead of offering one that can only answer 503.
 export type SessionResponse =
-  | { authenticated: false }
+  | { authenticated: false; configured: boolean }
   | { authenticated: true; address: string; expiresAt: string };

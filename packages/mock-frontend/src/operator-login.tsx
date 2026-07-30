@@ -80,6 +80,9 @@ export function OperatorLogin() {
   const current = session.data;
   const error = signIn.error instanceof Error ? signIn.error.message : null;
 
+  // No allowlist on the backend means no wallet can sign in, so offer nothing.
+  if (current !== undefined && !current.authenticated && !current.configured) return null;
+
   return (
     <div className="operator-login">
       {current?.authenticated === true ? (

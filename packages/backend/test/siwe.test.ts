@@ -187,7 +187,7 @@ describe('operator wallet login', () => {
     });
     expect(expired.statusCode).toBe(401);
     const session = await server.app.inject({ method: 'GET', url: '/auth/session', headers: { cookie } });
-    expect(session.json()).toEqual({ authenticated: false });
+    expect(session.json()).toEqual({ authenticated: false, configured: true });
   });
 
   it('answers 503 on the login routes when no operator address is configured', async () => {
@@ -202,6 +202,10 @@ describe('operator wallet login', () => {
       payload: { message: 'anything', signature: '0xdead' },
     });
     expect(verify.statusCode).toBe(503);
+
+    // A page reads this to decide whether to offer a sign-in control at all.
+    const session = await server.app.inject({ method: 'GET', url: '/auth/session' });
+    expect(session.json()).toEqual({ authenticated: false, configured: false });
 
     // Token-only is still a working arena.
     const created = await server.app.inject({

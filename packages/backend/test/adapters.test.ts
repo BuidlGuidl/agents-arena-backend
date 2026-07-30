@@ -109,6 +109,7 @@ async function setup(
   harness: 'codex' | 'opencode',
   watchdogMs = 10 * 60 * 1_000,
   withWallet = false,
+  model?: string,
 ): Promise<{
   journal: EventJournal;
   driver: EntrantDriver;
@@ -124,11 +125,14 @@ async function setup(
   const manager = new RunManager(journal, seedDriver);
   const created = await manager.create({ preset: 'docker-duel' });
   const run = journal.database.select().from(runs).where(eq(runs.id, created.run.id)).get();
-  const entrant = journal.database.select().from(entrants).where(and(
+  let entrant = journal.database.select().from(entrants).where(and(
     eq(entrants.runId, created.run.id),
     eq(entrants.harness, harness),
   )).get();
   if (run === undefined || entrant === undefined) throw new Error('Test run was not seeded');
+  // Cost pricing keys off the entrant's model, so a test can swap in a model the
+  // rate table lists (or one it does not).
+  if (model !== undefined) entrant = { ...entrant, model };
   if (withWallet) {
     createWallet(run.id, entrant.id, journal.database);
   }
@@ -217,6 +221,162 @@ describe.each(['codex', 'opencode'] as const)('%s steer queue', (harness) => {
       expect(steers.map((event) => event.payload.text)).toEqual(['queued steer', 'idle steer']);
       completeTurn(harness, context.container.turns[2] as ControlledExecution, sessionId);
       await waitFor(() => context.container.calls.length >= 6);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+});
+
+describe('parser isolation', () => {
+  // One CodexDriver serves every run in the process and entrant ids are preset
+  // literals, so a parser cache keyed by entrant alone would let two runs in
+  // flight interleave their sessions and reset each other's token baseline.
+  it('gives each run its own parser so a second run cannot reset the baseline', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, {
+      async prepare() {}, async start() {}, async steer() {}, async stop() {},
+    });
+    const authDirectory = await mkdtemp(join(tmpdir(), 'arena-test-auth-'));
+    temporaryPaths.push(authDirectory);
+    const authPath = join(authDirectory, 'auth.json');
+    await writeFile(authPath, '{}');
+
+    const containers: ControlledContainer[] = [];
+    const containerFactory: ContainerFactory = async (options) => {
+      if (options.credentialDir !== undefined) temporaryPaths.push(options.credentialDir);
+      const container = new ControlledContainer();
+      containers.push(container);
+      return container;
+    };
+    const driver = new CodexDriver(journal, { authPath, containerFactory });
+
+    const seed = async () => {
+      const created = await manager.create({ preset: 'docker-duel' });
+      const run = journal.database.select().from(runs).where(eq(runs.id, created.run.id)).get();
+      const entrant = journal.database.select().from(entrants).where(and(
+        eq(entrants.runId, created.run.id),
+        eq(entrants.harness, 'codex'),
+      )).get();
+      if (run === undefined || entrant === undefined) throw new Error('Test run was not seeded');
+      return { run, entrant };
+    };
+    const first = await seed();
+    const second = await seed();
+    expect(first.entrant.id).toBe(second.entrant.id);
+
+    const usageOf = (runId: string) => journal.after(runId, 0)
+      .filter((event) => event.type === 'usage')
+      .map((event) => event.payload);
+    const completeCumulative = (
+      container: ControlledContainer,
+      index: number,
+      threadId: string,
+      totals: { input: number; output: number },
+    ) => {
+      const execution = container.turns[index] as ControlledExecution;
+      execution.push(JSON.stringify({ type: 'thread.started', thread_id: threadId }));
+      execution.push(JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: totals.input, output_tokens: totals.output },
+      }));
+      execution.finish(0);
+    };
+
+    try {
+      await driver.prepare(first.run, first.entrant);
+      await driver.prepare(second.run, second.entrant);
+      await driver.start(first.run, first.entrant, 'opening');
+      await driver.start(second.run, second.entrant, 'opening');
+
+      const [firstContainer, secondContainer] = containers as [ControlledContainer, ControlledContainer];
+      completeCumulative(firstContainer, 0, 'thread-a', { input: 10_000, output: 40 });
+      await waitFor(() => usageOf(first.run.id).length === 1);
+      // The other run reports a different session between the two turns below.
+      completeCumulative(secondContainer, 0, 'thread-b', { input: 5_000, output: 20 });
+      await waitFor(() => usageOf(second.run.id).length === 1);
+
+      await waitFor(() => journal.after(first.run.id, 0).some((event) =>
+        event.type === 'entrant.status' && event.payload.status === 'idle'));
+      await driver.steer(first.run, first.entrant, 'again');
+      completeCumulative(firstContainer, 1, 'thread-a', { input: 18_000, output: 70 });
+      await waitFor(() => usageOf(first.run.id).length === 2);
+
+      // 18,000 - 10,000, not the whole 18,000 a baseline reset would report.
+      expect(usageOf(first.run.id)).toMatchObject([
+        { inputTokens: 10_000, outputTokens: 40 },
+        { inputTokens: 8_000, outputTokens: 30 },
+      ]);
+      expect(usageOf(second.run.id)).toMatchObject([{ inputTokens: 5_000, outputTokens: 20 }]);
+    } finally {
+      await driver.stop(first.run, first.entrant);
+      await driver.stop(second.run, second.entrant);
+      journal.close();
+    }
+  });
+});
+
+describe('usage cost', () => {
+  it('prices a codex turn from the rate table, cached prompt tokens included', async () => {
+    const context = await setup('codex', undefined, false, 'gpt-5-codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.push(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
+      turn.push(JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 100_000, cached_input_tokens: 80_000, output_tokens: 10_000 },
+      }));
+      turn.finish(0);
+
+      await waitFor(() => context.journal.after(context.run.id, 0).some((event) => event.type === 'usage'));
+      const usage = context.journal.after(context.run.id, 0).find((event) => event.type === 'usage');
+      // 20k fresh at $1.25/M + 80k cached at $0.125/M + 10k out at $10/M. Pricing
+      // all 100k input as fresh would read $0.225, nearly double.
+      expect(usage?.payload).toEqual({
+        entrantId: context.entrant.id,
+        inputTokens: 100_000,
+        outputTokens: 10_000,
+        cachedInputTokens: 80_000,
+        costUsd: 0.135,
+      });
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('leaves cost unknown for a codex model the rate table does not list', async () => {
+    const context = await setup('codex', undefined, false, 'gpt-6-codex-preview');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      completeTurn('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+
+      await waitFor(() => context.journal.after(context.run.id, 0).some((event) => event.type === 'usage'));
+      const usage = context.journal.after(context.run.id, 0).find((event) => event.type === 'usage');
+      expect(usage?.payload).toMatchObject({ inputTokens: 10, outputTokens: 2, costUsd: null });
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('keeps the cost opencode reports for its own step', async () => {
+    const context = await setup('opencode');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.push(JSON.stringify({ type: 'step_start', sessionID: 'session-1', part: {} }));
+      turn.push(JSON.stringify({
+        type: 'step_finish',
+        sessionID: 'session-1',
+        part: { reason: 'stop', tokens: { input: 109, output: 3 }, cost: 0.0042 },
+      }));
+      turn.finish(0);
+
+      await waitFor(() => context.journal.after(context.run.id, 0).some((event) => event.type === 'usage'));
+      const usage = context.journal.after(context.run.id, 0).find((event) => event.type === 'usage');
+      expect(usage?.payload).toMatchObject({ inputTokens: 109, outputTokens: 3, costUsd: 0.0042 });
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

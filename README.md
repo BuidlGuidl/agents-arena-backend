@@ -82,8 +82,14 @@ To try the wallet login instead, list your address before starting the backend:
 
 ```bash
 export ARENA_OPERATOR_ADDRESSES=0xYourAddress
-export ARENA_SIWE_DOMAINS=localhost:5173   # the host the wallet will show you
+export ARENA_SIWE_DOMAINS=localhost:5173,127.0.0.1:5173   # required
 ```
+
+`ARENA_SIWE_DOMAINS` lists the hosts a signed message may claim, and it has to
+include the one in your address bar: `pnpm --filter mock-frontend dev` serves
+`localhost:5173`, while `scripts/demo.sh` passes `--host 127.0.0.1`. Listing both
+covers either route. Login answers `401 Message domain does not match this server`
+when the host you are on is missing.
 
 "sign in with wallet" then appears in the mock frontend's header. Once you are signed
 in the dev proxy stops adding the token, so the buttons run on the session cookie and
@@ -130,4 +136,4 @@ If either preflight fails, the run fails and both containers are torn down. Neit
 
 Control endpoints are operator-only. Every POST needs one of two credentials — `Authorization: Bearer $ARENA_OPERATOR_TOKEN` for scripts and server-side proxies, or the `arena_operator` session cookie the operator gets by signing in with his wallet — and answers `401` with neither, while the snapshot and the SSE feed stay open for spectators. The backend refuses to start when `ARENA_OPERATOR_TOKEN` is unset, so a deploy cannot leave the controls open.
 
-Wallet login is Sign-In with Ethereum and stays off until `ARENA_OPERATOR_ADDRESSES` lists the operator's address; set `ARENA_SIWE_DOMAINS` too when a frontend proxies the arena under its own hostname. Whichever credential a frontend uses, the secret stays out of the page — see [ADR-0011](docs/adr/decisions-log.md). The API contract travels as checked-in files (`contract/API.md` + `contract/arena-types.ts`); the frontend fork copies the types.
+Wallet login is Sign-In with Ethereum and stays off until `ARENA_OPERATOR_ADDRESSES` lists the operator's address. When the address list is set, `ARENA_SIWE_DOMAINS` is required and must list the hostname the wallet shows. Whichever credential a frontend uses, the secret stays out of the page — see [ADR-0011](docs/adr/decisions-log.md). The API contract travels as checked-in files (`contract/API.md` + `contract/arena-types.ts`); the frontend fork copies the types.

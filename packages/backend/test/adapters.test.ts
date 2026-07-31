@@ -436,7 +436,7 @@ describe('adapter guardrails', () => {
   it.each(['codex', 'opencode'] as const)('%s injects wallet credentials when a wallet row exists', async (harness) => {
     const context = await setup(harness, 10 * 60 * 1_000, true);
     try {
-      const wallet = getWallet(context.run.id, context.entrant.id, context.journal.database);
+      const wallet = getWallet(context.run.id, context.entrant.id);
       expect(wallet).not.toBeNull();
       expect(context.containerOptions.env).toEqual(expect.objectContaining({
         ETH_RPC_URL: 'http://host.docker.internal:8545',

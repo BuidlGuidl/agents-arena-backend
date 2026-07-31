@@ -29,7 +29,7 @@ export function looksLikeSignature(text: string): boolean {
 export function seedErrorMessage(status: number): string {
   switch (status) {
     case 400:
-      return 'that is not a signature the backend can read (expects 0x + 130 hex chars).';
+      return 'the backend could not read that signature, or its encoding is not canonical (expects 0x + 130 hex chars, low-s, v 27/28).';
     case 403:
       return 'signature rejected — it did not come from the wallet this profile funds with.';
     case 409:
@@ -55,8 +55,13 @@ export function injectedProvider(): Eip1193Provider | undefined {
   return typeof window === 'undefined' ? undefined : window.ethereum;
 }
 
-// Ask the injected wallet for an account, then for an EIP-191 signature over the
-// seed message. `personal_sign` takes the message first and the signer second.
+export function encodeSeedMessage(message: string): string {
+  return `0x${Array.from(new TextEncoder().encode(message))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')}`;
+}
+
+// personal_sign takes the hex-encoded UTF-8 message first and the signer second.
 export async function requestSeedSignature(
   provider: Eip1193Provider,
   message: string,
@@ -66,7 +71,11 @@ export async function requestSeedSignature(
   if (typeof account !== 'string') {
     throw new Error('the wallet returned no account.');
   }
-  const signature = await provider.request({ method: 'personal_sign', params: [message, account] });
+  const hexMessage = encodeSeedMessage(message);
+  const signature = await provider.request({
+    method: 'personal_sign',
+    params: [hexMessage, account],
+  });
   if (typeof signature !== 'string') {
     throw new Error('the wallet returned no signature.');
   }

@@ -57,6 +57,7 @@ The backend does not resume pre-terminal runs after a restart. Stop runs parked 
 ### `POST /runs/:id/seed`
 
 Accepts the funder's EIP-191 signature while the run is in `awaiting_signature`.
+The signature is the recovery secret for the run's funds and travels in the POST body. Production deployments must serve this route over TLS only, and reverse proxies must not log its request body.
 
 ```json
 {"signature":"0x..."}
@@ -71,7 +72,7 @@ run: <runId>
 
 The backend verifies the signature against the active chain profile's `funderAddress`. It derives each entrant wallet in memory, stores each address on the entrant, and emits one `wallet.assigned` event per entrant. The signature and private keys never enter the event journal or database.
 
-A valid request returns status `202` with the current run snapshot. A signature from another address returns status `403`. A run outside `awaiting_signature` returns status `409`.
+A valid request returns status `202` with the current run snapshot. A malformed or non-canonical signature returns status `400`. A canonical signature from another address returns status `403`. A run outside `awaiting_signature` returns status `409`.
 
 ### `POST /runs/:id/stop`
 

@@ -527,6 +527,28 @@ describe('seed endpoint', () => {
     });
   });
 
+  it('explains that an awaiting-signature run cannot resume after a restart', async () => {
+    await withAutoSignDisabled(async () => {
+      const server = createSeedTestServer();
+      const { run } = await server.manager.create({ preset: 'docker-duel' });
+      server.manager.transition(run.id, 'awaiting_signature');
+      const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+      const signature = await account.signMessage({ message: seedMessage(run.id) });
+
+      const response = await server.app.inject({
+        method: 'POST',
+        url: `/runs/${run.id}/seed`,
+        payload: { signature },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        error: 'Backend restarted while this run awaited its signature; stop the run and create a new one.',
+      });
+      await server.manager.stop(run.id);
+    });
+  });
+
   it('rejects a signature from the wrong signer without exposing signer data', async () => {
     await withAutoSignDisabled(async () => {
       const server = createSeedTestServer();
@@ -571,8 +593,11 @@ describe('seed endpoint', () => {
         payload: { signature: highSSignature(signature) },
       });
 
-      expect(response.statusCode).toBe(403);
-      expect(response.json()).toEqual({ error: 'Seed signature is not authorized' });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: 'Signature encoding is not canonical (expects low-s, v 27/28).',
+      });
+      expect(response.body).not.toContain(signature);
       expect(server.manager.snapshot(run.id).state).toBe('awaiting_signature');
       await server.manager.stop(run.id);
     });

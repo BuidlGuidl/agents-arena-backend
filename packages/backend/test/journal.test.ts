@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import { privateKeyToAccount } from 'viem/accounts';
 
+import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
+import {
+  deriveEntrantKeys,
+  dropRunKeys,
+  getWallet,
+  seedMessage,
+} from '../src/chain/wallet.js';
 import type { ArenaEvent } from '../src/contract.js';
+import { events as eventRows } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 
 describe('EventJournal', () => {
@@ -23,6 +32,84 @@ describe('EventJournal', () => {
       expect([first.id, second.id, third.id]).toEqual([1, 2, 3]);
       expect([first.seq, second.seq, third.seq]).toEqual([1, 1, 2]);
     } finally {
+      journal.close();
+    }
+  });
+
+  it('redacts every case of a live derived key before storage and notification', async () => {
+    const runId = 'journal-redaction-live';
+    const journal = new EventJournal(':memory:');
+    try {
+      const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+      const signature = await account.signMessage({ message: seedMessage(runId) });
+      deriveEntrantKeys(runId, signature, ['codex-1']);
+      const privateKey = getWallet(runId, 'codex-1')!.privateKey;
+      const upperKey = `0x${privateKey.slice(2).toUpperCase()}`;
+      const streamed: ArenaEvent[] = [];
+      journal.subscribe(runId, (event) => streamed.push(event));
+
+      const appended = journal.append(runId, 'codex-1', 'tool.result', {
+        entrantId: 'codex-1',
+        tool: 'shell',
+        ok: true,
+        detail: `cast send --private-key ${privateKey}; echoed ${upperKey}`,
+      });
+      const stored = journal.database
+        .select({ payloadJson: eventRows.payloadJson })
+        .from(eventRows)
+        .get();
+
+      expect(appended.payload.detail)
+        .toBe('cast send --private-key [redacted-key]; echoed [redacted-key]');
+      expect(stored?.payloadJson).toBe(JSON.stringify(appended.payload));
+      expect(stored?.payloadJson.toLowerCase()).not.toContain(privateKey.toLowerCase());
+      expect(streamed).toEqual([appended]);
+    } finally {
+      dropRunKeys(runId);
+      journal.close();
+    }
+  });
+
+  it('leaves payloads untouched when the run has no live keys', () => {
+    const journal = new EventJournal(':memory:');
+    try {
+      const payload = {
+        entrantId: 'codex-1',
+        text: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      };
+      const appended = journal.append(
+        'journal-redaction-empty',
+        'codex-1',
+        'agent.message',
+        payload,
+      );
+
+      expect(appended.payload).toEqual(payload);
+      expect(journal.after('journal-redaction-empty', 0)).toEqual([appended]);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('stops redacting after the run keys are dropped', async () => {
+    const runId = 'journal-redaction-dropped';
+    const journal = new EventJournal(':memory:');
+    try {
+      const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+      const signature = await account.signMessage({ message: seedMessage(runId) });
+      deriveEntrantKeys(runId, signature, ['codex-1']);
+      const privateKey = getWallet(runId, 'codex-1')!.privateKey;
+      dropRunKeys(runId);
+
+      const appended = journal.append(runId, 'codex-1', 'agent.message', {
+        entrantId: 'codex-1',
+        text: privateKey,
+      });
+
+      expect(appended.payload.text).toBe(privateKey);
+      expect(journal.after(runId, 0)).toEqual([appended]);
+    } finally {
+      dropRunKeys(runId);
       journal.close();
     }
   });

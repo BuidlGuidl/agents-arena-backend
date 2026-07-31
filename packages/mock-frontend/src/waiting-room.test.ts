@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  encodeSeedMessage,
   injectedProvider,
   isWaitingRoomState,
   looksLikeSignature,
@@ -78,6 +79,12 @@ describe('looksLikeSignature', () => {
 });
 
 describe('seedErrorMessage', () => {
+  it('covers body-shape and canonical encoding failures', () => {
+    const line = seedErrorMessage(400);
+    expect(line).toContain('130 hex chars');
+    expect(line).toContain('canonical');
+  });
+
   it('explains a rejected signature without naming the expected wallet', () => {
     const line = seedErrorMessage(403);
     expect(line).toContain('rejected');
@@ -94,15 +101,20 @@ describe('seedErrorMessage', () => {
 });
 
 describe('requestSeedSignature', () => {
-  it('asks for an account before signing, and signs message-then-signer', async () => {
+  it('hex-encodes the seed message before signing message-then-signer', async () => {
     const { provider, calls } = fakeWallet();
-    const signature = await requestSeedSignature(provider, seedMessage('run-1'));
+    const signature = await requestSeedSignature(provider, seedMessage('1'));
     expect(signature).toBe(SIGNATURE);
     expect(calls.map((call) => call.method)).toEqual(['eth_requestAccounts', 'personal_sign']);
     expect(calls[1]!.params).toEqual([
-      'agents-arena seed v1\nrun: run-1',
+      '0x6167656e74732d6172656e6120736565642076310a72756e3a2031',
       '0xF39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
     ]);
+  });
+
+  it('encodes the pinned run 1 seed message exactly', () => {
+    expect(encodeSeedMessage(seedMessage('1')))
+      .toBe('0x6167656e74732d6172656e6120736565642076310a72756e3a2031');
   });
 
   it('throws when the wallet unlocks no account', async () => {

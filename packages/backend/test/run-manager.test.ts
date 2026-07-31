@@ -1,9 +1,11 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
+import { privateKeyToAccount } from 'viem/accounts';
 
 import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
+import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import { recordSolve } from '../src/chain/storage.js';
-import { getWallet } from '../src/chain/wallet.js';
+import { getWallet, seedMessage } from '../src/chain/wallet.js';
 import { entrants } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import {
@@ -26,6 +28,20 @@ async function createManager() {
   const manager = new RunManager(journal, noopDriver);
   const { run } = await manager.create({ preset: 'fake-duel' });
   return { journal, manager, runId: run.id };
+}
+
+async function withAutoSignDisabled<T>(action: () => Promise<T>): Promise<T> {
+  const previous = process.env.ARENA_AUTO_SIGN;
+  process.env.ARENA_AUTO_SIGN = 'false';
+  try {
+    return await action();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ARENA_AUTO_SIGN;
+    } else {
+      process.env.ARENA_AUTO_SIGN = previous;
+    }
+  }
 }
 
 async function advance(manager: RunManager, runId: string, target: RunState): Promise<void> {
@@ -366,6 +382,27 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 describe('RunManager ready barrier', () => {
+  it('waits for a chainless start and surfaces its error when auto-signing is disabled', async () => {
+    await withAutoSignDisabled(async () => {
+      const journal = new EventJournal(':memory:');
+      const driver: EntrantDriver = {
+        ...noopDriver,
+        async prepare() {
+          throw new Error('fake prepare failed');
+        },
+      };
+      const manager = new RunManager(journal, driver);
+      try {
+        const { run } = await manager.create({ preset: 'fake-duel' });
+
+        await expect(manager.startForRequest(run.id)).rejects.toThrow('fake prepare failed');
+        expect(manager.snapshot(run.id).state).toBe('failed');
+      } finally {
+        journal.close();
+      }
+    });
+  });
+
   it('starts a chainless run without assigning entrant wallets', async () => {
     const journal = new EventJournal(':memory:');
     const manager = new RunManager(journal, noopDriver);
@@ -408,6 +445,54 @@ describe('RunManager ready barrier', () => {
     } finally {
       journal.close();
     }
+  });
+
+  it('rolls back every address and wallet event when one append fails', async () => {
+    await withAutoSignDisabled(async () => {
+      const journal = new EventJournal(':memory:');
+      const manager = new RunManager(journal, noopDriver);
+      const published: string[] = [];
+      let starting: Promise<unknown> | undefined;
+      try {
+        const { run } = await manager.create({ preset: 'docker-duel' });
+        starting = manager.start(run.id);
+        expect(manager.snapshot(run.id).state).toBe('awaiting_signature');
+        const signature = await privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY)
+          .signMessage({ message: seedMessage(run.id) });
+        const unsubscribe = journal.subscribe(run.id, (event) => {
+          if (event.type === 'wallet.assigned') published.push(event.source);
+        });
+        journal.database.run(sql`
+          CREATE TRIGGER fail_second_wallet_append
+          BEFORE INSERT ON events
+          WHEN NEW.type = 'wallet.assigned' AND NEW.source = 'opencode-1'
+          BEGIN
+            SELECT RAISE(FAIL, 'wallet append failed');
+          END
+        `);
+
+        await expect(manager.submitSeed(run.id, signature)).rejects.toThrow('wallet append failed');
+
+        expect(manager.snapshot(run.id).entrants.every((entrant) => entrant.address === null))
+          .toBe(true);
+        expect(journal.after(run.id, 0).filter((event) => event.type === 'wallet.assigned'))
+          .toEqual([]);
+        expect(published).toEqual([]);
+
+        journal.database.run(sql`DROP TRIGGER fail_second_wallet_append`);
+        await manager.submitSeed(run.id, signature);
+        await starting;
+
+        expect(journal.after(run.id, 0).filter((event) => event.type === 'wallet.assigned'))
+          .toHaveLength(2);
+        expect(published.sort()).toEqual(['codex-1', 'opencode-1']);
+        unsubscribe();
+        await manager.stop(run.id);
+      } finally {
+        if (starting !== undefined) await starting.catch(() => {});
+        journal.close();
+      }
+    });
   });
 
   it('shares one in-flight start between concurrent callers', async () => {

@@ -378,29 +378,28 @@ function WaitingRoom({ run, feed }: { run: RunSnapshot; feed: FeedState }) {
             >
               {busy ? 'signing…' : 'sign with wallet'}
             </button>
-          ) : (
-            <>
-              <p className="seed-hint">
-                no injected wallet here. sign the message above elsewhere and paste the signature.
-              </p>
-              <div className="seed-paste">
-                <input
-                  className="steer"
-                  data-testid="signature-input"
-                  value={pasted}
-                  onChange={(event) => setPasted(event.target.value)}
-                  placeholder="0x… 65-byte signature"
-                />
-                <button
-                  className="btn steer-btn"
-                  disabled={!looksLikeSignature(pasted) || seed.isPending}
-                  onClick={() => seed.mutate(pasted.trim())}
-                >
-                  {seed.isPending ? 'submitting…' : 'submit signature'}
-                </button>
-              </div>
-            </>
-          )}
+          ) : null}
+          <p className="seed-hint">
+            {provider === undefined
+              ? 'no injected wallet here. sign the message above elsewhere and paste the signature.'
+              : 'if wallet signing fails, sign the message elsewhere and paste the signature.'}
+          </p>
+          <div className="seed-paste">
+            <input
+              className="steer"
+              data-testid="signature-input"
+              value={pasted}
+              onChange={(event) => setPasted(event.target.value)}
+              placeholder="0x… 65-byte signature"
+            />
+            <button
+              className="btn steer-btn"
+              disabled={!looksLikeSignature(pasted) || seed.isPending}
+              onClick={() => seed.mutate(pasted.trim())}
+            >
+              {seed.isPending ? 'submitting…' : 'submit signature'}
+            </button>
+          </div>
 
           {walletError !== null ? <p className="error-line">{walletError}</p> : null}
           {seed.error instanceof Error ? (

@@ -5,7 +5,35 @@ import { scores } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
 
 export function ensureChainTables(database: ArenaDatabase): void {
-  database.run(sql`DROP TABLE IF EXISTS wallets`);
+  const legacyWallets = database.get<{ name: string }>(sql`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'wallets'
+  `);
+  if (legacyWallets !== undefined) {
+    const priorSecureDelete = database.get<{ secure_delete: number }>(
+      sql`PRAGMA secure_delete`,
+    )?.secure_delete ?? 0;
+    try {
+      database.run(sql`PRAGMA secure_delete = ON`);
+      database.run(sql`DROP TABLE wallets`);
+      database.run(sql`VACUUM`);
+      const journalMode = database.get<{ journal_mode: string }>(
+        sql`PRAGMA journal_mode`,
+      )?.journal_mode;
+      if (journalMode?.toLowerCase() === 'wal') {
+        database.run(sql`PRAGMA wal_checkpoint(TRUNCATE)`);
+      }
+    } finally {
+      if (priorSecureDelete === 2) {
+        database.run(sql`PRAGMA secure_delete = FAST`);
+      } else if (priorSecureDelete === 1) {
+        database.run(sql`PRAGMA secure_delete = ON`);
+      } else {
+        database.run(sql`PRAGMA secure_delete = OFF`);
+      }
+    }
+  }
 
   database.run(sql`
     CREATE TABLE IF NOT EXISTS scores (

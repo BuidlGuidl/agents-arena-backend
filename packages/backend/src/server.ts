@@ -15,6 +15,7 @@ import {
   RunManager,
   type RunManagerOptions,
   RunNotFoundError,
+  SeedEncodingError,
   SeedSignatureError,
   SeedStateConflictError,
   type SolveWatch,
@@ -80,7 +81,11 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
       void reply.status(404).send({ error: error.message });
       return;
     }
-    if (error instanceof InvalidTransitionError || error instanceof UnknownPresetError) {
+    if (
+      error instanceof InvalidTransitionError
+      || error instanceof UnknownPresetError
+      || error instanceof SeedEncodingError
+    ) {
       void reply.status(400).send({ error: error.message });
       return;
     }

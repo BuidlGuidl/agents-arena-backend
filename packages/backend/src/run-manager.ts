@@ -44,6 +44,7 @@ export class EntrantNotFoundError extends Error {}
 export class InvalidTransitionError extends Error {}
 export class UnknownPresetError extends Error {}
 export class SeedStateConflictError extends Error {}
+export class SeedEncodingError extends Error {}
 export class SeedSignatureError extends Error {}
 
 export interface CreateRunResult {
@@ -254,15 +255,28 @@ export class RunManager {
   async submitSeed(runId: string, signature: Hex): Promise<RunSnapshot> {
     const run = this.requireRun(runId);
     const waiter = this.seedWaiters.get(runId);
+    if (run.state === 'awaiting_signature' && waiter === undefined) {
+      throw new SeedStateConflictError(
+        'Backend restarted while this run awaited its signature; stop the run and create a new one.',
+      );
+    }
     if (run.state !== 'awaiting_signature' || waiter === undefined || waiter.submitting) {
       throw new SeedStateConflictError('Run is not awaiting a seed signature');
     }
     waiter.submitting = true;
 
     let canonicalSignature: Hex;
-    let recovered: string;
     try {
       canonicalSignature = canonicalizeSeedSignature(signature);
+    } catch {
+      waiter.submitting = false;
+      throw new SeedEncodingError(
+        'Signature encoding is not canonical (expects low-s, v 27/28).',
+      );
+    }
+
+    let recovered: string;
+    try {
       recovered = await recoverMessageAddress({
         message: seedMessage(runId),
         signature: canonicalSignature,
@@ -295,29 +309,23 @@ export class RunManager {
     }
 
     try {
-      this.journal.database.transaction((transaction) => {
+      this.journal.transaction(() => {
         for (const entrant of runEntrants) {
           const address = addresses.get(entrant.id);
           if (address === undefined) {
             throw new Error(`No derived address for entrant ${entrant.id}`);
           }
-          transaction
+          this.journal.database
             .update(entrants)
             .set({ address })
             .where(and(eq(entrants.runId, runId), eq(entrants.id, entrant.id)))
             .run();
+          this.journal.append(runId, entrant.id, 'wallet.assigned', {
+            entrantId: entrant.id,
+            address,
+          });
         }
       });
-      for (const entrant of runEntrants) {
-        const address = addresses.get(entrant.id);
-        if (address === undefined) {
-          throw new Error(`No derived address for entrant ${entrant.id}`);
-        }
-        this.journal.append(runId, entrant.id, 'wallet.assigned', {
-          entrantId: entrant.id,
-          address,
-        });
-      }
     } catch (error) {
       dropRunKeys(runId);
       waiter.submitting = false;
@@ -349,8 +357,9 @@ export class RunManager {
   }
 
   async startForRequest(runId: string): Promise<RunSnapshot> {
+    const run = this.requireRun(runId);
     const starting = this.start(runId);
-    if (localAutoSignEnabled()) {
+    if (run.preset !== 'docker-duel' || localAutoSignEnabled()) {
       return starting;
     }
     void starting.catch(() => {});

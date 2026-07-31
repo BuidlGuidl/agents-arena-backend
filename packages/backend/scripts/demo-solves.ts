@@ -112,7 +112,7 @@ const journal = new EventJournal(':memory:');
 const runId = 'e2e-run';
 const signature = await account.signMessage({ message: seedMessage(runId) });
 const burnerAddress = deriveEntrantKeys(runId, signature, ['codex-1']).get('codex-1')!;
-const burnerKey = getWallet(runId, 'codex-1', journal.database)!.privateKey;
+const burnerKey = getWallet(runId, 'codex-1')!.privateKey;
 const burner = privateKeyToAccount(burnerKey);
 const createdAt = new Date().toISOString();
 journal.database.insert(runs).values({

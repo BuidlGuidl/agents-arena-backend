@@ -18,6 +18,8 @@ Not wired yet:
 - The `base` profile addresses in `config/chains.json` are stale until the CTF contracts are redeployed. ADR-0009's startup cross-check throws until they are.
 - The `base` profile's `funderAddress` is the zero address, which rejects every seed signature. Before any base run, set it to the treasury wallet that will sign and fund — and that wallet must be a plain EOA: burner keys derive from its signature (ADR-0011), and a Safe or MPC signer cannot re-produce one to recover funds.
 
+In any real deployment, serve `POST /runs/:id/seed` over TLS. Configure proxies not to log request bodies on that route because the signature is a bearer secret.
+
 ## How it works
 
 One process owns a run: lifecycle, containers, credentials, the event journal, and score state. It holds an open Docker socket and a SQLite file. No queue, no websockets, no Kubernetes.
@@ -91,7 +93,7 @@ Credentials come from the host: `codex` reads `~/.codex/auth.json`, `opencode` r
 5. Hold at the ready barrier until both report ready. Record one start time and release both with their opening prompt.
 6. Parse each agent's stdout into `ArenaEvent`s, append them to the journal, and stream them to the browser.
 
-Keys are dropped at teardown and never enter SQLite. The funder can re-sign the same message and re-derive them offline to sweep leftovers. If either preflight fails, the run fails and both containers are torn down. Neither starts.
+Keys are dropped at teardown and never enter SQLite. At race time, the funder must save the canonical seed signature because it is that run's recovery key. From `packages/backend`, `scripts/recover-keys.ts` re-derives the burner keys and can sweep their balances. If either preflight fails, the run fails and both containers are torn down. Neither starts.
 
 ## API
 

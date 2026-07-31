@@ -10,8 +10,6 @@ import {
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
-import type { ArenaDatabase } from '../db/index.js';
-
 export interface WalletRecord {
   runId: string;
   entrantId: string;
@@ -44,15 +42,17 @@ export function deriveEntrantKeys(
   signature: Hex,
   entrantIds: readonly string[],
 ): ReadonlyMap<string, Address> {
+  const canonicalSignature = canonicalizeSeedSignature(signature);
   const entrantKeys = new Map<string, WalletRecord>();
 
   for (const entrantId of entrantIds) {
-    // Offline recovery must first serialize the signature as low-s with v 27 or 28,
-    // then hash those canonical bytes with the UTF-8 entrant ID.
+    // Offline recovery hashes the canonical low-s, v 27/28 signature bytes
+    // with the UTF-8 entrant ID.
     const privateKey = keccak256(concat([
-      hexToBytes(signature),
+      hexToBytes(canonicalSignature),
       stringToBytes(entrantId),
     ]));
+    // Noble includes an out-of-range key's decimal value in its error, so callers must never log it.
     const address = privateKeyToAccount(privateKey).address;
     entrantKeys.set(entrantId, { runId, entrantId, address, privateKey });
   }
@@ -61,12 +61,14 @@ export function deriveEntrantKeys(
   return new Map([...entrantKeys].map(([entrantId, wallet]) => [entrantId, wallet.address]));
 }
 
-export function getWallet(
-  runId: string,
-  entrantId: string,
-  _database?: ArenaDatabase,
-): WalletRecord | null {
+export function getWallet(runId: string, entrantId: string): WalletRecord | null {
   return runKeys.get(runId)?.get(entrantId) ?? null;
+}
+
+export function runKeySecrets(runId: string): readonly string[] {
+  const keys = runKeys.get(runId);
+  if (keys === undefined) return [];
+  return [...keys.values()].map((wallet) => wallet.privateKey);
 }
 
 export function dropRunKeys(runId: string): void {

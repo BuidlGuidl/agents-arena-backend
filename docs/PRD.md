@@ -1,15 +1,15 @@
 # Agents Arena v1 backend — PRD
 
-frozen from the design session on 2026-07-22. locked decisions are the ADRs 0001-0008 in `docs/adr/decisions-log.md`; vocabulary is in glossary.md. this PRD defines the vertical slices. it covers the **backend only** — damu and pablo own the real frontend in their ai-ctf fork.
+frozen from the design session on 2026-07-22. locked decisions are in `docs/adr/decisions-log.md`; later ADRs amend this historical plan. vocabulary is in glossary.md. this PRD defines the vertical slices. it covers the **backend only** — damu and pablo own the real frontend in their ai-ctf fork.
 
 ## goal
 
-one authoritative backend that runs a live race: one Codex entrant and one OpenCode entrant (Claude Code deferred, ADR-0008), in isolated Docker containers, solving the real ai-ctf repo on Base. Austin Griffith gets one action to start it and can steer either agent mid-race. the browser sees a normalized, replayable event feed; the leaderboard is on-chain `FlagMinted` truth.
+one authoritative backend that runs a live race: one Codex entrant and one OpenCode entrant (Claude Code deferred, ADR-0008), in isolated Docker containers, solving the real ai-ctf repo on Base. the funder signs and funds through the waiting room before Austin releases the race; Austin can steer either agent mid-race. the browser sees a normalized, replayable event feed; the leaderboard is on-chain `FlagMinted` truth.
 
 ## success bars
 
 1. a codex-vs-opencode run survives a browser reconnect and a backend restart without losing timeline or double-counting a flag.
-2. Austin starts the race with one action; both entrants are released from the same ready barrier, so boot time never decides the race.
+2. after the signature and funding gates pass, Austin releases both entrants from the same ready barrier, so boot time never decides the race.
 3. Austin can inject a free-text steer into either entrant while it runs, and the arena auto-nudges an idle entrant that still has flags to win.
 4. every mint is scored from chain events, mapped to the right entrant wallet, exactly once.
 5. the whole vertical slice is demoable in a mock frontend against the ai-ctf local chain — no live ETH until the rehearsal slice.
@@ -20,7 +20,7 @@ one authoritative backend that runs a live race: one Codex entrant and one OpenC
 - **API contract as checked-in files** (`contract/API.md` + `contract/arena-types.ts`), copied by the frontend fork (ADR-0002).
 - **entrant = persistent steerable session**, not a one-shot process; Austin-steer and auto-nudge are one injection path (ADR-0003).
 - **transport = stdout JSON**; hooks deferred (ADR-0004).
-- **fresh wallet per entrant per run**, held in `awaiting_funding` behind a balance-watch gate; Austin funds live, or an operator key auto-funds in rehearsal (ADR-0005).
+- **fresh wallet per entrant per run**; its private key comes from a verified funder seed signature and lives only in process memory, while SQLite stores the address. the funding gate only watches balances (ADR-0005, amended by ADR-0013 and ADR-0014).
 - **agent self-registers its ERC-8004 identity**; the backend never writes to a registry (ADR-0006).
 - **dev substrate = ai-ctf local chain via a chain profile**; real Base only at rehearsal (ADR-0007).
 
@@ -30,23 +30,24 @@ TypeScript on Node, Fastify (HTTP + SSE), `dockerode` (containers), `viem` (chai
 
 ## run lifecycle
 
-`created → preparing → awaiting_funding → ready → running → stopping → finished` (or `failed`). the run manager is the only writer of this state; on restart it reconciles SQLite against containers carrying `runId`/`entrantId` Docker labels.
+`created → awaiting_signature → preparing → awaiting_funding → ready → running → stopping → finished` (any state can move to `failed`). the run manager is the only writer of this state; on restart it reconciles SQLite against containers carrying `runId`/`entrantId` Docker labels.
 
 ## backend modules (the seams)
 
 - **run manager** — owns lifecycle, readiness, one start time, stop, restart reconciliation.
-- **entrant runtime** (`arena-runner`, container PID 1 via `--init`) — creates the container, seeds wallet + private credential home, runs preflight, holds behind the barrier, owns the persistent session, injects turns, forwards stdout, tears down.
+- **entrant runtime** (`arena-runner`, container PID 1 via `--init`) — creates the container, injects the in-memory burner key + private credential home, runs preflight, holds behind the barrier, owns the persistent session, injects turns, forwards stdout, tears down.
 - **harness adapter** — per-CLI: command, credential home, preflight, stdout parser, mapping to `ArenaEvent`, turn injection. Codex and OpenCode in v1; Claude later behind the same seam (ADR-0008).
 - **event journal** — SQLite, append-only, global `id`, per-source `seq`, one run-level SSE stream, `Last-Event-ID` replay, Docker-log dedup on restart.
 - **game-state adapter** — `viem` watches `FlagMinted`, maps wallet → entrant, projects score events (unique on `(runId, entrantAddress, challengeId)`, two confirmations), `Ponder` for reconciliation.
-- **wallet/funding** — generates keypair, watches balance to cross the funding gate, sweeps optional.
+- **wallet/funding** — verifies the funder signature, derives burner keys in memory, stores addresses only, watches balances, and drops keys at teardown. the funder can re-sign and re-derive offline to sweep leftovers.
 
 ## endpoints (contract)
 
 | endpoint | use |
 |---|---|
-| `POST /runs` | create from a preset, begin preparation; accepts `autoStart` and an idempotency key |
-| `POST /runs/:id/start` | release a fully-ready run to `running` |
+| `POST /runs` | create from a preset; accepts `autoStart` and an idempotency key |
+| `POST /runs/:id/start` | begin the signature, preparation, and funding flow; release a ready run |
+| `POST /runs/:id/seed` | accept the funder's EIP-191 seed signature while the run is in `awaiting_signature` |
 | `POST /runs/:id/stop` | stop and clean up |
 | `POST /runs/:id/entrants/:eid/steer` | inject an Austin steer turn into one entrant |
 | `POST /runs/:id/broadcast` | fan one director message into every live entrant, recorded once on the feed |
@@ -72,12 +73,12 @@ OpenCode adapter: `opencode run --format json --auto -m <preset model>`, OpenRou
 **done:** OpenCode passes the same harmless rehearsal and streams normalized events; both adapters emit the same `ArenaEvent` shape.
 
 ### slice 4 — ready barrier + two lanes
-`POST /runs` with `autoStart` prepares both, holds in `ready` until both report READY, records one start time, releases together. persistent sessions stay open for injection.
-**done:** one action starts both; if either preflight fails, neither starts; two lanes stream side by side from one SSE connection.
+`POST /runs` with `autoStart` prepares both after seeding, holds in `ready` until both report READY, records one start time, releases together. persistent sessions stay open for injection.
+**done:** the zero-touch local flow starts both; if either preflight fails, neither starts; two lanes stream side by side from one SSE connection.
 
 ### slice 5 — wallets + funding gate
-generate a keypair per entrant, hold in `awaiting_funding`, watch balance on the local chain, proceed when both cross the threshold. dashboard shows both addresses. operator-key auto-fund for rehearsal; manual send path for the live moment.
-**done:** a run pauses on addresses, funds (auto in dev), then advances to ready; preflight confirms funded + flag-#1-not-minted.
+[update, 2026-07-30: the funder signs `agents-arena seed v1\nrun: <runId>` before preparation. derive each entrant key as `keccak256(signature bytes ‖ utf8 entrantId)`, keep keys in memory, and store only `entrants.address`. the gate watches balances on every profile. a local-only helper auto-funds; Base waits for a human.]
+**done:** a run pauses for the signature, then for funding, and advances to ready; preflight confirms funded + flag-#1-not-minted. startup drops the old `wallets` table.
 
 ### slice 6 — FlagMinted watcher → scores
 game-state adapter watches `FlagMinted` on the chain profile, maps wallet → entrant, projects score events idempotently (two confirmations, dedup on `(runId, entrantAddress, challengeId)`). agent runs the real CTF prompt and mints flag #1.

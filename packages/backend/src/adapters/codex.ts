@@ -37,7 +37,7 @@ export class CodexDriver extends HarnessEntrantDriver {
   protected async createContainer(run: RunRecord, entrant: EntrantRecord): Promise<EntrantContainer> {
     const credentialDir = await createCredentialDir('codex');
     try {
-      const wallet = getWallet(run.id, entrant.id, this.journal.database);
+      const wallet = getWallet(run.id, entrant.id);
       await copyFile(this.authPath, join(credentialDir, 'auth.json'));
       // Only pin a model when the preset asks for a specific one. A ChatGPT-account
       // login rejects API-only models (gpt-5, gpt-5-codex) with a 400, so 'default'

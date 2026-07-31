@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ArenaEvent } from '../../../contract/arena-types';
+import type { ArenaEvent, EntrantSummary } from '../../../contract/arena-types';
 import {
   deriveLaneWallet,
+  deriveWaitingRoom,
   describeEntry,
   describeEvent,
   entriesForSource,
@@ -463,5 +464,77 @@ describe('deriveLaneWallet', () => {
     ];
     const wallet = deriveLaneWallet(events, null, 'awaiting_funding');
     expect(wallet).toEqual({ address: '0xw', wei: '1000000000000000000', funded: true, awaitingFunds: false });
+  });
+});
+
+describe('deriveWaitingRoom', () => {
+  const base = { id: 1, runId: 'run-1', seq: 1, ts: 'now' };
+
+  function entrant(id: string, address: string | null): EntrantSummary {
+    return {
+      id,
+      harness: 'codex',
+      model: 'gpt-5',
+      address,
+      status: 'idle',
+      flags: 0,
+      solves: [],
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: null,
+    };
+  }
+
+  it('marks every entrant pending before the seed signature derives an address', () => {
+    const roster = deriveWaitingRoom(
+      [entrant('codex-1', null), entrant('opencode-1', null)],
+      [],
+      'awaiting_signature',
+    );
+    expect(roster.map((row) => row.status)).toEqual(['pending', 'pending']);
+    expect(roster.map((row) => row.address)).toEqual([null, null]);
+  });
+
+  it('picks up the address from wallet.assigned and reports the lane as waiting', () => {
+    const events: ArenaEvent[] = [
+      { ...base, source: 'codex-1', type: 'wallet.assigned', payload: { entrantId: 'codex-1', address: '0xcodex' } },
+    ];
+    const roster = deriveWaitingRoom(
+      [entrant('codex-1', null)],
+      events.map((event) => ({ event })),
+      'awaiting_funding',
+    );
+    expect(roster[0]).toEqual({
+      entrantId: 'codex-1',
+      harness: 'codex',
+      address: '0xcodex',
+      wei: null,
+      funded: false,
+      status: 'waiting',
+    });
+  });
+
+  it('tracks each entrant separately, so one funded lane does not cover the other', () => {
+    const events: ArenaEvent[] = [
+      { ...base, id: 1, source: 'codex-1', type: 'funding.balance', payload: { entrantId: 'codex-1', address: '0xcodex', wei: '50000000000000000', funded: true } },
+      { ...base, id: 2, source: 'opencode-1', type: 'funding.balance', payload: { entrantId: 'opencode-1', address: '0xopen', wei: '1000', funded: false } },
+    ];
+    const roster = deriveWaitingRoom(
+      [entrant('codex-1', '0xcodex'), entrant('opencode-1', '0xopen')],
+      events.map((event) => ({ event })),
+      'awaiting_funding',
+    );
+    expect(roster.map((row) => row.status)).toEqual(['funded', 'waiting']);
+    expect(roster[0]!.wei).toBe('50000000000000000');
+    expect(roster[1]!.wei).toBe('1000');
+  });
+
+  it('keeps the entrant order the snapshot gave it', () => {
+    const roster = deriveWaitingRoom(
+      [entrant('opencode-1', '0xopen'), entrant('codex-1', '0xcodex')],
+      [],
+      'awaiting_funding',
+    );
+    expect(roster.map((row) => row.entrantId)).toEqual(['opencode-1', 'codex-1']);
   });
 });

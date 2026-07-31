@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, lt, max } from 'drizzle-orm';
 
+import { runKeySecrets } from './chain/wallet.js';
 import type { ArenaEvent, HistoryPage } from './contract.js';
 import { openArenaDatabase, type ArenaDatabase } from './db/index.js';
 import { events } from './db/schema.js';
@@ -28,6 +29,7 @@ export class EventJournal {
 
   private readonly sqlite: ReturnType<typeof openArenaDatabase>['sqlite'];
   private readonly subscribers = new Map<string, Set<Subscriber>>();
+  private readonly pendingNotifications: ArenaEvent[][] = [];
 
   constructor(path = process.env.ARENA_DB ?? './arena.db') {
     const opened = openArenaDatabase(path);
@@ -41,6 +43,12 @@ export class EventJournal {
     type: T,
     payload: EventPayload<T>,
   ): EventOfType<T> {
+    const serializedPayload = JSON.stringify(payload);
+    // Agent tool output can echo WALLET_PRIVATE_KEY, so scrub live values before storage and delivery.
+    const payloadJson = redactExactSecrets(serializedPayload, runKeySecrets(runId));
+    const journalPayload = payloadJson === serializedPayload
+      ? payload
+      : JSON.parse(payloadJson) as EventPayload<T>;
     const event = this.database.transaction((transaction) => {
       const sequence = transaction
         .select({ current: max(events.seq) })
@@ -51,7 +59,7 @@ export class EventJournal {
       const ts = new Date().toISOString();
       const inserted = transaction
         .insert(events)
-        .values({ runId, source, seq, ts, type, payloadJson: JSON.stringify(payload) })
+        .values({ runId, source, seq, ts, type, payloadJson })
         .returning({ id: events.id })
         .get();
       return {
@@ -61,14 +69,37 @@ export class EventJournal {
         seq,
         ts,
         type,
-        payload,
+        payload: journalPayload,
       } as EventOfType<T>;
     });
 
-    for (const subscriber of this.subscribers.get(runId) ?? []) {
-      subscriber(event);
+    const pending = this.pendingNotifications.at(-1);
+    if (pending === undefined) {
+      this.notify(event);
+    } else {
+      pending.push(event);
     }
     return event;
+  }
+
+  transaction<T>(action: () => T): T {
+    const notifications: ArenaEvent[] = [];
+    this.pendingNotifications.push(notifications);
+    let result: T;
+    try {
+      result = this.database.transaction(action);
+    } catch (error) {
+      this.pendingNotifications.pop();
+      throw error;
+    }
+    this.pendingNotifications.pop();
+    const parent = this.pendingNotifications.at(-1);
+    if (parent === undefined) {
+      for (const event of notifications) this.notify(event);
+    } else {
+      parent.push(...notifications);
+    }
+    return result;
   }
 
   after(runId: string, afterId: number): ArenaEvent[] {
@@ -131,6 +162,33 @@ export class EventJournal {
     this.subscribers.clear();
     this.sqlite.close();
   }
+
+  private notify(event: ArenaEvent): void {
+    for (const subscriber of this.subscribers.get(event.runId) ?? []) {
+      subscriber(event);
+    }
+  }
+}
+
+function redactExactSecrets(value: string, secrets: readonly string[]): string {
+  let redacted = value;
+  for (const secret of secrets) {
+    const lowerValue = redacted.toLowerCase();
+    const lowerSecret = secret.toLowerCase();
+    let cursor = 0;
+    let match = lowerValue.indexOf(lowerSecret, cursor);
+    if (match === -1) continue;
+
+    const parts: string[] = [];
+    while (match !== -1) {
+      parts.push(redacted.slice(cursor, match), '[redacted-key]');
+      cursor = match + secret.length;
+      match = lowerValue.indexOf(lowerSecret, cursor);
+    }
+    parts.push(redacted.slice(cursor));
+    redacted = parts.join('');
+  }
+  return redacted;
 }
 
 // The journal retains full payloads, so wire responses cap strings separately.

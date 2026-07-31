@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, isNotNull } from 'drizzle-orm';
 import {
   BaseError,
   ContractFunctionZeroDataError,
@@ -11,7 +11,7 @@ import {
 
 import type { EntrantRecord, RunRecord } from '../adapters/types.js';
 import type { ArenaDatabase } from '../db/index.js';
-import { scores, wallets } from '../db/schema.js';
+import { entrants, scores } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
 import type { SolveWatch } from '../run-manager.js';
 import { flagMintedEvent, nftFlagsAbi } from './abi.js';
@@ -195,9 +195,12 @@ export class SolvePoller {
 
   private pendingPairs(): Pair[] {
     const entrantRows = this.database
-      .select({ entrantId: wallets.entrantId, address: wallets.address })
-      .from(wallets)
-      .where(eq(wallets.runId, this.options.runId))
+      .select({ entrantId: entrants.id, address: entrants.address })
+      .from(entrants)
+      .where(and(
+        eq(entrants.runId, this.options.runId),
+        isNotNull(entrants.address),
+      ))
       .all();
     const scored = new Set(
       this.database
@@ -208,14 +211,17 @@ export class SolvePoller {
         .map((row) => pairKey(row.address, row.challengeId)),
     );
 
-    return entrantRows.flatMap((row) =>
-      CHALLENGE_IDS
-        .filter((challengeId) => !scored.has(pairKey(row.address, challengeId)))
+    return entrantRows.flatMap((row) => {
+      if (row.address === null) return [];
+      const address = row.address;
+      return CHALLENGE_IDS
+        .filter((challengeId) => !scored.has(pairKey(address, challengeId)))
         .map((challengeId) => ({
           entrantId: row.entrantId,
-          address: getAddress(row.address),
+          address: getAddress(address),
           challengeId,
-        })));
+        }));
+    });
   }
 
   // One aggregate3 where the chain has Multicall3, otherwise one eth_call per pair.

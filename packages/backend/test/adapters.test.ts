@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { and, eq } from 'drizzle-orm';
+import { privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CodexDriver } from '../src/adapters/codex.js';
@@ -13,7 +14,8 @@ import {
   type EntrantRecord,
   type RunRecord,
 } from '../src/adapters/types.js';
-import { createWallet, getWallet } from '../src/chain/wallet.js';
+import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
+import { deriveEntrantKeys, getWallet, seedTypedData } from '../src/chain/wallet.js';
 import { entrants, runs } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import { RunManager } from '../src/run-manager.js';
@@ -139,7 +141,9 @@ async function setup(
   // rate table lists (or one it does not).
   if (model !== undefined) entrant = { ...entrant, model };
   if (withWallet) {
-    createWallet(run.id, entrant.id, journal.database);
+    const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+    const signature = await account.signTypedData(seedTypedData(run.id, 31337));
+    deriveEntrantKeys(run.id, signature, [entrant.id]);
   }
 
   const container = new ControlledContainer();
@@ -432,7 +436,7 @@ describe('adapter guardrails', () => {
   it.each(['codex', 'opencode'] as const)('%s injects wallet credentials when a wallet row exists', async (harness) => {
     const context = await setup(harness, 10 * 60 * 1_000, true);
     try {
-      const wallet = getWallet(context.run.id, context.entrant.id, context.journal.database);
+      const wallet = getWallet(context.run.id, context.entrant.id);
       expect(wallet).not.toBeNull();
       expect(context.containerOptions.env).toEqual(expect.objectContaining({
         ETH_RPC_URL: 'http://host.docker.internal:8545',

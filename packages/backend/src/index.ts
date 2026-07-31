@@ -1,6 +1,8 @@
-import { createLocalFundingGate, createWalletGate } from './chain/funding-gate.js';
+import { createFundingGate, runLocalDevFaucet } from './chain/funding-gate.js';
+import { activeChainProfile } from './chain/profile.js';
 import { createSolveWatch } from './chain/solve-poller.js';
 import { createServer } from './server.js';
+import type { FundingGate } from './run-manager.js';
 import { InvalidOperatorAddressError, MissingSiweDomainError, parseCsvList } from './siwe.js';
 
 const port = Number(process.env.PORT ?? 4177);
@@ -25,8 +27,19 @@ const { app } = ((): ReturnType<typeof createServer> => {
       operatorToken,
       siwe,
       logger: true,
-      walletGateFactory: (journal) => createWalletGate(journal),
-      fundingGateFactory: (journal) => createLocalFundingGate(journal),
+      fundingGateFactory: (journal) => {
+        const fundingGate = createFundingGate(journal);
+        if (activeChainProfile.name !== 'local') {
+          return fundingGate;
+        }
+        const localFundingFlow: FundingGate = async (run, entrants, signal) => {
+          await Promise.all([
+            fundingGate(run, entrants, signal),
+            runLocalDevFaucet(run, entrants, signal),
+          ]);
+        };
+        return localFundingFlow;
+      },
       solveWatchFactory: (journal) => createSolveWatch(journal),
     });
   } catch (error) {

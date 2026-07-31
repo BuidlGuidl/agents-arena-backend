@@ -24,6 +24,8 @@ describe('buildOpeningPrompt', () => {
       nftFlags: '0x0000000000000000000000000000000000000001',
       challenge1: '0x0000000000000000000000000000000000000002',
       identityRegistry: '0x0000000000000000000000000000000000000003',
+      funderAddress: '0x0000000000000000000000000000000000000000',
+      fundingThresholdWei: 1n,
     };
 
     const prompt = buildOpeningPrompt(entrant, profile);
@@ -47,6 +49,8 @@ describe('buildOpeningPrompt', () => {
       nftFlags: '0x0000000000000000000000000000000000000001',
       challenge1: '0x0000000000000000000000000000000000000002',
       identityRegistry: '0x0000000000000000000000000000000000000003',
+      funderAddress: '0x0000000000000000000000000000000000000000',
+      fundingThresholdWei: 1n,
       briefingUrl: 'https://briefing.example.test/challenges',
     };
 
@@ -68,6 +72,8 @@ describe('buildOpeningPrompt', () => {
       nftFlags: '0x0000000000000000000000000000000000000001',
       challenge1: '0x0000000000000000000000000000000000000002',
       identityRegistry: '0x0000000000000000000000000000000000000003',
+      funderAddress: '0x0000000000000000000000000000000000000000',
+      fundingThresholdWei: 1n,
     };
     const address = '0x1234567890123456789012345678901234567890';
 

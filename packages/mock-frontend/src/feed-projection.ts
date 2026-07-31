@@ -1,4 +1,4 @@
-import type { ArenaEvent, RunState } from '../../../contract/arena-types';
+import type { ArenaEvent, EntrantSummary, RunState } from '../../../contract/arena-types';
 
 // The global `id` is a journal-wide autoincrement shared across runs, so within
 // one run it legitimately skips whenever another run writes events. Data loss is
@@ -146,6 +146,38 @@ export function deriveLaneWallet(
     }
   }
   return { address, wei, funded, awaitingFunds: runState === 'awaiting_funding' && !funded };
+}
+
+export interface WaitingRoomEntry {
+  entrantId: string;
+  harness: string;
+  address: string | null;
+  wei: string | null;
+  funded: boolean;
+  // `pending` covers the window before the seed signature lands, when no burner
+  // address exists to fund yet.
+  status: 'pending' | 'waiting' | 'funded';
+}
+
+// One row per entrant for the waiting room: the same wallet fold the lanes use,
+// widened to the whole roster so the funder reads every address in one list.
+export function deriveWaitingRoom(
+  entrants: readonly EntrantSummary[],
+  entries: FeedEntry[],
+  runState: RunState | undefined,
+): WaitingRoomEntry[] {
+  return entrants.map((entrant) => {
+    const events = entriesForSource(entries, entrant.id).map((entry) => entry.event);
+    const wallet = deriveLaneWallet(events, entrant.address, runState);
+    return {
+      entrantId: entrant.id,
+      harness: entrant.harness,
+      address: wallet.address,
+      wei: wallet.wei,
+      funded: wallet.funded,
+      status: wallet.address === null ? 'pending' : wallet.funded ? 'funded' : 'waiting',
+    };
+  });
 }
 
 // One-line human summary for every ArenaEvent type. Any type the UI does not

@@ -44,7 +44,7 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
     const credentialDir = await mkdtemp(join(tmpdir(), 'arena-opencode-'));
     await chmod(credentialDir, 0o755);
     try {
-      const wallet = getWallet(run.id, entrant.id, this.journal.database);
+      const wallet = getWallet(run.id, entrant.id);
       const apiKey = this.apiKey ?? await readOpenRouterKey(this.authPath);
       if (apiKey === undefined || apiKey.length === 0) {
         throw new Error(`OpenRouter API key not found in OPENROUTER_API_KEY or ${this.authPath}`);

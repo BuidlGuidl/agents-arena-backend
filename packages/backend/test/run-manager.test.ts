@@ -1,17 +1,18 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
+import { privateKeyToAccount } from 'viem/accounts';
 
 import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
+import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import { recordSolve } from '../src/chain/storage.js';
+import { getWallet, seedTypedData } from '../src/chain/wallet.js';
 import { entrants } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import {
   InvalidTransitionError,
   LEGAL_TRANSITIONS,
-  passThroughWalletGate,
   RunManager,
   RunNotFoundError,
-  type WalletGate,
 } from '../src/run-manager.js';
 import type { RunState } from '../src/contract.js';
 
@@ -29,8 +30,31 @@ async function createManager() {
   return { journal, manager, runId: run.id };
 }
 
+async function withAutoSignDisabled<T>(action: () => Promise<T>): Promise<T> {
+  const previous = process.env.ARENA_AUTO_SIGN;
+  process.env.ARENA_AUTO_SIGN = 'false';
+  try {
+    return await action();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ARENA_AUTO_SIGN;
+    } else {
+      process.env.ARENA_AUTO_SIGN = previous;
+    }
+  }
+}
+
 async function advance(manager: RunManager, runId: string, target: RunState): Promise<void> {
-  const path: RunState[] = ['created', 'preparing', 'awaiting_funding', 'ready', 'running', 'stopping', 'finished'];
+  const path: RunState[] = [
+    'created',
+    'awaiting_signature',
+    'preparing',
+    'awaiting_funding',
+    'ready',
+    'running',
+    'stopping',
+    'finished',
+  ];
   const targetIndex = path.indexOf(target);
   for (const state of path.slice(1, targetIndex + 1)) {
     manager.transition(runId, state);
@@ -70,7 +94,15 @@ describe('RunManager state machine', () => {
     }
   });
 
-  it.each(['created', 'preparing', 'awaiting_funding', 'ready', 'running', 'stopping'] as const)(
+  it.each([
+    'created',
+    'awaiting_signature',
+    'preparing',
+    'awaiting_funding',
+    'ready',
+    'running',
+    'stopping',
+  ] as const)(
     'allows failure from %s',
     async (from) => {
       const { journal, manager, runId } = await createManager();
@@ -350,48 +382,117 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 describe('RunManager ready barrier', () => {
-  it('runs the wallet gate after preparing state and before driver.prepare', async () => {
-    const journal = new EventJournal(':memory:');
-    const calls: string[] = [];
-    const driver: EntrantDriver = {
-      async prepare() {
-        calls.push('prepare');
-      },
-      async start() {},
-      async steer() {},
-      async stop() {},
-    };
-    const walletGate: WalletGate = async (run) => {
-      calls.push(`wallet:${run.state}`);
-      const stateEvents = journal.after(run.id, 0).filter((event) => event.type === 'run.state');
-      expect(stateEvents.at(-1)?.payload.state).toBe('preparing');
-    };
-    const manager = new RunManager(journal, driver, undefined, { walletGate });
-    try {
-      const { run } = await manager.create({ preset: 'docker-duel' });
-      await manager.start(run.id);
+  it('waits for a chainless start and surfaces its error when auto-signing is disabled', async () => {
+    await withAutoSignDisabled(async () => {
+      const journal = new EventJournal(':memory:');
+      const driver: EntrantDriver = {
+        ...noopDriver,
+        async prepare() {
+          throw new Error('fake prepare failed');
+        },
+      };
+      const manager = new RunManager(journal, driver);
+      try {
+        const { run } = await manager.create({ preset: 'fake-duel' });
 
-      expect(calls[0]).toBe('wallet:preparing');
-      expect(calls.slice(1)).toEqual(['prepare', 'prepare']);
+        await expect(manager.startForRequest(run.id)).rejects.toThrow('fake prepare failed');
+        expect(manager.snapshot(run.id).state).toBe('failed');
+      } finally {
+        journal.close();
+      }
+    });
+  });
+
+  it('starts a chainless run without assigning entrant wallets', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, noopDriver);
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+
+      const started = await manager.start(run.id);
+
+      expect(started.state).toBe('running');
+      expect(started.entrants.every((entrant) => entrant.address === null)).toBe(true);
+      expect(journal.after(run.id, 0).filter((event) => event.type === 'wallet.assigned'))
+        .toEqual([]);
     } finally {
       journal.close();
     }
   });
 
-  it('leaves entrants unchanged with the default wallet gate', async () => {
+  it('assigns derived wallets before driver.prepare', async () => {
     const journal = new EventJournal(':memory:');
-    const manager = new RunManager(journal, noopDriver, undefined, {
-      walletGate: passThroughWalletGate,
-    });
+    const preparedAddresses: Array<string | null> = [];
+    const driver: EntrantDriver = {
+      async prepare(run, entrant) {
+        expect(run.state).toBe('preparing');
+        preparedAddresses.push(entrant.address);
+        expect(getWallet(run.id, entrant.id)).not.toBeNull();
+      },
+      async start() {},
+      async steer() {},
+      async stop() {},
+    };
+    const manager = new RunManager(journal, driver);
     try {
       const { run } = await manager.create({ preset: 'docker-duel' });
       await manager.start(run.id);
 
-      expect(manager.snapshot(run.id).entrants.map((entrant) => entrant.address)).toEqual([null, null]);
-      expect(journal.after(run.id, 0).filter((event) => event.type === 'wallet.assigned')).toEqual([]);
+      expect(preparedAddresses).toHaveLength(2);
+      expect(preparedAddresses.every((address) => address !== null)).toBe(true);
+      expect(journal.after(run.id, 0).filter((event) => event.type === 'wallet.assigned'))
+        .toHaveLength(2);
     } finally {
       journal.close();
     }
+  });
+
+  it('rolls back every address and wallet event when one append fails', async () => {
+    await withAutoSignDisabled(async () => {
+      const journal = new EventJournal(':memory:');
+      const manager = new RunManager(journal, noopDriver);
+      const published: string[] = [];
+      let starting: Promise<unknown> | undefined;
+      try {
+        const { run } = await manager.create({ preset: 'docker-duel' });
+        starting = manager.start(run.id);
+        expect(manager.snapshot(run.id).state).toBe('awaiting_signature');
+        const signature = await privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY)
+          .signTypedData(seedTypedData(run.id, 31337));
+        const unsubscribe = journal.subscribe(run.id, (event) => {
+          if (event.type === 'wallet.assigned') published.push(event.source);
+        });
+        journal.database.run(sql`
+          CREATE TRIGGER fail_second_wallet_append
+          BEFORE INSERT ON events
+          WHEN NEW.type = 'wallet.assigned' AND NEW.source = 'opencode-1'
+          BEGIN
+            SELECT RAISE(FAIL, 'wallet append failed');
+          END
+        `);
+
+        await expect(manager.submitSeed(run.id, signature)).rejects.toThrow('wallet append failed');
+
+        expect(manager.snapshot(run.id).entrants.every((entrant) => entrant.address === null))
+          .toBe(true);
+        expect(journal.after(run.id, 0).filter((event) => event.type === 'wallet.assigned'))
+          .toEqual([]);
+        expect(published).toEqual([]);
+
+        journal.database.run(sql`DROP TRIGGER fail_second_wallet_append`);
+        await manager.submitSeed(run.id, signature);
+        await starting;
+
+        expect(journal.after(run.id, 0).filter((event) => event.type === 'wallet.assigned'))
+          .toHaveLength(2);
+        expect(published.sort()).toEqual(['codex-1', 'opencode-1']);
+        unsubscribe();
+        await manager.stop(run.id);
+      } finally {
+        if (starting !== undefined) await starting.catch(() => {});
+        journal.close();
+      }
+    });
   });
 
   it('shares one in-flight start between concurrent callers', async () => {
@@ -474,6 +575,60 @@ describe('RunManager ready barrier', () => {
 });
 
 describe('RunManager lifecycle cancellation', () => {
+  it('drops derived keys when a running run stops', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, noopDriver);
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel', autoStart: true });
+      expect(getWallet(run.id, 'codex-1')).not.toBeNull();
+
+      await manager.stop(run.id);
+
+      expect(getWallet(run.id, 'codex-1')).toBeNull();
+      expect(getWallet(run.id, 'opencode-1')).toBeNull();
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('finishes a run stopped while it waits for a seed signature', async () => {
+    const previous = process.env.ARENA_AUTO_SIGN;
+    process.env.ARENA_AUTO_SIGN = 'false';
+    const journal = new EventJournal(':memory:');
+    const driver = new BarrierDriver();
+    const manager = new RunManager(journal, driver);
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel' });
+      const startOutcome = manager.start(run.id).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      expect(manager.snapshot(run.id).state).toBe('awaiting_signature');
+
+      const stopped = await manager.stop(run.id);
+      const startResult = await startOutcome;
+
+      expect(stopped.state).toBe('finished');
+      expect(startResult.ok).toBe(false);
+      expect(driver.prepares).toEqual([]);
+      expect(getWallet(run.id, 'codex-1')).toBeNull();
+      expect(journal.after(run.id, 0).filter((event) => event.type === 'run.state')
+        .map((event) => event.payload.state)).toEqual([
+        'created',
+        'awaiting_signature',
+        'stopping',
+        'finished',
+      ]);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ARENA_AUTO_SIGN;
+      } else {
+        process.env.ARENA_AUTO_SIGN = previous;
+      }
+      journal.close();
+    }
+  });
+
   it('stops a run while preparation is stuck', async () => {
     const journal = new EventJournal(':memory:');
     const driver = new BarrierDriver();

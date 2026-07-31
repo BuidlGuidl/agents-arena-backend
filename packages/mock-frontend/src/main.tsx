@@ -13,6 +13,7 @@ import type {
 import { projectSnapshot } from './project-snapshot';
 import {
   deriveLaneWallet,
+  deriveWaitingRoom,
   describeEntry,
   entriesForSource,
   formatWei,
@@ -25,6 +26,16 @@ import {
   type FeedState,
 } from './feed-projection';
 import { runPhase, styleForEntry } from './event-style';
+import {
+  injectedProvider,
+  isWaitingRoomState,
+  looksLikeSignature,
+  requestSeedSignature,
+  SEED_CHAIN_ID,
+  seedErrorMessage,
+  seedTypedData,
+  walletErrorMessage,
+} from './waiting-room';
 import { OperatorLogin } from './operator-login';
 import './styles.css';
 
@@ -158,6 +169,8 @@ function App() {
         </ul>
       ) : null}
 
+      {run !== null && isWaitingRoomState(run.state) ? <WaitingRoom run={run} feed={feed} /> : null}
+
       {run === null ? (
         <div className="empty-board">
           <b>no run yet</b>
@@ -259,25 +272,180 @@ function FeedRow({ entry }: { entry: FeedEntry }) {
   );
 }
 
-function WalletAddress({ address }: { address: string }) {
+// Flashes a "copied" state for a beat after the clipboard write resolves.
+function useCopyFlag(): [boolean, (value: string) => void] {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
     const timer = window.setTimeout(() => setCopied(false), 1400);
     return () => window.clearTimeout(timer);
   }, [copied]);
+  const copy = (value: string) => {
+    void navigator.clipboard.writeText(value).then(() => setCopied(true));
+  };
+  return [copied, copy];
+}
+
+function WalletAddress({ address, full = false }: { address: string; full?: boolean }) {
+  const [copied, copy] = useCopyFlag();
   return (
     <button
       type="button"
       className={copied ? 'wallet-addr copied' : 'wallet-addr'}
       title={copied ? 'copied' : `${address} · click to copy`}
-      onClick={() => {
-        void navigator.clipboard.writeText(address).then(() => setCopied(true));
-      }}
+      onClick={() => copy(address)}
     >
-      {copied ? 'copied ✓' : truncateAddress(address)}
+      {copied ? 'copied ✓' : full ? address : truncateAddress(address)}
     </button>
   );
+}
+
+// The pre-race panel. Two states share it: `awaiting_signature`, where the
+// funder signs the seed typed data, and `awaiting_funding`, where they send ETH to
+// the addresses that signature derived. Presentation stays deliberately plain —
+// blockies, explorer links, and multisend belong to the real frontend.
+function WaitingRoom({ run, feed }: { run: RunSnapshot; feed: FeedState }) {
+  const cache = useQueryClient();
+  const [pasted, setPasted] = useState('');
+  const [walletError, setWalletError] = useState<string | null>(null);
+  const [signing, setSigning] = useState(false);
+  const [typedDataCopied, copyTypedData] = useCopyFlag();
+
+  const typedData = seedTypedData(run.id, SEED_CHAIN_ID);
+  const typedDataJson = JSON.stringify(typedData);
+  const provider = injectedProvider();
+  const roster = useMemo(
+    () => deriveWaitingRoom(run.entrants, feed.entries, run.state),
+    [run.entrants, run.state, feed.entries],
+  );
+
+  const seed = useMutation({
+    mutationFn: async (signature: string) => {
+      const response = await fetch(`/runs/${run.id}/seed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ signature }),
+      });
+      if (!response.ok) throw new Error(seedErrorMessage(response.status));
+      return response.json() as Promise<{ run: RunSnapshot }>;
+    },
+    onSuccess: ({ run: seeded }) => {
+      setPasted('');
+      // Same rule as the snapshot query: the SSE projection can already be past
+      // this response, so the higher lastEventId wins.
+      cache.setQueryData<RunSnapshot>(['run', run.id], (current) => (
+        current !== undefined && current.lastEventId > seeded.lastEventId ? current : seeded
+      ));
+    },
+  });
+
+  const signAndSubmit = async () => {
+    if (provider === undefined) return;
+    setWalletError(null);
+    setSigning(true);
+    try {
+      seed.mutate(await requestSeedSignature(provider, typedData));
+    } catch (error) {
+      setWalletError(walletErrorMessage(error));
+    } finally {
+      setSigning(false);
+    }
+  };
+
+  const busy = signing || seed.isPending;
+
+  return (
+    <section className="waiting-room" data-testid="waiting-room">
+      <h2 className="section-head">waiting room</h2>
+
+      {run.state === 'awaiting_signature' ? (
+        <div className="seed-panel">
+          <p className="seed-run">
+            run <b>{run.id}</b>
+          </p>
+          <p className="seed-hint">
+            the funder signs this typed data once. the arena derives every burner wallet from the
+            signature and keeps no key.
+          </p>
+          <div className="seed-msg">
+            <pre data-testid="seed-typed-data">{typedDataJson}</pre>
+            <button
+              type="button"
+              className="btn copy-btn"
+              onClick={() => copyTypedData(typedDataJson)}
+            >
+              {typedDataCopied ? 'copied ✓' : 'copy typed data'}
+            </button>
+          </div>
+
+          {provider !== undefined ? (
+            <button
+              className="btn sign"
+              data-testid="sign-button"
+              disabled={busy}
+              onClick={() => void signAndSubmit()}
+            >
+              {busy ? 'signing…' : 'sign with wallet'}
+            </button>
+          ) : null}
+          <p className="seed-hint">
+            {provider === undefined
+              ? 'no injected wallet here. sign the typed data above with cast wallet sign --data, then paste the signature.'
+              : 'if wallet signing fails, sign the typed data with cast wallet sign --data, then paste the signature.'}
+          </p>
+          <div className="seed-paste">
+            <input
+              className="steer"
+              data-testid="signature-input"
+              value={pasted}
+              onChange={(event) => setPasted(event.target.value)}
+              placeholder="0x… 65-byte signature"
+            />
+            <button
+              className="btn steer-btn"
+              disabled={!looksLikeSignature(pasted) || seed.isPending}
+              onClick={() => seed.mutate(pasted.trim())}
+            >
+              {seed.isPending ? 'submitting…' : 'submit signature'}
+            </button>
+          </div>
+
+          {walletError !== null ? <p className="error-line">{walletError}</p> : null}
+          {seed.error instanceof Error ? (
+            <p className="error-line" data-testid="seed-error">{seed.error.message}</p>
+          ) : null}
+        </div>
+      ) : (
+        <p className="seed-hint">
+          send ETH to each address below. the gate watches balances, so a top-up to the same
+          address counts too.
+        </p>
+      )}
+
+      <ul className="roster" data-testid="waiting-roster">
+        {roster.map((entry) => (
+          <li className="roster-row" key={entry.entrantId} data-testid={`roster-${entry.entrantId}`}>
+            <span className="roster-name">{entry.entrantId}</span>
+            {entry.address !== null
+              ? <WalletAddress address={entry.address} full />
+              : <span className="roster-pending">address arrives with the signature</span>}
+            <span
+              className={`wallet-fund ${entry.status === 'funded' ? 'funded' : 'awaiting'}`}
+              data-testid={`roster-fund-${entry.entrantId}`}
+            >
+              {rosterFundLabel(entry.status, entry.wei)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function rosterFundLabel(status: 'pending' | 'waiting' | 'funded', wei: string | null): string {
+  if (status === 'pending') return '—';
+  const balance = wei !== null ? ` · ${formatWei(wei)} eth` : '';
+  return `${status === 'funded' ? 'funded' : 'waiting'}${balance}`;
 }
 
 function solveTitle(solve: EntrantSolve, startedAt: string | null): string {

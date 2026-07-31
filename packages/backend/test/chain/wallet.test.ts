@@ -1,73 +1,189 @@
-import { isAddress, isHex } from 'viem';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { createWallet, exportKeyfile, getWallet, WalletStore } from '../../src/chain/wallet.js';
-import { openArenaDatabase, type ArenaDatabase } from '../../src/db/index.js';
+import {
+  SignTypedDataVersion,
+  signTypedData,
+  TypedDataUtils,
+} from '@metamask/eth-sig-util';
+import {
+  hashTypedData,
+  parseSignature,
+  recoverTypedDataAddress,
+  serializeSignature,
+  toHex,
+  type Hex,
+} from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
+import { afterEach, describe, expect, it } from 'vitest';
 
-describe('wallet store', () => {
-  let database: ArenaDatabase;
-  let close: () => void;
+import { ensureChainTables } from '../../src/chain/storage.js';
+import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../../src/chain/local-dev.js';
+import {
+  deriveEntrantKeys,
+  dropRunKeys,
+  getWallet,
+  seedTypedData,
+} from '../../src/chain/wallet.js';
+import { openArenaDatabase } from '../../src/db/index.js';
 
-  beforeEach(() => {
-    const opened = openArenaDatabase(':memory:');
-    database = opened.database;
-    close = () => opened.sqlite.close();
+const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+const runIds = ['1', 'run-1', 'run-2'];
+const SECP256K1_N =
+  0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+const KNOWN_SIGNATURE =
+  '0x9e1dce6fe4da1ae1bbaa92eb2a158f2d71a183351c5ff203a2e4fc6a127f2e272ce63b02c9a17c02f2d8ee57a46d21492abbc35cfd9fbf2540bf298c83be644d1b';
+
+afterEach(() => {
+  for (const runId of runIds) dropRunKeys(runId);
+});
+
+describe('derived entrant wallets', () => {
+  it('builds the pinned seed typed data', () => {
+    expect(JSON.stringify(seedTypedData('run-1', 31337))).toBe(
+      '{"domain":{"name":"agents-arena","version":"1","chainId":31337},'
+      + '"types":{"EIP712Domain":[{"name":"name","type":"string"},'
+      + '{"name":"version","type":"string"},{"name":"chainId","type":"uint256"}],'
+      + '"Seed":[{"name":"runId","type":"string"}]},'
+      + '"primaryType":"Seed","message":{"runId":"run-1"}}',
+    );
   });
 
-  afterEach(() => {
-    close();
+  it('matches the independently verified run 1 signature and burner vectors', async () => {
+    const signature = await account.signTypedData(seedTypedData('1', 31337));
+    expect(signature).toBe(KNOWN_SIGNATURE);
+
+    const addresses = deriveEntrantKeys('1', KNOWN_SIGNATURE, ['codex-1', 'opencode-1']);
+    expect(getWallet('1', 'codex-1')).toEqual({
+      runId: '1',
+      entrantId: 'codex-1',
+      privateKey: '0x4d44297d498894431b90b3be967a19b0233bab737ddf056b643262519fa527ff',
+      address: '0x4ee3BE13180D87C59dC5ae8EE7E631923ffFE254',
+    });
+    expect(getWallet('1', 'opencode-1')).toEqual({
+      runId: '1',
+      entrantId: 'opencode-1',
+      privateKey: '0x919f4b9a269a75b2add473c35c2b2024daa189a41632282ac682ec2a3e88ecba',
+      address: '0xd790a2797650D602F49f56C438ac89dDCF0F109F',
+    });
+    expect([...addresses.values()]).toEqual([
+      '0x4ee3BE13180D87C59dC5ae8EE7E631923ffFE254',
+      '0xd790a2797650D602F49f56C438ac89dDCF0F109F',
+    ]);
   });
 
-  it('round-trips create and get for the same run and entrant', () => {
-    const address = createWallet('run-1', 'e1', database);
-    expect(isAddress(address)).toBe(true);
+  it('matches MetaMask signing and hashing', async () => {
+    const typedData = seedTypedData('1', 31337);
+    // This guards against drift between clients that synthesize domain types and clients that require them literally.
+    const signature = signTypedData({
+      privateKey: Buffer.from(LOCAL_DEV_FUNDER_PRIVATE_KEY.slice(2), 'hex'),
+      data: typedData,
+      version: SignTypedDataVersion.V4,
+    }) as Hex;
 
-    const record = getWallet('run-1', 'e1', database);
-    expect(record).not.toBeNull();
-    expect(record?.runId).toBe('run-1');
-    expect(record?.entrantId).toBe('e1');
-    // getWallet returns the checksummed address; both sides normalize the same way.
-    expect(record?.address).toBe(address);
-    expect(isHex(record?.privateKey ?? '0x')).toBe(true);
-    expect(record?.privateKey).toHaveLength(66);
+    expect(await recoverTypedDataAddress({ ...typedData, signature }))
+      .toBe(account.address);
+    expect(toHex(TypedDataUtils.eip712Hash(typedData, SignTypedDataVersion.V4)))
+      .toBe(hashTypedData(typedData));
   });
 
-  it('returns null for an entrant with no wallet', () => {
-    createWallet('run-1', 'e1', database);
-    expect(getWallet('run-1', 'missing', database)).toBeNull();
+  it('derives the same wallet again from the same signature and entrant id', async () => {
+    const signature = await account.signTypedData(seedTypedData('run-1', 31337));
+    deriveEntrantKeys('run-1', signature, ['e1']);
+    const first = getWallet('run-1', 'e1');
+
+    dropRunKeys('run-1');
+    deriveEntrantKeys('run-1', signature, ['e1']);
+
+    expect(getWallet('run-1', 'e1')).toEqual(first);
   });
 
-  it('throws when regenerating a wallet for the same run and entrant', () => {
-    createWallet('run-1', 'e1', database);
-    expect(() => createWallet('run-1', 'e1', database)).toThrow(/already exists/);
+  it('canonicalizes parity-encoded signatures before deriving keys', async () => {
+    const canonical = await account.signTypedData(seedTypedData('run-1', 31337));
+    const parityEncoded = `${canonical.slice(0, -2)}0${parseSignature(canonical).yParity}` as Hex;
+
+    const expected = deriveEntrantKeys('run-1', canonical, ['e1']);
+    dropRunKeys('run-1');
+
+    expect(deriveEntrantKeys('run-1', parityEncoded, ['e1'])).toEqual(expected);
   });
 
-  it('keeps distinct wallets per entrant and per run', () => {
-    const a = createWallet('run-1', 'e1', database);
-    const b = createWallet('run-1', 'e2', database);
-    const c = createWallet('run-2', 'e1', database);
-    expect(new Set([a, b, c]).size).toBe(3);
+  it('rejects high-s signatures before deriving keys', async () => {
+    const signature = await account.signTypedData(seedTypedData('run-1', 31337));
+
+    expect(() => deriveEntrantKeys('run-1', highSSignature(signature), ['e1']))
+      .toThrow('Seed signature has a high s value');
+    expect(getWallet('run-1', 'e1')).toBeNull();
   });
 
-  it('exports a keyfile with exactly address and privateKey', () => {
-    const address = createWallet('run-1', 'e1', database);
-    const keyfile = exportKeyfile('run-1', 'e1', database);
+  it('derives distinct wallets for entrant ids and run messages', async () => {
+    const firstSignature = await account.signTypedData(seedTypedData('run-1', 31337));
+    const secondSignature = await account.signTypedData(seedTypedData('run-2', 31337));
+    deriveEntrantKeys('run-1', firstSignature, ['e1', 'e2']);
+    deriveEntrantKeys('run-2', secondSignature, ['e1']);
 
-    expect(Object.keys(keyfile).sort()).toEqual(['address', 'privateKey']);
-    expect(keyfile.address).toBe(address);
-    expect(isHex(keyfile.privateKey)).toBe(true);
-    expect(keyfile.privateKey).toHaveLength(66);
+    const wallets = [
+      getWallet('run-1', 'e1'),
+      getWallet('run-1', 'e2'),
+      getWallet('run-2', 'e1'),
+    ];
+    expect(new Set(wallets.map((wallet) => wallet?.address)).size).toBe(3);
+    expect(new Set(wallets.map((wallet) => wallet?.privateKey)).size).toBe(3);
   });
 
-  it('exposes the same behavior through WalletStore', () => {
-    const store = new WalletStore(database);
-    const address = store.createWallet('run-3', 'e1');
-    expect(store.getWallet('run-3', 'e1')?.address).toBe(address);
-    expect(() => store.createWallet('run-3', 'e1')).toThrow(/already exists/);
-    expect(store.exportKeyfile('run-3', 'e1').address).toBe(address);
-  });
+  it('drops every key for one run', async () => {
+    const signature = await account.signTypedData(seedTypedData('run-1', 31337));
+    deriveEntrantKeys('run-1', signature, ['e1', 'e2']);
 
-  it('throws when exporting a keyfile that does not exist', () => {
-    expect(() => exportKeyfile('run-1', 'ghost', database)).toThrow(/No wallet/);
+    dropRunKeys('run-1');
+
+    expect(getWallet('run-1', 'e1')).toBeNull();
+    expect(getWallet('run-1', 'e2')).toBeNull();
   });
 });
+
+describe('legacy wallet migration', () => {
+  it('removes legacy plaintext key bytes from the database file', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'arena-wallet-migration-'));
+    const databasePath = join(directory, 'arena.db');
+    const fakeKeyHex = '0123456789abcdef'.repeat(8);
+    const opened = openArenaDatabase(databasePath);
+    try {
+      opened.sqlite.pragma('secure_delete = OFF');
+      opened.sqlite.exec(`
+        CREATE TABLE wallets (
+          run_id TEXT NOT NULL,
+          entrant_id TEXT NOT NULL,
+          address TEXT NOT NULL,
+          private_key TEXT NOT NULL
+        );
+      `);
+      opened.sqlite.prepare('INSERT INTO wallets VALUES (?, ?, ?, ?)')
+        .run('run-1', 'e1', '0x1', fakeKeyHex);
+      opened.sqlite.pragma('wal_checkpoint(TRUNCATE)');
+      expect(readFileSync(databasePath).includes(Buffer.from(fakeKeyHex))).toBe(true);
+
+      ensureChainTables(opened.database);
+
+      const table = opened.sqlite
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wallets'")
+        .get();
+      expect(table).toBeUndefined();
+      expect(readFileSync(databasePath).includes(Buffer.from(fakeKeyHex))).toBe(false);
+      expect(opened.sqlite.pragma('secure_delete', { simple: true })).toBe(0);
+    } finally {
+      opened.sqlite.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+function highSSignature(signature: Hex): Hex {
+  const parsed = parseSignature(signature);
+  return serializeSignature({
+    r: parsed.r,
+    s: toHex(SECP256K1_N - BigInt(parsed.s), { size: 32 }),
+    yParity: parsed.yParity === 0 ? 1 : 0,
+  });
+}

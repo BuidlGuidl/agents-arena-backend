@@ -80,13 +80,14 @@ A session lasts 12 hours. Sessions and nonces live in the backend process, so a 
 
 ### `POST /runs`
 
-Creates a run from the `fake-duel` preset. The preset creates `codex-1` and `opencode-1`. Set `autoStart` to `true` to prepare and start both entrants.
+Creates a run from the `fake-duel` preset. The preset creates `codex-1` and `opencode-1`. Set `autoStart` to `true` to begin the start flow.
 
 ```json
 {"preset":"fake-duel","autoStart":true,"idempotencyKey":"demo-1"}
 ```
 
 The response has status `201` for a new run and status `200` for an existing idempotent run.
+The chainless `fake-duel` preset skips wallet seeding. The `docker-duel` preset uses the seed and funding gates.
 
 ```json
 {"run":{"id":"...","state":"running","preset":"fake-duel","entrants":[],"startedAt":"...","deadlineAt":null,"lastEventId":4}}
@@ -114,11 +115,73 @@ Each `usage` event counts only the work it covers, never a running total, and `i
 
 ### `POST /runs/:id/start`
 
-Prepares a new run, advances it to `ready`, and starts each entrant. A run already at `ready` starts without preparation.
+Starts the run and returns its current snapshot. With local automatic signing, the request waits until the run reaches `running`. Without automatic signing, it returns after the run enters `awaiting_signature`. The run advances asynchronously after seed submission and funding. A run already at `ready` starts without preparation.
+
+The `docker-duel` lifecycle is:
+
+```text
+created → awaiting_signature → preparing → awaiting_funding → ready → running → stopping → finished
+```
+
+Every nonterminal state can also advance to `failed`.
+The chainless `fake-duel` preset moves from `created` to `preparing` and skips `awaiting_signature`.
+
+The backend does not resume pre-terminal runs after a restart. Stop runs parked in `awaiting_signature` or another pre-terminal state, then create a new run.
+
+### `POST /runs/:id/seed`
+
+Accepts the funder's EIP-712 signature while the run is in `awaiting_signature`.
+The signature is the recovery secret for the run's funds and travels in the POST body. Production deployments must serve this route over TLS only, and reverse proxies must not log its request body.
+
+```json
+{"signature":"0x..."}
+```
+
+The funder signs this typed data. `chainId` is the active chain profile's chain ID; this example uses the local profile:
+
+```json
+{
+  "domain": {
+    "name": "agents-arena",
+    "version": "1",
+    "chainId": 31337
+  },
+  "types": {
+    "EIP712Domain": [
+      {
+        "name": "name",
+        "type": "string"
+      },
+      {
+        "name": "version",
+        "type": "string"
+      },
+      {
+        "name": "chainId",
+        "type": "uint256"
+      }
+    ],
+    "Seed": [
+      {
+        "name": "runId",
+        "type": "string"
+      }
+    ]
+  },
+  "primaryType": "Seed",
+  "message": {
+    "runId": "<runId>"
+  }
+}
+```
+
+The domain has no `verifyingContract`. The backend verifies the signature against the active chain profile's `funderAddress`. It derives each entrant wallet in memory, stores each address on the entrant, and emits one `wallet.assigned` event per entrant. The signature and private keys never enter the event journal or database.
+
+A valid request returns status `202` with the current run snapshot. A malformed or non-canonical signature returns status `400`. A canonical signature from another address returns status `403`. A run outside `awaiting_signature` returns status `409`.
 
 ### `POST /runs/:id/stop`
 
-Stops every entrant and advances a running run through `stopping` to `finished`.
+Stops every entrant and advances a running run through `stopping` to `finished`. A run in `awaiting_signature` also advances through `stopping` to `finished`.
 
 ### `POST /runs/:id/entrants/:eid/steer`
 

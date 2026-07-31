@@ -2,6 +2,7 @@ import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqli
 
 const runStates = [
   'created',
+  'awaiting_signature',
   'preparing',
   'awaiting_funding',
   'ready',
@@ -68,15 +69,6 @@ export const events = sqliteTable('events', {
   index('events_run_id_source_id').on(table.runId, table.source, table.id),
 ]);
 
-export const wallets = sqliteTable('wallets', {
-  runId: text('run_id').notNull(),
-  entrantId: text('entrant_id').notNull(),
-  address: text('address').notNull(),
-  privateKey: text('private_key').notNull(),
-}, (table) => [
-  uniqueIndex('wallets_run_id_entrant_id').on(table.runId, table.entrantId),
-]);
-
 export const scores = sqliteTable('scores', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   runId: text('run_id').notNull(),
@@ -96,4 +88,4 @@ export const scores = sqliteTable('scores', {
   index('scores_run_id_entrant_id').on(table.runId, table.entrantId),
 ]);
 
-export const schema = { events, runs, entrants, wallets, scores };
+export const schema = { events, runs, entrants, scores };

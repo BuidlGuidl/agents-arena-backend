@@ -1,4 +1,5 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import type { Hex } from 'viem';
 import { z } from 'zod';
 
 import type { ArenaEvent, BroadcastResponse, CreateRunRequest } from './contract.js';
@@ -21,9 +22,11 @@ import {
   RunManager,
   type RunManagerOptions,
   RunNotFoundError,
+  SeedEncodingError,
+  SeedSignatureError,
+  SeedStateConflictError,
   type SolveWatch,
   UnknownPresetError,
-  type WalletGate,
 } from './run-manager.js';
 
 const createRunSchema = z.object({
@@ -34,6 +37,9 @@ const createRunSchema = z.object({
 
 // Steer and broadcast carry the same body; only the fan-out differs.
 const textSchema = z.object({ text: z.string().min(1) }).strict();
+const seedSchema = z.object({
+  signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
+}).strict();
 const verifySchema = z.object({
   message: z.string().min(1),
   signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
@@ -58,7 +64,6 @@ export interface ServerOptions {
   dbPath?: string;
   schedule?: Schedule;
   driverFactory?: (journal: EventJournal) => EntrantDriver;
-  walletGateFactory?: (journal: EventJournal) => WalletGate;
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
   solveWatchFactory?: (journal: EventJournal) => SolveWatch;
   logger?: boolean;
@@ -77,9 +82,6 @@ export function createServer(options: ServerOptions): ArenaServer {
   const journal = new EventJournal(options.dbPath);
   const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(journal, options.schedule);
   const runManagerOptions: RunManagerOptions = {
-    ...(options.walletGateFactory === undefined
-      ? {}
-      : { walletGate: options.walletGateFactory(journal) }),
     ...(options.solveWatchFactory === undefined
       ? {}
       : { solveWatch: options.solveWatchFactory(journal) }),
@@ -96,8 +98,20 @@ export function createServer(options: ServerOptions): ArenaServer {
       void reply.status(404).send({ error: error.message });
       return;
     }
-    if (error instanceof InvalidTransitionError || error instanceof UnknownPresetError) {
+    if (
+      error instanceof InvalidTransitionError
+      || error instanceof UnknownPresetError
+      || error instanceof SeedEncodingError
+    ) {
       void reply.status(400).send({ error: error.message });
+      return;
+    }
+    if (error instanceof SeedStateConflictError) {
+      void reply.status(409).send({ error: error.message });
+      return;
+    }
+    if (error instanceof SeedSignatureError) {
+      void reply.status(403).send({ error: error.message });
       return;
     }
     // The entrant is real but cannot take a turn right now, so the operator can retry.
@@ -184,7 +198,15 @@ export function createServer(options: ServerOptions): ArenaServer {
 
   app.post('/runs/:id/start', async (request) => {
     const { id } = request.params as { id: string };
-    return { run: await manager.start(id) };
+    return { run: await manager.startForRequest(id) };
+  });
+
+  app.post('/runs/:id/seed', async (request, reply) => {
+    const body = parseBody(seedSchema, request.body, reply);
+    if (body === undefined) return;
+    const { id } = request.params as { id: string };
+    const run = await manager.submitSeed(id, body.signature as Hex);
+    return reply.status(202).send({ run });
   });
 
   app.post('/runs/:id/stop', async (request) => {

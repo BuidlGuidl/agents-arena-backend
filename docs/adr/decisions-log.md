@@ -62,7 +62,7 @@ hard-to-reverse decisions from the design session, 2026-07-22. one entry per dec
 
 ## ADR-0005 — fresh wallet + identity per entrant per run, gated on a balance-watch
 
-**Status:** accepted (2026-07-22) — supersedes an earlier manual-fixture model
+**Status:** accepted (2026-07-22) — supersedes an earlier manual-fixture model. the funding half (how keys exist and who sends the money) is superseded by ADR-0013 and ADR-0014 (2026-07-30); the virgin-wallet-per-run rationale and the `awaiting_funding` barrier stand.
 
 **Decision:** at `preparing`, the arena generates a fresh keypair per entrant. it does NOT hold a hot treasury key as a hard dependency. funding arrives one of two ways into the same gate:
 - **live event:** the dashboard shows both addresses, Austin sends Base ETH from the BuidlGuidl treasury on stream.
@@ -217,3 +217,33 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 **Consequence:** `scripts/demo.sh` generates a token into `.demo/operator-token` (gitignored) unless the caller exports one, and hands it to the backend, the frontend proxy, and its own curl calls; `demo.sh token` prints the active one. a backend left running with an older token answers `401` to a freshly generated one — restart both sides. the demo never sets an allowlist, so wallet login stays off there and no demo step needs a wallet.
 
 **Consequence — the mock frontend carries a login button, and its proxy stands aside once a session exists.** the two credentials would otherwise mask each other: a proxy that always adds the token means the cookie path is never the thing being tested, and a signed-in operator would still be driving the run on the token. so the dev proxy adds the header only when the request carries no `arena_operator` cookie. that also makes the mock a reference for the ai-ctf fork — the flow is nonce, `personal_sign`, `POST /auth/verify`, cookie, and the same buttons as before.
+
+---
+
+## ADR-0013 — burner keys are derived from a funder signature and never stored
+
+**Status:** accepted (2026-07-30) — amends the key-handling half of ADR-0005; from #28. amended 2026-07-31: the seed is EIP-712 typed data, not a personal_sign string — domain `{name: 'agents-arena', version: '1', chainId}`, type `Seed {runId}`. austin signs from metamask (confirmed), which renders typed data as a structured prompt; the domain binds the chain, so a local seed can never verify on base, and wallets can flag a signing request from the wrong origin. the signature bytes, canonicalization, and derivation below are unchanged — only what is signed moved.
+
+**Decision:** the arena stores no private key, on any profile. at run creation the funder signs a fixed per-run message with the wallet that will fund the race. the arena derives each entrant's key from that signature (`keccak(signature ‖ entrantId)` shape; exact derivation pinned in code), holds the keys in process memory for the run's lifetime, injects them into the container env as before, and drops them at teardown. derivation consumes only the canonical signature bytes — low-s, v ∈ {27, 28}; high-s submissions are rejected and v encodings are normalized before use — so every accepted encoding of one signature yields one key set, and offline recovery canonicalizes the same way. the database keeps addresses only. on the local profile the arena signs with the dev funder key itself, so the loop stays zero-touch.
+
+**Why:** carlos's objection (2026-07-29 meeting) was to plaintext keys at rest, and the stated reason for storing them — restoring past runs — has no code behind it and resume was ruled out anyway. a signer that uses deterministic nonces (RFC 6979 — what common wallets implement, but a property of the signer, not of ECDSA itself) re-signs the same message to identical bytes, so the funder can re-derive every burner key offline — sweep after a crash, after teardown, after the box is gone. that recovers leftover funds without the arena holding a secret or shipping sweep logic.
+
+**Considered and rejected:** encrypt the column with an env passphrase (ciphertext and passphrase live on the same box, so a leaked disk image still loses; a server that starts runs unattended can't hold the password in a human's head the way SE-2's deploy flow does). random keys memory-only with a teardown sweep (a crash strands the funds, and it needs a sweep-destination the user-funded flow has no natural answer for).
+
+**Trade-off:** addresses cannot exist until the signature arrives, so the run flow gains a signing step before the funding wait. and the signature itself is key material: it must never be journaled, logged, or echoed into an event — one careless log line rebuilds the original bug.
+
+**Consequence:** the message signed must vary per run (flags can't mint twice to one address, so every run needs virgin wallets — same constraint that drove ADR-0005). recovery of a run's funds is the funder's capability, not the server's. the funder must sign from a plain EOA — a Safe or MPC signer has no deterministic personal signature to re-derive from. open check: confirm the treasury signer austin uses on stream is an EOA *and re-signs a test message to identical bytes* — a randomized-nonce signer produces a different valid signature each time, which verifies fine but re-derives different keys. as a backstop that removes the determinism dependency entirely, the funder saves the canonical signature out-of-band at race time (it is the recovery key for that run's leftovers; treat it like one).
+
+---
+
+## ADR-0014 — funding moves to the funder; the gate only watches
+
+**Status:** accepted (2026-07-30) — with ADR-0013, supersedes the funding half of ADR-0005; from #28 and the 2026-07-29 meeting
+
+**Decision:** the arena never sends funds on base. the run lifecycle gains a state: `created → awaiting_signature → preparing → awaiting_funding → ready → running → stopping → finished`. a new endpoint accepts the funder's seed signature before container prep; the arena verifies it recovers to the profile's pinned `funderAddress` and derives the burner addresses from it (ADR-0013). the funding gate is the balance watcher alone, identical on both profiles. the local faucet survives as an explicitly local-only dev helper outside the gate, so the dev loop stays one-click; on local the arena also signs the seed itself with the anvil dev key (an env knob disables auto-sign to exercise the real sign flow). per-profile config carries `funderAddress`, `fundingThresholdEth` (0.05 local, 0.005 base), and the funding timeout (15 min local; none on base — human-gated states hold until stop or reset, and the waiting room shows the prompt).
+
+**Why:** carlos killed the rehearsal auto-send along with key storage — a human funds through a waiting-room UI, possibly with a multisend. the threshold is a floor that confirms money arrived, not the race stake: austin estimates the amount at race time, and the sweep (re-sign, re-derive) recovers leftovers, so the arena does not own that number. the signature check is the anti-theft gate: without it, anyone who reaches the endpoint could seed a run with their own signature, and whatever the funder sends to the displayed addresses would be recoverable by the attacker instead.
+
+**Trade-off:** a base run cannot start without a human — which ADR-0005 already called correct behavior. the state-machine change bumps `arena-types.ts`, which the frontend re-copies; acceptable, since pablo and damu are building the waiting room against this contract anyway.
+
+**Consequence:** the `wallets` table is dropped, not trimmed — `entrants.address` is the single address source, the solve poller reads it, and startup DDL runs `DROP TABLE IF EXISTS wallets`, so plaintext keys on existing `arena.db` files are destroyed on upgrade. the funding timeout becomes per-profile where absent means wait-forever. the mock frontend ships the reference waiting room (sign button, address list, per-entrant funding status); blockies, etherscan links, and multisend stay in the real frontend. topping up an underfunded entrant mid-race needs no code — the watcher reads balances, so sending more ETH to the same address just works.

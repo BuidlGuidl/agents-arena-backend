@@ -1,14 +1,36 @@
+import { eq } from 'drizzle-orm';
+import {
+  parseSignature,
+  serializeSignature,
+  toHex,
+  type Hex,
+} from 'viem';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { EntrantUnavailableError } from '../src/adapters/types.js';
+import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
 import { isSecureRequest, MissingOperatorTokenError } from '../src/auth.js';
+import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
+import {
+  deriveEntrantKeys,
+  seedTypedData,
+} from '../src/chain/wallet.js';
 import type { ArenaEvent, HistoryPage, RunSnapshot } from '../src/contract.js';
+import { entrants } from '../src/db/schema.js';
 import { capEvent, EVENT_TEXT_LIMIT } from '../src/journal.js';
 import { createServer, type ArenaServer } from '../src/server.js';
 
 const servers: ArenaServer[] = [];
 const OPERATOR_TOKEN = 'test-operator-token';
 const operatorHeaders = { authorization: `Bearer ${OPERATOR_TOKEN}` };
+const SECP256K1_N =
+  0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+const noopDriver: EntrantDriver = {
+  async prepare() {},
+  async start() {},
+  async steer() {},
+  async stop() {},
+};
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(async ({ app }) => app.close()));
@@ -454,6 +476,224 @@ describe('SSE event delivery', () => {
   });
 });
 
+describe('seed endpoint', () => {
+  it('returns from start while a human-gated run awaits its seed signature', async () => {
+    await withAutoSignDisabled(async () => {
+      const server = createSeedTestServer();
+      const created = await server.app.inject({
+        method: 'POST',
+        url: '/runs',
+        headers: operatorHeaders,
+        payload: { preset: 'docker-duel' },
+      });
+      const { run } = created.json() as { run: RunSnapshot };
+      const responsePromise = server.app.inject({
+        method: 'POST',
+        url: `/runs/${run.id}/start`,
+        headers: operatorHeaders,
+      });
+
+      const outcome = await Promise.race([
+        responsePromise.then((response: { statusCode: number; json(): unknown }) => ({
+          kind: 'response' as const,
+          response,
+        })),
+        new Promise<{ kind: 'timeout' }>((resolve) => {
+          setTimeout(() => resolve({ kind: 'timeout' }), 25);
+        }),
+      ]);
+
+      try {
+        expect(outcome.kind).toBe('response');
+        if (outcome.kind === 'response') {
+          expect(outcome.response.statusCode).toBe(200);
+          expect((outcome.response.json() as { run: RunSnapshot }).run.state)
+            .toBe('awaiting_signature');
+        }
+      } finally {
+        await server.manager.stop(run.id);
+        await responsePromise;
+      }
+    });
+  });
+
+  it('rejects a seed when the run is not awaiting a signature', async () => {
+    await withAutoSignDisabled(async () => {
+      const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+      servers.push(server);
+      const { run } = await server.manager.create({ preset: 'docker-duel' });
+      const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+      const signature = await account.signTypedData(seedTypedData(run.id, 31337));
+
+      const response = await server.app.inject({
+        method: 'POST',
+        url: `/runs/${run.id}/seed`,
+        headers: operatorHeaders,
+        payload: { signature },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: 'Run is not awaiting a seed signature' });
+    });
+  });
+
+  it('explains that an awaiting-signature run cannot resume after a restart', async () => {
+    await withAutoSignDisabled(async () => {
+      const server = createSeedTestServer();
+      const { run } = await server.manager.create({ preset: 'docker-duel' });
+      server.manager.transition(run.id, 'awaiting_signature');
+      const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+      const signature = await account.signTypedData(seedTypedData(run.id, 31337));
+
+      const response = await server.app.inject({
+        method: 'POST',
+        url: `/runs/${run.id}/seed`,
+        headers: operatorHeaders,
+        payload: { signature },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        error: 'Backend restarted while this run awaited its signature; stop the run and create a new one.',
+      });
+      await server.manager.stop(run.id);
+    });
+  });
+
+  it('rejects a signature from the wrong signer without exposing signer data', async () => {
+    await withAutoSignDisabled(async () => {
+      const server = createSeedTestServer();
+      const created = await server.app.inject({
+        method: 'POST',
+        url: '/runs',
+        headers: operatorHeaders,
+        payload: { preset: 'docker-duel', autoStart: true },
+      });
+      const { run } = created.json() as { run: RunSnapshot };
+      const wrongAccount = privateKeyToAccount(generatePrivateKey());
+      const signature = await wrongAccount.signTypedData(seedTypedData(run.id, 31337));
+
+      const response = await server.app.inject({
+        method: 'POST',
+        url: `/runs/${run.id}/seed`,
+        headers: operatorHeaders,
+        payload: { signature },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({ error: 'Seed signature is not authorized' });
+      expect(response.body).not.toContain(signature);
+      expect(response.body).not.toContain(wrongAccount.address);
+      await server.manager.stop(run.id);
+    });
+  });
+
+  it('rejects a high-s variant of the funder signature', async () => {
+    await withAutoSignDisabled(async () => {
+      const server = createSeedTestServer();
+      const created = await server.app.inject({
+        method: 'POST',
+        url: '/runs',
+        headers: operatorHeaders,
+        payload: { preset: 'docker-duel', autoStart: true },
+      });
+      const { run } = created.json() as { run: RunSnapshot };
+      const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+      const signature = await account.signTypedData(seedTypedData(run.id, 31337));
+
+      const response = await server.app.inject({
+        method: 'POST',
+        url: `/runs/${run.id}/seed`,
+        headers: operatorHeaders,
+        payload: { signature: highSSignature(signature) },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: 'Signature encoding is not canonical (expects low-s, v 27/28).',
+      });
+      expect(response.body).not.toContain(signature);
+      expect(server.manager.snapshot(run.id).state).toBe('awaiting_signature');
+      await server.manager.stop(run.id);
+    });
+  });
+
+  it('derives the canonical addresses from a v-as-0-or-1 signature', async () => {
+    await withAutoSignDisabled(async () => {
+      const server = createSeedTestServer();
+      const created = await server.app.inject({
+        method: 'POST',
+        url: '/runs',
+        headers: operatorHeaders,
+        payload: { preset: 'docker-duel', autoStart: true },
+      });
+      const { run } = created.json() as { run: RunSnapshot };
+      const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+      const canonicalSignature = await account.signTypedData(seedTypedData(run.id, 31337));
+      const entrantIds = run.entrants.map((entrant) => entrant.id);
+      const expected = deriveEntrantKeys(run.id, canonicalSignature, entrantIds);
+
+      const response = await server.app.inject({
+        method: 'POST',
+        url: `/runs/${run.id}/seed`,
+        headers: operatorHeaders,
+        payload: { signature: paritySignature(canonicalSignature) },
+      });
+
+      expect(response.statusCode).toBe(202);
+      const seeded = (response.json() as { run: RunSnapshot }).run;
+      expect(seeded.entrants.map((entrant) => entrant.address)).toEqual(
+        entrantIds.map((entrantId) => expected.get(entrantId)),
+      );
+      await waitForState(server, run.id, 'running');
+      await server.manager.stop(run.id);
+    });
+  });
+
+  it('accepts the funder signature, stores addresses, and emits address events', async () => {
+    await withAutoSignDisabled(async () => {
+      const server = createSeedTestServer();
+      const created = await server.app.inject({
+        method: 'POST',
+        url: '/runs',
+        headers: operatorHeaders,
+        payload: { preset: 'docker-duel', autoStart: true },
+      });
+      const { run } = created.json() as { run: RunSnapshot };
+      expect(run.state).toBe('awaiting_signature');
+      const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
+      const signature = await account.signTypedData(seedTypedData(run.id, 31337));
+
+      const response = await server.app.inject({
+        method: 'POST',
+        url: `/runs/${run.id}/seed`,
+        headers: operatorHeaders,
+        payload: { signature },
+      });
+      await waitForState(server, run.id, 'running');
+
+      expect(response.statusCode).toBe(202);
+      const rows = server.journal.database
+        .select({ address: entrants.address })
+        .from(entrants)
+        .where(eq(entrants.runId, run.id))
+        .all();
+      expect(rows).toHaveLength(2);
+      expect(rows.every((row) => row.address !== null)).toBe(true);
+      const assigned = server.journal.after(run.id, 0)
+        .filter((event) => event.type === 'wallet.assigned');
+      expect(assigned).toHaveLength(2);
+      const observable = JSON.stringify({
+        response: response.json(),
+        events: server.journal.after(run.id, 0),
+      });
+      expect(observable).not.toContain(signature);
+
+      await server.manager.stop(run.id);
+    });
+  });
+});
+
 describe('fake run vertical slice', () => {
   it('creates, streams scripted events, steers, and finishes a run', async () => {
     const server = createServer({
@@ -490,6 +730,7 @@ describe('fake run vertical slice', () => {
       );
       expect(toolEvents[0]?.payload.toolCallId).toBe(toolEvents[1]?.payload.toolCallId);
     }
+    expect(run.entrants.every((entrant) => entrant.address === null)).toBe(true);
 
     // Same totals the live usage events carry, so a reload repaints them. The
     // fake codex model is in the rate table; the fake opencode model is not.
@@ -520,6 +761,57 @@ describe('fake run vertical slice', () => {
     expect(server.manager.snapshot(run.id).entrants.every((entrant) => entrant.status === 'done')).toBe(true);
   });
 });
+
+async function withAutoSignDisabled<T>(action: () => Promise<T>): Promise<T> {
+  const previous = process.env.ARENA_AUTO_SIGN;
+  process.env.ARENA_AUTO_SIGN = 'false';
+  try {
+    return await action();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ARENA_AUTO_SIGN;
+    } else {
+      process.env.ARENA_AUTO_SIGN = previous;
+    }
+  }
+}
+
+function createSeedTestServer(): ArenaServer {
+  const server = createServer({
+    dbPath: ':memory:',
+    operatorToken: OPERATOR_TOKEN,
+    driverFactory: () => noopDriver,
+    fundingGateFactory: () => async () => {},
+  });
+  servers.push(server);
+  return server;
+}
+
+function highSSignature(signature: Hex): Hex {
+  const parsed = parseSignature(signature);
+  return serializeSignature({
+    r: parsed.r,
+    s: toHex(SECP256K1_N - BigInt(parsed.s), { size: 32 }),
+    yParity: parsed.yParity === 0 ? 1 : 0,
+  });
+}
+
+function paritySignature(signature: Hex): Hex {
+  const { yParity } = parseSignature(signature);
+  return `${signature.slice(0, -2)}0${yParity}` as Hex;
+}
+
+async function waitForState(
+  server: ArenaServer,
+  runId: string,
+  state: RunSnapshot['state'],
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (server.manager.snapshot(runId).state === state) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error(`Run ${runId} did not reach ${state}`);
+}
 
 describe('director broadcast', () => {
   it('injects one message into every live entrant and emits one broadcast event', async () => {
@@ -634,6 +926,7 @@ describe('operator auth', () => {
     const routes = [
       { url: '/runs', payload: { preset: 'fake-duel' } },
       { url: `/runs/${run.id}/start` },
+      { url: `/runs/${run.id}/seed` },
       { url: `/runs/${run.id}/stop` },
       { url: `/runs/${run.id}/entrants/codex-1/steer`, payload: { text: 'no token' } },
       { url: `/runs/${run.id}/broadcast`, payload: { text: 'no token' } },

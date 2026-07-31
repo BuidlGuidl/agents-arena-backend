@@ -317,7 +317,7 @@
 <nav class="toc">
   <ol>
     <li><a href="#stack"><span class="n">0</span>The stack</a></li>
-    <li><a href="#flow1"><span class="n">1</span>Wallet + funding</a></li>
+    <li><a href="#flow1"><span class="n">1</span>Seed + funding</a></li>
     <li><a href="#flow2"><span class="n">2</span>Credentials into containers</a></li>
     <li><a href="#flow3"><span class="n">3</span>Events + SSE</a></li>
     <li><a href="#flow4"><span class="n">4</span>Frontend sync</a></li>
@@ -333,7 +333,7 @@
       <span class="num">00</span>
       <h2>The stack</h2>
     </div>
-    <p>One Node process runs the whole arena. Fastify serves the HTTP and SSE routes; RunManager owns the run lifecycle and the two drivers. Docker isolates the entrants, one hardened container each, and each container carries the burner's <code>WALLET_ADDRESS</code>, <code>WALLET_PRIVATE_KEY</code>, and <code>ETH_RPC_URL</code> as env. SQLite is the only store: events, run and entrant rows, burner keys, and scores. A private hardhat or anvil chain at chainId <code>31337</code> is the game board. The Vite/React frontend holds no state of its own; it watches the event stream.</p>
+    <p>One Node process runs the whole arena. Fastify serves the HTTP and SSE routes; RunManager owns the run lifecycle and the two drivers. Docker isolates the entrants, one hardened container each, and each container carries the burner's <code>WALLET_ADDRESS</code>, <code>WALLET_PRIVATE_KEY</code>, and <code>ETH_RPC_URL</code> as env. Those burner keys are derived from one funder signature and live only in process memory for the run. SQLite stores events, run and entrant rows, addresses, and scores. A private hardhat or anvil chain at chainId <code>31337</code> is the game board. The Vite/React frontend holds no state of its own; it watches the event stream.</p>
     <p class="muted">The chain hosts only practice puzzles. Each puzzle is a small Solidity contract with an intended solution, like an advent-of-code box. Nothing here is a live system.</p>
 
     <figure class="diagram">
@@ -352,7 +352,7 @@ flowchart LR
     BK -.->|SSE EventSource| FE
     BK -->|auth.json + config.toml at /creds/codex| C1
     BK -->|OPENROUTER_API_KEY env| C2
-    BK -->|funds + watches via viem| CH
+    BK -->|watches + local-only faucet via viem| CH
     C1 -.->|host.docker.internal:8545| CH
     C2 -.->|host.docker.internal:8545| CH
     classDef own fill:#15251f,stroke:#7ad6b0,color:#dbeee4;
@@ -364,7 +364,7 @@ flowchart LR
     </figure>
 
     <h3>What lives in SQLite</h3>
-    <p>One file, six tables. Every burner key and every event row sits here in plaintext; it is a local demo store, wiped by deleting the file. <span class="path">src/db/schema.ts</span></p>
+    <p>SQLite keeps the event journal, run state, entrant addresses, and scores. It never stores the seed signature or burner keys. On startup, chain storage runs <code>DROP TABLE IF EXISTS wallets</code> to destroy keys left by older database files. <span class="path">src/db/schema.ts</span> · <span class="path">src/chain/storage.ts</span></p>
     <table class="map">
       <thead><tr><th>Table</th><th>What's in it</th><th>Written by</th><th>Read by</th></tr></thead>
       <tbody>
@@ -382,27 +382,15 @@ flowchart LR
         </tr>
         <tr>
           <td><code>entrants</code></td>
-          <td>One row per lane: <code>harness</code>, <code>model</code>, <code>address</code>, <code>status</code>, <code>flags</code>. The wallet gate sets <code>address</code>.</td>
+          <td>One row per lane: <code>harness</code>, <code>model</code>, <code>address</code>, <code>status</code>, <code>flags</code>. Seed submission sets <code>address</code>, which is the only wallet fact the file ever holds.</td>
           <td>RunManager and harness-driver <code>setStatus</code>.</td>
-          <td>Run snapshot.</td>
-        </tr>
-        <tr>
-          <td><code>wallets</code></td>
-          <td>Burner keypair per <code>(run, entrant)</code>: <code>address</code> and <code>private_key</code>, in plaintext. Local demo burners, no end-of-run sweep.</td>
-          <td><code>createWallet</code> in the wallet gate.</td>
-          <td><code>getWallet</code> in the codex/opencode adapters (inject key env) and <code>exportKeyfile</code>.</td>
+          <td>Run snapshot, and the solve poller, which scores by address.</td>
         </tr>
         <tr>
           <td><code>scores</code></td>
           <td>One row per minted flag: <code>challenge_id</code>, <code>token_id</code>, <code>tx_hash</code>, <code>block_number</code>. Unique on <code>(run, address, challenge)</code>.</td>
-          <td>The flag watcher. <span class="path">src/chain/flag-watcher.ts</span></td>
-          <td>The flag watcher, to skip flags already minted.</td>
-        </tr>
-        <tr>
-          <td><code>chain_cursors</code></td>
-          <td>Last processed block per <code>(run, contract)</code>, so the watcher resumes without rescanning.</td>
-          <td>The flag watcher.</td>
-          <td>The flag watcher.</td>
+          <td>The solve poller. <span class="path">src/chain/solve-poller.ts</span></td>
+          <td>The solve poller, to skip flags already scored.</td>
         </tr>
       </tbody>
     </table>
@@ -426,7 +414,11 @@ flowchart LR
         <tr><td><code>id</code> vs <code>seq</code></td><td><code>id</code> is one global counter across all runs, so within a run it can skip. <code>seq</code> counts 1, 2, 3… per <code>(run, source)</code> with no holes.</td><td><span class="path">src/journal.ts</span></td></tr>
         <tr><td><code>journal</code></td><td>The append-only <code>events</code> table: every fact in a run, one row, only ever added.</td><td><span class="path">src/journal.ts</span></td></tr>
         <tr><td><code>SSE</code></td><td>Server-Sent Events: an HTTP response the server holds open and keeps writing to, which the browser reads live.</td><td><span class="path">src/server.ts</span></td></tr>
-        <tr><td><code>gate</code></td><td>A step that must finish before the run moves on. The wallet gate makes burners; the funding gate funds them.</td><td><span class="path">src/chain/funding-gate.ts</span></td></tr>
+        <tr><td><code>gate</code></td><td>A step that must finish before the run moves on. Seed submission makes burners; the funding gate watches their balances.</td><td><span class="path">src/run-manager.ts</span> · <span class="path">src/chain/funding-gate.ts</span></td></tr>
+        <tr><td><code>funder</code></td><td>The wallet that pays for the race. One EOA per chain profile, pinned in config as <code>funderAddress</code>.</td><td><span class="path">config/chains.json</span></td></tr>
+        <tr><td><code>seed</code></td><td>The funder's signature over one run's typed data. Every burner key in the run is derived from it.</td><td><code>seedTypedData</code> · <code>deriveEntrantKeys</code></td></tr>
+        <tr><td><code>burner</code></td><td>An entrant's throwaway wallet for one run. Derived, never generated, never stored.</td><td><span class="path">src/chain/wallet.ts</span></td></tr>
+        <tr><td>waiting room</td><td>The pre-race panel the funder uses: sign the seed, then watch the addresses fund.</td><td><span class="path">packages/mock-frontend/src/waiting-room.ts</span></td></tr>
         <tr><td><code>steer</code></td><td>A free-text turn an operator injects into a live agent mid-race.</td><td><code>RunManager.steer</code></td></tr>
       </tbody>
     </table>
@@ -436,58 +428,164 @@ flowchart LR
   <section id="flow1">
     <div class="sec-head">
       <span class="num">01</span>
-      <h2>Wallet generation and funding</h2>
+      <h2>Seed signature and funding</h2>
     </div>
-    <p>Starting a run walks a state machine. Each step is a legal transition; an illegal one throws. The wallet and funding work happens between <code>preparing</code> and <code>ready</code>, so an agent never boots without a funded burner to sign with.</p>
+    <p>A run walks <code>created → awaiting_signature → preparing → awaiting_funding → ready → running → stopping → finished</code>, and any state can move to <code>failed</code>. Each step is a legal transition, and an illegal one throws. Two of those states wait on a human — one for a signature, one for money — though the local dev profile answers both for itself. <span class="path">src/run-manager.ts</span> · <code>LEGAL_TRANSITIONS</code></p>
+    <p>The arena holds no private key at rest. One signature from the funder seeds every burner in the run, so no address can exist before that signature lands — which is why the signing step sits ahead of container prep, not after it.</p>
 
     <figure class="diagram">
       <pre class="mermaid">
 sequenceDiagram
     autonumber
     box rgb(23,29,41) external
-    actor OP as operator
+    actor OP as funder
+    participant WR as waiting room
     end
     participant RM as RunManager
-    participant WG as walletGate
     participant DR as driver.prepare
     participant FG as fundingGate
+    participant LD as local dev faucet
     box rgb(23,29,41) external
-    participant CH as dev chain 31337
+    participant CH as active chain
     end
-    OP->>RM: start run
+    OP->>WR: pick preset, start race
+    WR->>RM: POST /runs {preset, autoStart}
+    RM->>RM: state awaiting_signature
+    RM-->>WR: run.state over SSE
+    WR->>WR: build Seed typed data + run id + chain id
+    OP->>WR: sign with wallet, or paste a signature
+    WR->>RM: POST /runs/:id/seed {signature}
+    RM->>RM: canonicalize, recover funder, derive keys in memory
+    RM-->>WR: wallet.assigned per entrant
     RM->>RM: state preparing
-    WG->>WG: generate burner per entrant
-    WG-->>RM: emit wallet.assigned
     RM->>DR: create containers with key env
     DR-->>RM: state awaiting_funding
-    FG->>CH: fund 0.1 ETH from account 0
-    FG->>CH: evm_mine one block
+    par watcher on every profile
+      FG->>CH: poll confirmed balances
+    and local profile only
+      LD->>CH: fund from anvil account 0
+    and Base
+      OP->>CH: fund the displayed addresses
+    end
     CH-->>FG: funding.balance events
-    FG-->>RM: both reach 0.05 ETH
+    FG-->>RM: both cross profile threshold
     RM->>RM: state ready then running
       </pre>
-      <figcaption>Run order · walletGate then fundingGate in run-manager.ts</figcaption>
+      <figcaption>Run order · sign, derive in memory, prepare, then a watcher-only funding gate</figcaption>
     </figure>
 
-    <h3>How the burner is born</h3>
-    <p>In the <code>preparing</code> phase the wallet gate runs first, before any container exists. It makes one burner per entrant so the address is known when the container gets its environment.</p>
+    <h3>The lifecycle, state by state</h3>
+    <table class="map">
+      <thead><tr><th>State</th><th>What the run is doing</th><th>What moves it on</th></tr></thead>
+      <tbody>
+        <tr><td><code>created</code></td><td>Run and entrant rows written, nothing started, no address.</td><td><code>POST /runs/:id/start</code>. A <code>docker-duel</code> run goes to <code>awaiting_signature</code>; <code>fake-duel</code> goes straight to <code>preparing</code>.</td></tr>
+        <tr><td><code>awaiting_signature</code></td><td>Waiting for the funder's seed signature. The roster shows no addresses yet.</td><td>An accepted <code>POST /runs/:id/seed</code>. On local the backend signs for itself.</td></tr>
+        <tr><td><code>preparing</code></td><td>Credential dirs and containers going up. The keys already exist in memory.</td><td>Both prepares finish, inside a 5-minute phase timeout.</td></tr>
+        <tr><td><code>awaiting_funding</code></td><td>The gate polls confirmed balances and emits every change it sees.</td><td>Both burners hold at least the profile threshold.</td></tr>
+        <tr><td><code>ready</code></td><td>Containers up, burners funded, nothing running.</td><td>RunManager moves on inside the same call.</td></tr>
+        <tr><td><code>running</code></td><td>Both agents work the puzzles; the solve poller scores by address.</td><td><code>POST /runs/:id/stop</code>, or a failure.</td></tr>
+        <tr><td><code>stopping</code></td><td>Containers coming down. The keys are already gone.</td><td>Teardown settles, then <code>finished</code>.</td></tr>
+        <tr><td><code>finished</code> · <code>failed</code></td><td>Terminal. Nothing leaves them, and a restart never resumes them.</td><td>—</td></tr>
+      </tbody>
+    </table>
+    <p>The chainless <code>fake-duel</code> preset skips the seed step outright: it never enters <code>awaiting_signature</code>, and its funding gate returns the moment it is called, so no wallet is ever derived for it.</p>
+
+    <h3>What the funder sees</h3>
+    <p>The mock frontend ships the reference waiting room. It appears whenever the run sits in <code>awaiting_signature</code> or <code>awaiting_funding</code>, and it is the one screen that needs a human. <span class="path">packages/mock-frontend/src/waiting-room.ts</span> · <span class="path">main.tsx</span></p>
     <ul class="facts">
-      <li>The gate loops over both entrants and calls <code>createWallet</code>, which does <code>generatePrivateKey()</code> from viem, derives the address, and writes both to the <code>wallets</code> table. <span class="path">src/chain/wallet.ts</span></li>
-      <li>It writes the address back onto the entrant row (<code>entrants.address</code>) and emits a <code>wallet.assigned</code> event on that entrant's lane. <span class="path">src/chain/funding-gate.ts</span> · <code>createWalletGate</code></li>
-      <li>The private key stays in SQLite and later rides into the container as an env var. It is never emitted as an event.</li>
+      <li>In <code>awaiting_signature</code> the panel prints the run id and the exact typed-data JSON to sign. The browser builds that JSON itself, byte for byte, from the run id and its local chain id — the backend never ships it. A copy button hands it to <code>cast wallet sign --data</code> or another wallet.</li>
+      <li>With an injected wallet present, <b>sign with wallet</b> calls <code>eth_requestAccounts</code>, then <code>eth_signTypedData_v4</code> with the account first and the JSON string second. MetaMask renders the domain and <code>Seed.runId</code> as a structured prompt. A dismissed prompt arrives as EIP-1193 code <code>4001</code> and reads "wallet request rejected", not as a failure.</li>
+      <li>The copy-and-paste fallback stays visible with or without an injected wallet. The paste box tests the signature against <code>/^0x[0-9a-fA-F]{130}$/</code>, the same shape the backend's schema accepts, so a typo never reaches the network.</li>
+      <li>A rejection names the status, never the wallet: 403 says the signature did not come from the wallet this profile funds with, 409 says the run is no longer waiting, 400 says the string is not a signature it can read.</li>
+      <li>Under the panel sits the roster, one row per entrant: entrant id, the full address as a click-to-copy button, and a funding status. Before the signature lands, that middle column reads "address arrives with the signature".</li>
+      <li>In <code>awaiting_funding</code> the panel shrinks to one line — send ETH to each address below — and each roster row flips from waiting to funded with its balance beside it. A top-up to the same address counts, because the gate reads balances rather than transfers.</li>
     </ul>
 
+    <h3>How the burner is born</h3>
+    <p>Every key in a run is born in one call, the moment the seed is accepted. <code>POST /runs/:id/seed</code> takes <code>{signature}</code> and works only while the run is in <code>awaiting_signature</code>. <span class="path">src/server.ts</span> · <span class="path">src/run-manager.ts</span> · <code>submitSeed</code></p>
+    <ul class="facts">
+      <li>The funder signs EIP-712 typed data with domain <code>{name: 'agents-arena', version: '1', chainId}</code>, primary type <code>Seed</code>, and one field: <code>runId: string</code>. There is no verifying contract. The run id gives every run virgin wallets; the domain binds the signature to one chain. <span class="path">src/chain/wallet.ts</span> · <code>seedTypedData</code></li>
+      <li><code>canonicalizeSeedSignature</code> runs first. A high-s signature is rejected outright; the rest are re-serialized low-s with <code>v</code> 27 or 28. Every accepted encoding of one signature therefore collapses to one byte string, and one key set.</li>
+      <li>Recovery runs against those canonical bytes. A signature that does not recover to the profile's <code>funderAddress</code> gets a 403 and the run stays put. A post from any other state gets a 409, and so does a second post while the first is still in flight.</li>
+      <li><code>deriveEntrantKeys</code> then computes each key as <code>keccak256(canonical signature bytes ‖ utf8 entrantId)</code> and takes its address. The keys go into a per-run map in process memory, keyed by run id then entrant id; the function itself returns addresses only.</li>
+      <li>RunManager writes those addresses to <code>entrants.address</code> in one transaction, then appends one <code>wallet.assigned</code> per entrant. If either write throws, it drops the run's keys and fails the seed.</li>
+    </ul>
+
+    <p>Here is one real run of that derivation: the local profile, <code>runId</code> "1", and the local dev funder — anvil account&nbsp;0. That account's private key is printed in every anvil banner, so the burner keys below are public arithmetic and guard nothing. They are here to show the shape.</p>
+
+    <p class="eg-label">the typed data the funder signs</p>
+    <pre class="eg-code">{
+  <span class="jk">"domain"</span>: {
+    <span class="jk">"name"</span>: <span class="jv">"agents-arena"</span>,
+    <span class="jk">"version"</span>: <span class="jv">"1"</span>,
+    <span class="jk">"chainId"</span>: <span class="jv">31337</span>
+  },
+  <span class="jk">"types"</span>: {
+    <span class="jk">"EIP712Domain"</span>: [
+      { <span class="jk">"name"</span>: <span class="jv">"name"</span>, <span class="jk">"type"</span>: <span class="jv">"string"</span> },
+      { <span class="jk">"name"</span>: <span class="jv">"version"</span>, <span class="jk">"type"</span>: <span class="jv">"string"</span> },
+      { <span class="jk">"name"</span>: <span class="jv">"chainId"</span>, <span class="jk">"type"</span>: <span class="jv">"uint256"</span> }
+    ],
+    <span class="jk">"Seed"</span>: [{ <span class="jk">"name"</span>: <span class="jv">"runId"</span>, <span class="jk">"type"</span>: <span class="jv">"string"</span> }]
+  },
+  <span class="jk">"primaryType"</span>: <span class="jv">"Seed"</span>,
+  <span class="jk">"message"</span>: { <span class="jk">"runId"</span>: <span class="jv">"1"</span> }
+}</pre>
+
+    <p class="eg-label">the signature that comes back — one 65-byte string, r ‖ s ‖ v</p>
+    <pre class="eg-code">0x 9e1dce6fe4da1ae1bbaa92eb2a158f2d71a183351c5ff203a2e4fc6a127f2e27  <span class="jk">r</span>
+   2ce63b02c9a17c02f2d8ee57a46d21492abbc35cfd9fbf2540bf298c83be644d  <span class="jk">s</span>
+   1b                                                                <span class="jk">v = 27, so already canonical</span></pre>
+
+    <p class="eg-label">the two keys that fall out of it</p>
+    <pre class="eg-code"><span class="jk">codex-1</span>
+  key      <span class="jv">0x4d44297d498894431b90b3be967a19b0233bab737ddf056b643262519fa527ff</span>
+  address  <span class="jv">0x4ee3BE13180D87C59dC5ae8EE7E631923ffFE254</span>
+
+<span class="jk">opencode-1</span>
+  key      <span class="jv">0x919f4b9a269a75b2add473c35c2b2024daa189a41632282ac682ec2a3e88ecba</span>
+  address  <span class="jv">0xd790a2797650D602F49f56C438ac89dDCF0F109F</span></pre>
+
+    <ul class="facts">
+      <li><code>recoverTypedDataAddress</code> over that typed data and signature returns <code>0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266</code>, which is the local profile's <code>funderAddress</code>, so the seed is accepted. Any other signer recovers to some other address and gets a 403.</li>
+      <li>The two addresses go to <code>entrants.address</code> in SQLite. The two keys go only to the in-memory vault, and from there to each container's <code>WALLET_PRIVATE_KEY</code>.</li>
+      <li>Signing that same typed data again returns byte-identical output — the nonce comes from the key and digest, not from randomness (RFC&nbsp;6979). That is why re-signing next week re-derives these same two wallets and recovers whatever ETH is left in them.</li>
+      <li>The run id reaches the keys only through the typed data the funder signed, which is where run-uniqueness comes from. The chain id changes the signature before derivation, so the same run id on another chain produces other burners.</li>
+      <li>A keccak256 output works as a secp256k1 private key for a dull reason: a private key is only a 256-bit number below the curve order, and a hash hands you 256 high-entropy bits.</li>
+    </ul>
+
+    <h3>What the run emits while it waits</h3>
+    <table class="map">
+      <thead><tr><th>Event</th><th>Source</th><th>Payload</th><th>Written by</th></tr></thead>
+      <tbody>
+        <tr><td><code>run.state</code></td><td><code>'run'</code></td><td><code>{state}</code>, plus <code>reason</code> when the transition carries one.</td><td><code>RunManager.transition</code>, on every state change.</td></tr>
+        <tr><td><code>wallet.assigned</code></td><td>entrant id</td><td><code>{entrantId, address}</code></td><td><code>submitSeed</code>, once per entrant.</td></tr>
+        <tr><td><code>funding.balance</code></td><td>entrant id</td><td><code>{entrantId, address, wei, funded}</code></td><td><code>awaitFunding</code>, on every balance change it observes.</td></tr>
+      </tbody>
+    </table>
+    <p>That is the whole vocabulary of the waiting room, and none of it carries key material. The signature lives in the request body and in <code>submitSeed</code>'s local variables; no journal row holds it and no code path logs it. The derived keys leave process memory only as container environment variables. So the frontend never learns that a key exists — it learns addresses, from <code>wallet.assigned</code> and from <code>entrants.address</code> in the run snapshot, and that is all it needs.</p>
+
     <h3>How the burner gets funded</h3>
-    <p>After both containers prepare, the run moves to <code>awaiting_funding</code> and the funding gate runs. It starts the balance watcher, then funds the burners, and holds the run until both are funded.</p>
+    <p>After both containers prepare, the run moves to <code>awaiting_funding</code>. The funding gate only watches balances on every profile and holds the run until both burners are funded. The composition root runs a separate local-only faucet beside that gate.</p>
     <ul class="facts">
       <li>The watcher <code>awaitFunding</code> starts first and polls every 500&nbsp;ms. It reads each balance at <code>head &minus; confirmations</code>, not at head. <span class="path">src/chain/funding-watcher.ts</span></li>
-      <li>Funding sends <code>0.1&nbsp;ETH</code> to each burner from Hardhat dev account&nbsp;0 (the well-known local key). It only runs when the profile is <code>local</code> and the chain id is <code>31337</code>. <span class="path">src/chain/funding-gate.ts</span> · <code>fundLocalEntrants</code></li>
-      <li>It then mines one block with <code>evm_mine</code>. The local profile sets <code>confirmations: 1</code>, so mining one block moves the funding transaction to <code>head &minus; 1</code> where the watcher can see it. <span class="path">config/chains.json</span></li>
-      <li>Every time a balance changes, the watcher emits a <code>funding.balance</code> event with the wei amount and a <code>funded</code> flag. The gate resolves once both burners hold at least <code>0.05&nbsp;ETH</code>, then the run moves to <code>ready</code>.</li>
+      <li>On local, <code>runLocalDevFaucet</code> sends <code>0.1&nbsp;ETH</code> to each underfunded burner from anvil account&nbsp;0, then mines enough blocks for the confirmed-balance read. It is wired beside the gate in <code>src/index.ts</code>, not inside it. <span class="path">src/chain/funding-gate.ts</span></li>
+      <li>On Base, a human funds the displayed addresses. The waiting-room UI carries the prompt, and multisend is the operator's tool of choice. The server never sends Base funds.</li>
+      <li><code>fundingThresholdEth</code> is <code>0.05</code> on local and <code>0.005</code> on Base. It only confirms that money arrived; the funder chooses the race stake and can sweep leftovers later. <span class="path">config/chains.json</span></li>
+      <li>The local timeout is 15 minutes. Base omits <code>fundingTimeoutMs</code>, so it waits until funding, stop, or reset. Every balance change emits <code>funding.balance</code>; the run moves to <code>ready</code> when both balances cross the threshold.</li>
+    </ul>
+
+    <h3>Stop, restart, and the leftover ETH</h3>
+    <ul class="facts">
+      <li><code>stop</code> drops the run's keys before it touches a container, and teardown drops them again once the drivers settle. After that the process holds nothing derived from the signature. <span class="path">src/run-manager.ts</span> · <code>dropRunKeys</code></li>
+      <li>A stop during <code>awaiting_signature</code> aborts the waiting start and walks <code>stopping → finished</code>, same as a stop from <code>running</code>. A stop from <code>preparing</code>, <code>awaiting_funding</code>, or <code>ready</code> lands on <code>failed</code> with the reason "stopped by operator before running".</li>
+      <li>A backend restart takes the key map and the in-memory seed waiter with it. A run parked in <code>awaiting_signature</code> is orphaned: the row still reads <code>awaiting_signature</code>, but a seed post now answers 409. Stop that run and create a new one — the backend resumes no pre-terminal run. <span class="path">contract/API.md</span></li>
+      <li>Money already sent survives all of that. ECDSA signing is deterministic, so the funder signs the same typed data again, canonicalizes it the same way, hashes it with each entrant id, and holds the same keys — offline, with no server in the path. The sweep is the funder's capability, not the arena's. <span class="path">docs/adr/decisions-log.md</span> · ADR-0013</li>
+      <li>The addresses outlive both the keys and the run. <code>entrants.address</code> stays written, and the solve poller reads it to score: a <code>scores</code> row is unique on <code>(run, address, challenge)</code>. <span class="path">src/chain/solve-poller.ts</span></li>
     </ul>
 
     <div class="note">
-      <b>Two facts the summary left out.</b> Both the wallet gate and the funding gate return early unless the preset is <code>docker-duel</code>. The <code>fake-duel</code> preset skips wallets and funding entirely and streams canned events. And the funder key and profile are overridable through <code>ARENA_FUNDER_KEY</code> and <code>ARENA_CHAIN_PROFILE</code>; the Hardhat account is the default, not a hard-coded constant. <span class="path">src/chain/funding-gate.ts</span>
+      <b>Local signing.</b> The backend signs the seed with the anvil dev key on the local profile, so the normal dev loop stays zero-touch and self-funded. Set <code>ARENA_AUTO_SIGN=false</code> to exercise the real signature flow. Base ships with a zero <code>funderAddress</code> placeholder, which blocks seeding until a real treasury EOA is configured. <span class="path">src/run-manager.ts</span> · <span class="path">config/chains.json</span>
     </div>
   </section>
 
@@ -506,7 +604,7 @@ flowchart LR
       A["auth.json"]
       T["temp credential dir"]
       CF["config.toml"]
-      W["wallet row in sqlite"]
+      W["run key map in memory"]
     end
     subgraph cx [codex container]
       CXm["/creds/codex mount"]
@@ -547,7 +645,8 @@ flowchart LR
 
     <h3>Wallet injection (both harnesses)</h3>
     <ul class="facts">
-      <li>The driver reads the burner from SQLite with <code>getWallet</code> and, when it exists, adds <code>WALLET_ADDRESS</code> and <code>WALLET_PRIVATE_KEY</code> to the container env alongside <code>ETH_RPC_URL</code>. The agent signs with <code>cast send --private-key "$WALLET_PRIVATE_KEY"</code>.</li>
+      <li>At prepare time the driver reads the burner from the process-memory map with <code>getWallet</code> and adds <code>WALLET_ADDRESS</code> and <code>WALLET_PRIVATE_KEY</code> to the container env alongside <code>ETH_RPC_URL</code>. The agent signs with <code>cast send --private-key "$WALLET_PRIVATE_KEY"</code>.</li>
+      <li>The env is the only copy that leaves the process, and it is the only place a key is ever written down. <code>getWallet</code> returns null on a chainless preset, so those containers get <code>ETH_RPC_URL</code> and no wallet at all. Teardown calls <code>dropRunKeys</code>, and a restart takes the map with it.</li>
     </ul>
 
     <h3>Why the container is boxed in</h3>
@@ -686,6 +785,7 @@ flowchart TB
       <li><code>eventsForSource</code> filters the feed by <code>source === entrantId</code>, so each lane shows only its own entrant's events. Run-level events use the <code>'run'</code> source.</li>
       <li><code>describeEvent</code> renders a one-line summary for every known type, and any type the UI doesn't know falls through to <code>rawFallback</code>, which prints the raw payload. The feed never shows a blank row.</li>
       <li><code>deriveLaneWallet</code> folds a lane's events into its wallet header. The address starts from the run snapshot, then <code>wallet.assigned</code> and <code>funding.balance</code> override it; balance and the funded flag come from the latest <code>funding.balance</code>. <code>awaitingFunds</code> is true while the run is <code>awaiting_funding</code> and this lane is not funded yet.</li>
+      <li><code>deriveWaitingRoom</code> runs the same fold over every entrant to build the pre-race roster, and labels each row <code>pending</code> with no address, <code>waiting</code> with an address and no funds, <code>funded</code> past the threshold. The whole wallet story the UI can tell is two payload fields — an address and a balance. It has no way to ask whether a key exists, and never does.</li>
     </ul>
   </section>
 
@@ -741,22 +841,24 @@ flowchart TB
     <table class="map">
       <thead><tr><th>File</th><th>Owns</th></tr></thead>
       <tbody>
-        <tr><td><span class="path">src/run-manager.ts</span></td><td>State machine, start/stop, steer entry, prompt injection.</td></tr>
+        <tr><td><span class="path">src/run-manager.ts</span></td><td>State machine, seed verification, start/stop, steer entry, prompt injection.</td></tr>
         <tr><td><span class="path">src/ctf/prompt.ts</span></td><td>Opening prompt, per chain profile: mounted pack or public site.</td></tr>
         <tr><td><span class="path">src/ctf/pack.ts</span></td><td>Challenge pack assembly from the ai-ctf checkout.</td></tr>
         <tr><td><span class="path">src/ctf/resolve.ts</span></td><td>Per-run pack build, address cross-check against the profile.</td></tr>
-        <tr><td><span class="path">src/chain/wallet.ts</span></td><td>Burner keys in SQLite: generate, read, export.</td></tr>
-        <tr><td><span class="path">src/chain/funding-gate.ts</span></td><td>Wallet gate + local funding gate (docker-duel only).</td></tr>
+        <tr><td><span class="path">src/chain/wallet.ts</span></td><td>Seed message, in-memory burner derivation and lookup, teardown drop.</td></tr>
+        <tr><td><span class="path">src/chain/funding-gate.ts</span></td><td>Watcher-only funding gate + separate local dev faucet.</td></tr>
         <tr><td><span class="path">src/chain/funding-watcher.ts</span></td><td>Balance poll at head &minus; confirmations, funding.balance events.</td></tr>
+        <tr><td><span class="path">src/chain/solve-poller.ts</span></td><td>Per-address flag reads at head &minus; confirmations, score rows and score.flag events.</td></tr>
         <tr><td><span class="path">src/adapters/codex.ts</span></td><td>codex credential dir, env, start/resume argv.</td></tr>
         <tr><td><span class="path">src/adapters/opencode.ts</span></td><td>opencode key, env scrub, start/resume argv.</td></tr>
         <tr><td><span class="path">src/adapters/harness-driver.ts</span></td><td>Turn loop, steer queue, degraded state, event append.</td></tr>
         <tr><td><span class="path">src/runtime/container.ts</span></td><td>Docker container, network, mounts, hardening.</td></tr>
         <tr><td><span class="path">src/journal.ts</span></td><td>Append-only events: id, per-source seq, subscribe.</td></tr>
-        <tr><td><span class="path">src/db/schema.ts</span></td><td>The six SQLite tables: events, runs, entrants, wallets, scores, chain_cursors.</td></tr>
-        <tr><td><span class="path">src/chain/storage.ts</span></td><td>Creates the chain-side tables (wallets, scores, chain_cursors) and their indexes.</td></tr>
-        <tr><td><span class="path">src/server.ts</span></td><td>Fastify routes, SSE replay-then-live.</td></tr>
-        <tr><td><span class="path">packages/mock-frontend/src/feed-projection.ts</span></td><td>Dedupe, gap detect, lane split, wallet header, describeEvent.</td></tr>
+        <tr><td><span class="path">src/db/schema.ts</span></td><td>SQLite schema for events, runs, entrants, and scores; no key table.</td></tr>
+        <tr><td><span class="path">src/chain/storage.ts</span></td><td>Creates the scores table and drops any old <code>wallets</code> table.</td></tr>
+        <tr><td><span class="path">src/server.ts</span></td><td>Fastify routes, seed submission, SSE replay-then-live.</td></tr>
+        <tr><td><span class="path">packages/mock-frontend/src/feed-projection.ts</span></td><td>Dedupe, gap detect, lane split, wallet header, waiting-room roster, describeEvent.</td></tr>
+        <tr><td><span class="path">packages/mock-frontend/src/waiting-room.ts</span></td><td>Seed typed data, signature shape check, eth_signTypedData_v4 call, seed error text.</td></tr>
       </tbody>
     </table>
   </section>
@@ -765,7 +867,7 @@ flowchart TB
 
 <footer>
   <div class="wrap">
-    Agents Arena — practice-puzzle arena on a private local chain. Every claim on this page cites the file it came from. Built for the demo; read from the code on 2026-07-23.
+    Agents Arena — practice-puzzle arena on a private local chain. Every claim on this page cites the file it came from. Built for the demo; read from the code on 2026-07-30.
   </div>
 </footer>
 

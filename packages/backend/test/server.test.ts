@@ -9,6 +9,7 @@ import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
+import { isSecureRequest, MissingOperatorTokenError } from '../src/auth.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import {
   deriveEntrantKeys,
@@ -20,6 +21,8 @@ import { capEvent, EVENT_TEXT_LIMIT } from '../src/journal.js';
 import { createServer, type ArenaServer } from '../src/server.js';
 
 const servers: ArenaServer[] = [];
+const OPERATOR_TOKEN = 'test-operator-token';
+const operatorHeaders = { authorization: `Bearer ${OPERATOR_TOKEN}` };
 const SECP256K1_N =
   0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 const noopDriver: EntrantDriver = {
@@ -35,7 +38,7 @@ afterEach(async () => {
 
 describe('event history', () => {
   it('returns the newest events in ascending order', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const appended = Array.from({ length: 4 }, (_, index) =>
@@ -58,7 +61,7 @@ describe('event history', () => {
   });
 
   it('caps history and SSE copies while the journal retains the full payload', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const longText = `${'a'.repeat(2_000)}\n${'b'.repeat(2_000)}\nend`;
@@ -102,7 +105,7 @@ describe('event history', () => {
   });
 
   it('caps nested payload strings with dotted paths without mutating the event', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const nestedText = 'n'.repeat(EVENT_TEXT_LIMIT + 1);
@@ -172,7 +175,7 @@ describe('event history', () => {
   });
 
   it('leaves 4,000 characters intact and caps 4,001 characters', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const exact = server.journal.append(created.run.id, 'codex-1', 'agent.message', {
@@ -224,7 +227,7 @@ describe('event history', () => {
   });
 
   it('drops an emoji whole when its surrogate pair straddles the boundary', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const appended = server.journal.append(created.run.id, 'codex-1', 'agent.message', {
@@ -244,7 +247,7 @@ describe('event history', () => {
   });
 
   it('accepts a limit of 200, rejects larger limits, and defaults to 50', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     Array.from({ length: 55 }, (_, index) =>
@@ -274,7 +277,7 @@ describe('event history', () => {
   });
 
   it('rejects unknown event types and empty CSV items', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
 
@@ -294,7 +297,7 @@ describe('event history', () => {
   });
 
   it('names unknown history query parameters', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
 
@@ -308,7 +311,7 @@ describe('event history', () => {
   });
 
   it('rejects non-decimal and unsafe history integers', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
 
@@ -335,7 +338,7 @@ describe('event history', () => {
   });
 
   it('returns 404 for an unknown run', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
 
     const response = await server.app.inject({
@@ -348,7 +351,7 @@ describe('event history', () => {
   });
 
   it('only marks history immutable when its exclusive cursor cannot gain events', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const head = server.journal.append(created.run.id, 'codex-1', 'agent.message', {
@@ -389,7 +392,7 @@ describe('event history', () => {
   });
 
   it('hands the unfiltered history cursor to SSE without gaps or duplicates', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     server.journal.append(created.run.id, 'codex-1', 'agent.message', {
@@ -431,7 +434,7 @@ describe('event history', () => {
 
 describe('SSE event delivery', () => {
   it('replays missed events and then sends live events without duplicates or gaps', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const created = await server.manager.create({ preset: 'fake-duel' });
     const runId = created.run.id;
@@ -480,12 +483,14 @@ describe('seed endpoint', () => {
       const created = await server.app.inject({
         method: 'POST',
         url: '/runs',
+        headers: operatorHeaders,
         payload: { preset: 'docker-duel' },
       });
       const { run } = created.json() as { run: RunSnapshot };
       const responsePromise = server.app.inject({
         method: 'POST',
         url: `/runs/${run.id}/start`,
+        headers: operatorHeaders,
       });
 
       const outcome = await Promise.race([
@@ -514,7 +519,7 @@ describe('seed endpoint', () => {
 
   it('rejects a seed when the run is not awaiting a signature', async () => {
     await withAutoSignDisabled(async () => {
-      const server = createServer({ dbPath: ':memory:' });
+      const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
       servers.push(server);
       const { run } = await server.manager.create({ preset: 'docker-duel' });
       const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
@@ -523,6 +528,7 @@ describe('seed endpoint', () => {
       const response = await server.app.inject({
         method: 'POST',
         url: `/runs/${run.id}/seed`,
+        headers: operatorHeaders,
         payload: { signature },
       });
 
@@ -542,6 +548,7 @@ describe('seed endpoint', () => {
       const response = await server.app.inject({
         method: 'POST',
         url: `/runs/${run.id}/seed`,
+        headers: operatorHeaders,
         payload: { signature },
       });
 
@@ -559,6 +566,7 @@ describe('seed endpoint', () => {
       const created = await server.app.inject({
         method: 'POST',
         url: '/runs',
+        headers: operatorHeaders,
         payload: { preset: 'docker-duel', autoStart: true },
       });
       const { run } = created.json() as { run: RunSnapshot };
@@ -568,6 +576,7 @@ describe('seed endpoint', () => {
       const response = await server.app.inject({
         method: 'POST',
         url: `/runs/${run.id}/seed`,
+        headers: operatorHeaders,
         payload: { signature },
       });
 
@@ -585,6 +594,7 @@ describe('seed endpoint', () => {
       const created = await server.app.inject({
         method: 'POST',
         url: '/runs',
+        headers: operatorHeaders,
         payload: { preset: 'docker-duel', autoStart: true },
       });
       const { run } = created.json() as { run: RunSnapshot };
@@ -594,6 +604,7 @@ describe('seed endpoint', () => {
       const response = await server.app.inject({
         method: 'POST',
         url: `/runs/${run.id}/seed`,
+        headers: operatorHeaders,
         payload: { signature: highSSignature(signature) },
       });
 
@@ -613,6 +624,7 @@ describe('seed endpoint', () => {
       const created = await server.app.inject({
         method: 'POST',
         url: '/runs',
+        headers: operatorHeaders,
         payload: { preset: 'docker-duel', autoStart: true },
       });
       const { run } = created.json() as { run: RunSnapshot };
@@ -624,6 +636,7 @@ describe('seed endpoint', () => {
       const response = await server.app.inject({
         method: 'POST',
         url: `/runs/${run.id}/seed`,
+        headers: operatorHeaders,
         payload: { signature: paritySignature(canonicalSignature) },
       });
 
@@ -643,6 +656,7 @@ describe('seed endpoint', () => {
       const created = await server.app.inject({
         method: 'POST',
         url: '/runs',
+        headers: operatorHeaders,
         payload: { preset: 'docker-duel', autoStart: true },
       });
       const { run } = created.json() as { run: RunSnapshot };
@@ -653,6 +667,7 @@ describe('seed endpoint', () => {
       const response = await server.app.inject({
         method: 'POST',
         url: `/runs/${run.id}/seed`,
+        headers: operatorHeaders,
         payload: { signature },
       });
       await waitForState(server, run.id, 'running');
@@ -683,6 +698,7 @@ describe('fake run vertical slice', () => {
   it('creates, streams scripted events, steers, and finishes a run', async () => {
     const server = createServer({
       dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
       schedule: (task) => {
         task();
         return undefined;
@@ -693,6 +709,7 @@ describe('fake run vertical slice', () => {
     const createResponse = await server.app.inject({
       method: 'POST',
       url: '/runs',
+      headers: operatorHeaders,
       payload: { preset: 'fake-duel', autoStart: true },
     });
     expect(createResponse.statusCode).toBe(201);
@@ -726,6 +743,7 @@ describe('fake run vertical slice', () => {
     const steerResponse = await server.app.inject({
       method: 'POST',
       url: `/runs/${run.id}/entrants/codex-1/steer`,
+      headers: operatorHeaders,
       payload: { text: 'Check storage slot zero.' },
     });
     expect(steerResponse.statusCode).toBe(202);
@@ -733,7 +751,11 @@ describe('fake run vertical slice', () => {
       event.type === 'entrant.steered' && event.payload.text === 'Check storage slot zero.',
     )).toBe(true);
 
-    const stopResponse = await server.app.inject({ method: 'POST', url: `/runs/${run.id}/stop` });
+    const stopResponse = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/stop`,
+      headers: operatorHeaders,
+    });
     expect(stopResponse.statusCode).toBe(200);
     expect((stopResponse.json() as { run: RunSnapshot }).run.state).toBe('finished');
     expect(server.manager.snapshot(run.id).entrants.every((entrant) => entrant.status === 'done')).toBe(true);
@@ -757,6 +779,7 @@ async function withAutoSignDisabled<T>(action: () => Promise<T>): Promise<T> {
 function createSeedTestServer(): ArenaServer {
   const server = createServer({
     dbPath: ':memory:',
+    operatorToken: OPERATOR_TOKEN,
     driverFactory: () => noopDriver,
     fundingGateFactory: () => async () => {},
   });
@@ -794,6 +817,7 @@ describe('director broadcast', () => {
   it('injects one message into every live entrant and emits one broadcast event', async () => {
     const server = createServer({
       dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
       schedule: (task) => {
         task();
         return undefined;
@@ -804,6 +828,7 @@ describe('director broadcast', () => {
     const createResponse = await server.app.inject({
       method: 'POST',
       url: '/runs',
+      headers: operatorHeaders,
       payload: { preset: 'fake-duel', autoStart: true },
     });
     const { run } = createResponse.json() as { run: RunSnapshot };
@@ -811,6 +836,7 @@ describe('director broadcast', () => {
     const broadcastResponse = await server.app.inject({
       method: 'POST',
       url: `/runs/${run.id}/broadcast`,
+      headers: operatorHeaders,
       payload: { text: 'Five minutes left, ship what you have.' },
     });
     expect(broadcastResponse.statusCode).toBe(202);
@@ -831,13 +857,14 @@ describe('director broadcast', () => {
   });
 
   it('rejects an empty body, an unknown run, and a run that is not running', async () => {
-    const server = createServer({ dbPath: ':memory:' });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
     const { run } = await server.manager.create({ preset: 'fake-duel' });
 
     const empty = await server.app.inject({
       method: 'POST',
       url: `/runs/${run.id}/broadcast`,
+      headers: operatorHeaders,
       payload: { text: '' },
     });
     expect(empty.statusCode).toBe(400);
@@ -845,6 +872,7 @@ describe('director broadcast', () => {
     const missing = await server.app.inject({
       method: 'POST',
       url: '/runs/missing-run/broadcast',
+      headers: operatorHeaders,
       payload: { text: 'anyone there?' },
     });
     expect(missing.statusCode).toBe(404);
@@ -853,6 +881,7 @@ describe('director broadcast', () => {
     const notRunning = await server.app.inject({
       method: 'POST',
       url: `/runs/${run.id}/broadcast`,
+      headers: operatorHeaders,
       payload: { text: 'anyone there?' },
     });
     expect(notRunning.statusCode).toBe(400);
@@ -862,6 +891,7 @@ describe('director broadcast', () => {
   it('answers 409 when an entrant cannot take the turn', async () => {
     const server = createServer({
       dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
       driverFactory: () => ({
         async prepare() {},
         async start() {},
@@ -877,10 +907,155 @@ describe('director broadcast', () => {
     const steer = await server.app.inject({
       method: 'POST',
       url: `/runs/${run.id}/entrants/codex-1/steer`,
+      headers: operatorHeaders,
       payload: { text: 'are you there?' },
     });
     expect(steer.statusCode).toBe(409);
     expect(steer.json()).toEqual({ error: 'Entrant codex-1 is degraded' });
+  });
+});
+
+describe('operator auth', () => {
+  it('rejects every mutating route with a missing or wrong token and leaves reads open', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    const { run } = await server.manager.create({ preset: 'fake-duel' });
+
+    // Every mutating route, once with no credential and once with a wrong one.
+    // Broadcast is here to prove the method-based gate covers a route added later.
+    const routes = [
+      { url: '/runs', payload: { preset: 'fake-duel' } },
+      { url: `/runs/${run.id}/start` },
+      { url: `/runs/${run.id}/seed` },
+      { url: `/runs/${run.id}/stop` },
+      { url: `/runs/${run.id}/entrants/codex-1/steer`, payload: { text: 'no token' } },
+      { url: `/runs/${run.id}/broadcast`, payload: { text: 'no token' } },
+    ];
+    const credentials = [undefined, { authorization: 'Bearer wrong-token' }, { authorization: OPERATOR_TOKEN }];
+    const unauthorized = await Promise.all(routes.flatMap((route) =>
+      credentials.map(async (headers) => server.app.inject({
+        method: 'POST',
+        url: route.url,
+        ...(headers === undefined ? {} : { headers }),
+        ...(route.payload === undefined ? {} : { payload: route.payload }),
+      })),
+    ));
+    for (const response of unauthorized) {
+      expect(response.statusCode).toBe(401);
+      expect(response.json() as { error: string }).toEqual({ error: 'Operator token required' });
+      expect(response.headers['www-authenticate']).toContain('Bearer');
+    }
+    // A rejected request must not have touched the run.
+    expect(server.manager.snapshot(run.id).state).toBe('created');
+
+    const snapshotResponse = await server.app.inject({ method: 'GET', url: `/runs/${run.id}` });
+    expect(snapshotResponse.statusCode).toBe(200);
+    const headResponse = await server.app.inject({ method: 'HEAD', url: `/runs/${run.id}` });
+    expect(headResponse.statusCode).toBe(200);
+    // No OPTIONS route exists; the gate must let it reach the router rather than answer 401.
+    const optionsResponse = await server.app.inject({ method: 'OPTIONS', url: `/runs/${run.id}` });
+    expect(optionsResponse.statusCode).toBe(404);
+
+    const address = await server.app.listen({ port: 0, host: '127.0.0.1' });
+    const abort = new AbortController();
+    const stream = await fetch(`${address}/runs/${run.id}/events`, { signal: abort.signal });
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get('content-type')).toContain('text/event-stream');
+    abort.abort();
+
+    const authorized = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: { preset: 'fake-duel' },
+    });
+    expect(authorized.statusCode).toBe(201);
+  });
+
+  it('refuses to build a server on a token that is empty or only whitespace', () => {
+    for (const operatorToken of ['', '   ', '\t\n']) {
+      expect(() => createServer({ dbPath: ':memory:', operatorToken })).toThrow(MissingOperatorTokenError);
+    }
+  });
+
+  it('treats a malformed session cookie as missing', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: { cookie: 'arena_operator=%' },
+      payload: { preset: 'fake-duel' },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: 'Operator token required' });
+  });
+
+  it('treats bracketed IPv6 loopback with a port as insecure', () => {
+    const request = { headers: { host: '[::1]:4177' } } as Parameters<typeof isSecureRequest>[0];
+    expect(isSecureRequest(request)).toBe(false);
+  });
+
+  it('answers a Fastify client error with its own status and hides everything else', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    // The Docker daemon reports a name collision as a 409 carrying the host path,
+    // so a status code alone must not be enough to reach the client.
+    server.app.get('/test-docker-error', async () => {
+      throw Object.assign(new Error('(HTTP code 409) Conflict. The container name "/arena-1" is in use'), {
+        statusCode: 409,
+      });
+    });
+    server.app.get('/test-fastify-error', async () => {
+      throw Object.assign(new Error('Unsupported Media Type: text/csv'), {
+        statusCode: 415,
+        code: 'FST_ERR_CTP_INVALID_MEDIA_TYPE',
+      });
+    });
+
+    const hidden = await server.app.inject({ method: 'GET', url: '/test-docker-error' });
+    expect(hidden.statusCode).toBe(500);
+    expect(hidden.json()).toEqual({ error: 'Internal server error' });
+
+    const passed = await server.app.inject({ method: 'GET', url: '/test-fastify-error' });
+    expect(passed.statusCode).toBe(415);
+  });
+
+  it('rejects every content type a plain HTML form can post before the handler runs', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    const { run } = await server.manager.create({ preset: 'fake-duel' });
+
+    // Body parsing is one of the three layers holding CSRF off the control routes.
+    for (const contentType of [
+      'application/x-www-form-urlencoded',
+      'text/plain',
+      'multipart/form-data; boundary=x',
+    ]) {
+      const response = await server.app.inject({
+        method: 'POST',
+        url: `/runs/${run.id}/stop`,
+        headers: { authorization: `Bearer ${OPERATOR_TOKEN}`, 'content-type': contentType },
+        payload: '',
+      });
+      expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    }
+    expect(server.manager.snapshot(run.id).state).toBe('created');
+  });
+
+  it('ignores surrounding whitespace on both sides of the comparison', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: `  ${OPERATOR_TOKEN}  ` });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: { authorization: `Bearer   ${OPERATOR_TOKEN} ` },
+      payload: { preset: 'fake-duel' },
+    });
+    expect(response.statusCode).toBe(201);
   });
 });
 

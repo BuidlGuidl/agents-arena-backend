@@ -62,7 +62,7 @@ hard-to-reverse decisions from the design session, 2026-07-22. one entry per dec
 
 ## ADR-0005 — fresh wallet + identity per entrant per run, gated on a balance-watch
 
-**Status:** accepted (2026-07-22) — supersedes an earlier manual-fixture model. the funding half (how keys exist and who sends the money) is superseded by ADR-0012 and ADR-0013 (2026-07-30); the virgin-wallet-per-run rationale and the `awaiting_funding` barrier stand.
+**Status:** accepted (2026-07-22) — supersedes an earlier manual-fixture model. the funding half (how keys exist and who sends the money) is superseded by ADR-0013 and ADR-0014 (2026-07-30); the virgin-wallet-per-run rationale and the `awaiting_funding` barrier stand.
 
 **Decision:** at `preparing`, the arena generates a fresh keypair per entrant. it does NOT hold a hot treasury key as a hard dependency. funding arrives one of two ways into the same gate:
 - **live event:** the dashboard shows both addresses, Austin sends Base ETH from the BuidlGuidl treasury on stream.
@@ -188,7 +188,39 @@ the call id exists because pairing a `tool.result` to its `tool.call` by arrival
 
 ---
 
-## ADR-0012 — burner keys are derived from a funder signature and never stored
+## ADR-0012 — two operator credentials on one gate: a shared token and a wallet session; reads stay open; the backend refuses to start without the token
+
+**Status:** accepted (2026-07-30) — enforces the "control endpoints are operator-only" line the PRD has carried since 2026-07-22
+
+**Decision:** create, start, stop, steer, and broadcast require either `Authorization: Bearer $ARENA_OPERATOR_TOKEN` — one shared secret read from the environment — or the `arena_operator` session cookie a wallet login mints. the snapshot, the SSE feed, and the history read need no credential. the gate is **method-based**: `GET`/`HEAD`/`OPTIONS` pass, every other method is checked, so a control route added later is closed the day it lands rather than the day someone remembers to list it. `POST /auth/verify` and `POST /auth/logout` are the two exemptions — one mints the session and the other destroys it, so neither can require one. the backend exits at startup when the token variable is unset or empty.
+
+**Decision — the wallet login is Sign-In with Ethereum ([EIP-4361](https://eips.ethereum.org/EIPS/eip-4361)), address-allowlisted.** `GET /auth/nonce` issues a single-use nonce good for 10 minutes; `POST /auth/verify` takes the signed message, checks the nonce, the domain, the expiry, and membership in `ARENA_OPERATOR_ADDRESSES`, then sets an `HttpOnly; SameSite=Strict` cookie for 12 hours. the message's `domain` must match `ARENA_SIWE_DOMAINS`. wallet login is off until the allowlist names an address, and the `/auth` routes answer `503` while it is.
+
+**Why:** one person drives a run (Austin), and the thing being protected is a process holding a Docker socket, funded burner keys, and the race itself. a shared secret in an env var is the smallest change that stops a stranger with the URL from stopping the race, and it is the only credential a script or a launcher can carry. it is a poor fit for a human on stream, though: it has to be pasted into a browser or held by a proxy, it names nobody in the journal, and it cannot be handed to Austin without also handing it to whoever watches him paste it. a wallet signature is the credential he already owns. both land on the same gate rather than replacing each other, so `demo.sh`, curl, and CI keep working unchanged.
+
+**Trade-off:** the token half has no identity, no audit trail of *who* acted, and no revocation short of a restart with a new value. the wallet half has an identity the backend could journal but does not yet, and its sessions live in the process, so a restart signs the operator out — acceptable because that restart already dropped the containers of the run he was driving, and re-signing costs one wallet prompt. persisting sessions to SQLite would survive a restart and is a table away if the event asks for it.
+
+reads stay open, so anyone with a run id can watch the feed; that is deliberate (spectators are the product) and also forced: `EventSource` cannot set headers, so gating SSE would mean the secret in a query string, where it lands in access logs, referrers, and the browser's reconnect URL.
+
+a cookie is the first credential a browser attaches on its own, so CSRF becomes real here for the first time. three layers protect the routes: `SameSite=Strict`, JSON-only body parsing, and no CORS configuration. the middle one matters more than it looks — every content type a plain `<form>` can post was measured against `/runs/:id/stop` and rejected before the handler ran (`415` for urlencoded and multipart, `400` for `text/plain` and for no content type at all, with the run's state unchanged in each case), so registering `@fastify/formbody` later would silently remove a layer. `HttpOnly` keeps page scripts out and `Secure` stays on for everything but a loopback host. the residual gap is a sibling subdomain, which counts as same-site; closing that needs an `Origin` allowlist, and it is not worth the config until the arena has a hostname.
+
+**the nonce carries its own expiry under a MAC, so issuing one stores nothing.** `GET /auth/nonce` is open, and the first design inserted into a map on every anonymous call — a memory drip with no safe eviction policy, since dropping the oldest entry under a flood deletes the nonce sitting in the operator's wallet prompt and turns a leak into a login lockout mid-event. a nonce is now `<random><expiry><mac>` in hex, which satisfies EIP-4361's alphanumeric rule and needs no record: a nonce this process did not mint cannot carry the right MAC, and one it did names its own deadline. what is stored is the *spent* set, and only a login that already carried a valid operator signature writes to it, so nobody who is not allowed to drive the run can grow it. the MAC key is per-process, so a restart invalidates outstanding nonces exactly as it invalidates sessions. rate limiting at the edge is still worth having, but nothing here depends on it.
+
+only externally owned accounts are verified. the signature is recovered in-process, so login needs no RPC and cannot be broken by a chain outage — but a smart-contract wallet (ERC-1271 / ERC-6492) fails to sign in, because verifying one means an `eth_call` on *its* chain, which is not necessarily the profile the arena is running. if Austin drives from a Safe, that is a client and one config value away, and it needs to land before the event rather than during it.
+
+fail-closed startup is the other trade: a deploy that forgets the token variable dies loudly instead of serving open controls, and the cost is that every launcher, CI job, and local run has to set it. `operatorToken` is also a required option of `createServer`, so an unauthenticated server cannot be constructed by accident in a test or a script. the allowlist is validated at startup too — a typo in an address exits rather than locking the operator out mid-event.
+
+**Consequence — the frontend picks one credential and keeps the secret out of the page either way.** the real frontend (the ai-ctf fork, BuidlGuidl/ai.ctf.buidlguidl.com#2) is expected to use the wallet login: Austin signs in, the cookie is `HttpOnly`, and no page script can read it. a server-side proxy holding the token is the other supported shape, and it is what this repo's mock frontend does — `ARENA_OPERATOR_TOKEN` lives in the vite process and the dev proxy adds the header, so the browser never sees it. what neither may do is ship the token to the page and send it from there: that exposes it to any XSS and to anyone reading the operator's devtools during a live stream.
+
+**Consequence — the signed `domain` is what the wallet shows Austin, so it must be pinned explicitly.** the `Host` header is caller-controlled, so checking the signed domain against it is self-referential and accepts a phished origin. wallet login now refuses to start without `ARENA_SIWE_DOMAINS`.
+
+**Consequence:** `scripts/demo.sh` generates a token into `.demo/operator-token` (gitignored) unless the caller exports one, and hands it to the backend, the frontend proxy, and its own curl calls; `demo.sh token` prints the active one. a backend left running with an older token answers `401` to a freshly generated one — restart both sides. the demo never sets an allowlist, so wallet login stays off there and no demo step needs a wallet.
+
+**Consequence — the mock frontend carries a login button, and its proxy stands aside once a session exists.** the two credentials would otherwise mask each other: a proxy that always adds the token means the cookie path is never the thing being tested, and a signed-in operator would still be driving the run on the token. so the dev proxy adds the header only when the request carries no `arena_operator` cookie. that also makes the mock a reference for the ai-ctf fork — the flow is nonce, `personal_sign`, `POST /auth/verify`, cookie, and the same buttons as before.
+
+---
+
+## ADR-0013 — burner keys are derived from a funder signature and never stored
 
 **Status:** accepted (2026-07-30) — amends the key-handling half of ADR-0005; from #28. amended 2026-07-31: the seed is EIP-712 typed data, not a personal_sign string — domain `{name: 'agents-arena', version: '1', chainId}`, type `Seed {runId}`. austin signs from metamask (confirmed), which renders typed data as a structured prompt; the domain binds the chain, so a local seed can never verify on base, and wallets can flag a signing request from the wrong origin. the signature bytes, canonicalization, and derivation below are unchanged — only what is signed moved.
 
@@ -204,11 +236,11 @@ the call id exists because pairing a `tool.result` to its `tool.call` by arrival
 
 ---
 
-## ADR-0013 — funding moves to the funder; the gate only watches
+## ADR-0014 — funding moves to the funder; the gate only watches
 
-**Status:** accepted (2026-07-30) — with ADR-0012, supersedes the funding half of ADR-0005; from #28 and the 2026-07-29 meeting
+**Status:** accepted (2026-07-30) — with ADR-0013, supersedes the funding half of ADR-0005; from #28 and the 2026-07-29 meeting
 
-**Decision:** the arena never sends funds on base. the run lifecycle gains a state: `created → awaiting_signature → preparing → awaiting_funding → ready → running → stopping → finished`. a new endpoint accepts the funder's seed signature before container prep; the arena verifies it recovers to the profile's pinned `funderAddress` and derives the burner addresses from it (ADR-0012). the funding gate is the balance watcher alone, identical on both profiles. the local faucet survives as an explicitly local-only dev helper outside the gate, so the dev loop stays one-click; on local the arena also signs the seed itself with the anvil dev key (an env knob disables auto-sign to exercise the real sign flow). per-profile config carries `funderAddress`, `fundingThresholdEth` (0.05 local, 0.005 base), and the funding timeout (15 min local; none on base — human-gated states hold until stop or reset, and the waiting room shows the prompt).
+**Decision:** the arena never sends funds on base. the run lifecycle gains a state: `created → awaiting_signature → preparing → awaiting_funding → ready → running → stopping → finished`. a new endpoint accepts the funder's seed signature before container prep; the arena verifies it recovers to the profile's pinned `funderAddress` and derives the burner addresses from it (ADR-0013). the funding gate is the balance watcher alone, identical on both profiles. the local faucet survives as an explicitly local-only dev helper outside the gate, so the dev loop stays one-click; on local the arena also signs the seed itself with the anvil dev key (an env knob disables auto-sign to exercise the real sign flow). per-profile config carries `funderAddress`, `fundingThresholdEth` (0.05 local, 0.005 base), and the funding timeout (15 min local; none on base — human-gated states hold until stop or reset, and the waiting room shows the prompt).
 
 **Why:** carlos killed the rehearsal auto-send along with key storage — a human funds through a waiting-room UI, possibly with a multisend. the threshold is a floor that confirms money arrived, not the race stake: austin estimates the amount at race time, and the sweep (re-sign, re-derive) recovers leftovers, so the arena does not own that number. the signature check is the anti-theft gate: without it, anyone who reaches the endpoint could seed a run with their own signature, and whatever the funder sends to the displayed addresses would be recoverable by the attacker instead.
 

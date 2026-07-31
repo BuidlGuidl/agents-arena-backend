@@ -4,6 +4,13 @@ import { z } from 'zod';
 
 import type { ArenaEvent, BroadcastResponse, CreateRunRequest } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
+import {
+  isSecureRequest,
+  operatorAuth,
+  serializeSessionCookie,
+  sessionCookie,
+} from './auth.js';
+import { SiweLogin, type SiweLoginOptions } from './siwe.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
 import { EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
 import { eventTypes } from './db/schema.js';
@@ -33,6 +40,10 @@ const textSchema = z.object({ text: z.string().min(1) }).strict();
 const seedSchema = z.object({
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
 }).strict();
+const verifySchema = z.object({
+  message: z.string().min(1),
+  signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
+}).strict();
 const eventsQuerySchema = z.object({ after: z.coerce.number().int().nonnegative().optional() });
 const decimalIntegerSchema = z.string()
   .regex(/^\d+$/)
@@ -46,6 +57,10 @@ const historyQuerySchema = z.object({
 }).strict();
 
 export interface ServerOptions {
+  /** Required: every mutating route rejects a request that does not carry it. */
+  operatorToken: string;
+  /** Wallet login for the operator. Omit, or pass no addresses, to serve token-only. */
+  siwe?: SiweLoginOptions;
   dbPath?: string;
   schedule?: Schedule;
   driverFactory?: (journal: EventJournal) => EntrantDriver;
@@ -60,8 +75,10 @@ export interface ArenaServer {
   manager: RunManager;
 }
 
-export function createServer(options: ServerOptions = {}): ArenaServer {
+export function createServer(options: ServerOptions): ArenaServer {
   const app = Fastify({ logger: options.logger ?? false });
+  const login = new SiweLogin(options.siwe ?? { operatorAddresses: [] });
+  app.addHook('onRequest', operatorAuth({ token: options.operatorToken, login }));
   const journal = new EventJournal(options.dbPath);
   const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(journal, options.schedule);
   const runManagerOptions: RunManagerOptions = {
@@ -102,8 +119,64 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
       void reply.status(409).send({ error: error.message });
       return;
     }
+    const clientError = fastifyClientError(error);
+    if (clientError !== undefined) {
+      void reply.status(clientError.status).send({ error: clientError.message });
+      return;
+    }
     app.log.error(error);
     void reply.status(500).send({ error: 'Internal server error' });
+  });
+
+  app.get('/auth/nonce', async (_request, reply) => {
+    if (!login.enabled) return siweDisabled(reply);
+    // A nonce is one-shot and short-lived, so it must never sit in a cache.
+    return reply.header('Cache-Control', 'no-store').send({ nonce: login.issueNonce() });
+  });
+
+  app.post('/auth/verify', async (request, reply) => {
+    if (!login.enabled) return siweDisabled(reply);
+    const body = parseBody(verifySchema, request.body, reply);
+    if (body === undefined) return;
+    const result = await login.login({
+      message: body.message,
+      // The schema already pinned the 0x-hex shape zod cannot express as a type.
+      signature: body.signature as `0x${string}`,
+    });
+    if (!result.ok) {
+      return reply.status(401).send({ error: result.reason });
+    }
+    const maxAgeSeconds = Math.max(1, Math.round((result.session.expiresAt - Date.now()) / 1_000));
+    return reply
+      .header('Set-Cookie', serializeSessionCookie(result.sessionId, {
+        maxAgeSeconds,
+        secure: isSecureRequest(request),
+      }))
+      .send({ address: result.session.address, expiresAt: new Date(result.session.expiresAt).toISOString() });
+  });
+
+  app.get('/auth/session', async (request, reply) => {
+    const session = login.session(sessionCookie(request.headers.cookie));
+    if (session === undefined) {
+      // `configured` lets a page hide its sign-in control rather than offer one
+      // that can only answer 503.
+      return reply.header('Cache-Control', 'no-store').send({
+        authenticated: false,
+        configured: login.enabled,
+      });
+    }
+    return reply.header('Cache-Control', 'no-store').send({
+      authenticated: true,
+      address: session.address,
+      expiresAt: new Date(session.expiresAt).toISOString(),
+    });
+  });
+
+  app.post('/auth/logout', async (request, reply) => {
+    login.logout(sessionCookie(request.headers.cookie));
+    return reply
+      .header('Set-Cookie', serializeSessionCookie('', { maxAgeSeconds: 0, secure: isSecureRequest(request) }))
+      .send({ authenticated: false, configured: login.enabled });
   });
 
   app.post('/runs', async (request, reply) => {
@@ -238,6 +311,27 @@ export function createServer(options: ServerOptions = {}): ArenaServer {
   });
 
   return { app, journal, manager };
+}
+
+/**
+ * Fastify tags its own client errors — an unparseable body, an unsupported media
+ * type — with an `FST_ERR_` code and the status to answer with, and their messages
+ * are safe to repeat. Anything else that happens to carry a `statusCode` is ours:
+ * the Docker daemon reports a name collision as 409 with the host path in the text,
+ * and that must be logged and hidden behind a 500, not echoed to a spectator.
+ */
+function fastifyClientError(error: unknown): { status: number; message: string } | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const { code, statusCode } = error as { code?: unknown; statusCode?: unknown };
+  if (typeof code !== 'string' || !code.startsWith('FST_ERR_')) return undefined;
+  if (typeof statusCode !== 'number' || statusCode < 400 || statusCode > 499) return undefined;
+  return { status: statusCode, message: error.message };
+}
+
+// No allowlist means no wallet can be the operator, so the route says so rather
+// than 404 — the frontend needs to tell "not configured" from "wrong URL".
+function siweDisabled(reply: FastifyReply): FastifyReply {
+  return reply.status(503).send({ error: 'Wallet login is not configured' });
 }
 
 function parseBody<T>(schema: z.ZodType<T>, value: unknown, reply: FastifyReply): T | undefined {

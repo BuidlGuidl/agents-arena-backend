@@ -6,6 +6,11 @@ Read the [README](README.md) for the API and project details.
 
 Set `AI_CTF_REPO` to your local checkout of [ai.ctf.buidlguidl.com](https://github.com/BuidlGuidl/ai.ctf.buidlguidl.com).
 
+The control routes are operator-only. The launcher generates a token into
+`.demo/operator-token` (gitignored) and passes it to the backend, the frontend proxy,
+and its own `curl` calls, so nothing extra is needed. Set `ARENA_OPERATOR_TOKEN`
+yourself to use your own; print the active one with `./scripts/demo.sh token`.
+
 - `docker info`
 - `docker image inspect arena-entrant:dev`
 - `fnm exec --using=22.20.0 node --version`
@@ -81,7 +86,7 @@ active chain profile — redeploy the chain and restart the run if that happens.
 
 On the `base` chain profile no pack is mounted. The prompt points the entrant at
 the public CTF site instead. A funder must sign the seed typed data and fund the
-displayed addresses; the gate never sends funds. See ADR-0009 and ADR-0013.
+displayed addresses; the gate never sends funds. See ADR-0009 and ADR-0014.
 
 Once the run is active the backend polls each entrant's flag state every 3 seconds,
 reading at `head - confirmations`. A mint reaches the board a few seconds after it
@@ -98,8 +103,12 @@ RUN_ID=<run-id>
 curl -fsS -X POST \
   "http://127.0.0.1:4177/runs/$RUN_ID/entrants/codex-1/steer" \
   -H 'content-type: application/json' \
+  -H "authorization: Bearer $(./scripts/demo.sh token)" \
   -d '{"text":"Check the chain state again and try the next unsolved challenge."}'
 ```
+
+Without that header the backend answers `401`. The SSE feed and `GET /runs/$RUN_ID`
+need no token.
 
 The next Codex turn appears in its lane and in the run log.
 
@@ -109,6 +118,7 @@ Address both entrants at once, the way a streamer would:
 curl -fsS -X POST \
   "http://127.0.0.1:4177/runs/$RUN_ID/broadcast" \
   -H 'content-type: application/json' \
+  -H "authorization: Bearer $(./scripts/demo.sh token)" \
   -d '{"text":"Five minutes left, ship what you have."}'
 ```
 
@@ -133,6 +143,15 @@ The drill derives burner addresses from a local seed signature. Run
 addresses. The drill does not start a duel.
 
 Problems seen during setup and their fixes:
+
+**A demo command fails with `401` or "The backend rejected the run".**
+The running backend holds a different operator token than the launcher now reads —
+`ARENA_OPERATOR_TOKEN` changed, or `.demo/operator-token` was removed. Restart the
+services so both sides share one token:
+
+```bash
+./scripts/demo.sh down && ./scripts/demo.sh up
+```
 
 **Backend tests or server crash with a `NODE_MODULE_VERSION` error.**
 better-sqlite3 was rebuilt for a different Node. Rebuild it for the project runtime:

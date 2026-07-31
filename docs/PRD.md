@@ -20,7 +20,7 @@ one authoritative backend that runs a live race: one Codex entrant and one OpenC
 - **API contract as checked-in files** (`contract/API.md` + `contract/arena-types.ts`), copied by the frontend fork (ADR-0002).
 - **entrant = persistent steerable session**, not a one-shot process; Austin-steer and auto-nudge are one injection path (ADR-0003).
 - **transport = stdout JSON**; hooks deferred (ADR-0004).
-- **fresh wallet per entrant per run**; its private key comes from a verified funder seed signature and lives only in process memory, while SQLite stores the address. the funding gate only watches balances (ADR-0005, amended by ADR-0012 and ADR-0013).
+- **fresh wallet per entrant per run**; its private key comes from a verified funder seed signature and lives only in process memory, while SQLite stores the address. the funding gate only watches balances (ADR-0005, amended by ADR-0013 and ADR-0014).
 - **agent self-registers its ERC-8004 identity**; the backend never writes to a registry (ADR-0006).
 - **dev substrate = ai-ctf local chain via a chain profile**; real Base only at rehearsal (ADR-0007).
 

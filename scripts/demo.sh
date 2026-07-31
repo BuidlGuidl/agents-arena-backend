@@ -9,7 +9,9 @@ export COREPACK_ENABLE_STRICT=0
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly DEMO_DIR="$ROOT_DIR/.demo"
-readonly CHAIN_DIR="${AI_CTF_REPO:?Set AI_CTF_REPO to your local ai-ctf checkout (see DEMO.md)}"
+# Not `:?` — that would fire at load time and break `token`, `status`, and `down`
+# in a terminal that has no reason to know where the chain repo lives.
+readonly CHAIN_DIR="${AI_CTF_REPO:-}"
 readonly NODE_VERSION="22.20.0"
 readonly BACKEND_PORT="4177"
 readonly FRONTEND_PORT="5173"
@@ -21,13 +23,27 @@ readonly FRONTEND_PID="$DEMO_DIR/frontend.pid"
 readonly CHAIN_LOG="$DEMO_DIR/chain.log"
 readonly BACKEND_LOG="$DEMO_DIR/backend.log"
 readonly FRONTEND_LOG="$DEMO_DIR/frontend.log"
+readonly TOKEN_FILE="$DEMO_DIR/operator-token"
 
 mkdir -p "$DEMO_DIR"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/demo.sh <up|status|fake|real|smoke|down>
+Usage: scripts/demo.sh <up|status|fake|real|smoke|token|down>
 EOF
+}
+
+# The backend refuses to start without an operator token. Reuse the caller's, or
+# keep one per demo directory so a later `fake`/`real` still authenticates.
+operator_token() {
+  if [[ -n "${ARENA_OPERATOR_TOKEN:-}" ]]; then
+    printf '%s' "$ARENA_OPERATOR_TOKEN"
+    return
+  fi
+  if [[ ! -s "$TOKEN_FILE" ]]; then
+    ( umask 077; head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$TOKEN_FILE" )
+  fi
+  tr -d '\n' < "$TOKEN_FILE"
 }
 
 fail_with_fix() {
@@ -47,9 +63,16 @@ require_command() {
     fail_with_fix "The '$command_name' command is missing." "$fix"
 }
 
+require_chain_dir() {
+  [[ -n "$CHAIN_DIR" ]] || \
+    fail_with_fix 'AI_CTF_REPO is unset.' \
+      'export AI_CTF_REPO=/path/to/ai.ctf.buidlguidl.com (see DEMO.md)'
+}
+
 preflight() {
   local node_version
 
+  require_chain_dir
   require_command curl 'brew install curl'
   require_command docker 'brew install --cask docker && open -a Docker'
   docker info >/dev/null 2>&1 || \
@@ -257,7 +280,7 @@ ensure_backend() {
   fi
 
   start_background backend "$ROOT_DIR" "$BACKEND_LOG" "$BACKEND_PID" \
-    env ARENA_DB=:memory: PORT="$BACKEND_PORT" \
+    env ARENA_DB=:memory: PORT="$BACKEND_PORT" ARENA_OPERATOR_TOKEN="$(operator_token)" \
     fnm exec --using="$NODE_VERSION" pnpm --filter backend start
   wait_for_http "$BACKEND_PORT" "$BACKEND_PID" || \
     fail_with_fix 'The backend did not become ready. Read .demo/backend.log.' \
@@ -279,7 +302,9 @@ ensure_frontend() {
       "lsof -nP -iTCP:$FRONTEND_PORT -sTCP:LISTEN"
   fi
 
+  # The vite dev proxy adds the operator header, so the token stays out of the browser.
   start_background frontend "$ROOT_DIR" "$FRONTEND_LOG" "$FRONTEND_PID" \
+    env ARENA_OPERATOR_TOKEN="$(operator_token)" \
     fnm exec --using="$NODE_VERSION" pnpm --filter mock-frontend dev \
       --host 127.0.0.1 --port "$FRONTEND_PORT" --strictPort
   wait_for_http "$FRONTEND_PORT" "$FRONTEND_PID" || \
@@ -293,6 +318,9 @@ up() {
   ensure_backend
   ensure_frontend
   printf 'Demo services are ready. Frontend: http://127.0.0.1:%s\n' "$FRONTEND_PORT"
+  # The token is not printed here: `up` runs on the streamed terminal. Read it
+  # with `demo.sh token` when a curl needs it.
+  printf 'Operator token: scripts/demo.sh token\n'
 }
 
 print_service_status() {
@@ -336,22 +364,29 @@ create_run() {
   local preset="$1"
   local response
   local run_id
+  local token
 
   require_command curl 'brew install curl'
   http_responds "$BACKEND_PORT" || \
     fail_with_fix 'The backend is down.' "cd \"$ROOT_DIR\" && ./scripts/demo.sh up"
+  token="$(operator_token)"
   response="$(curl --fail --silent --show-error \
     --request POST "http://127.0.0.1:$BACKEND_PORT/runs" \
     --header 'content-type: application/json' \
+    --header "authorization: Bearer $token" \
     --data "{\"preset\":\"$preset\",\"autoStart\":true}")" || \
-    fail_with_fix "The backend rejected the $preset run." \
-      "tail -n 80 \"$BACKEND_LOG\""
+    fail_with_fix "The backend rejected the $preset run (a 401 means it holds a different operator token)." \
+      "tail -n 80 \"$BACKEND_LOG\"; cd \"$ROOT_DIR\" && ./scripts/demo.sh down && ./scripts/demo.sh up"
   run_id="$(printf '%s' "$response" | extract_run_id)" || \
     fail_with_fix 'The create-run response did not contain an id.' \
       "curl -sS http://127.0.0.1:$BACKEND_PORT/runs"
 
   printf 'Run ID: %s\n' "$run_id"
   printf 'SSE: curl -N http://127.0.0.1:%s/runs/%s/events\n' "$BACKEND_PORT" "$run_id"
+  # An absolute path to this script, so the line pastes into any cwd. The command
+  # substitution is printed literally — the token itself never reaches the screen.
+  printf 'Steer: curl -fsS -X POST -H "content-type: application/json" -H "authorization: Bearer $(%s/demo.sh token)" "http://127.0.0.1:%s/runs/%s/entrants/codex-1/steer" -d '"'"'{"text":"..."}'"'"'\n' \
+    "$SCRIPT_DIR" "$BACKEND_PORT" "$run_id"
   printf 'Frontend: http://127.0.0.1:%s\n' "$FRONTEND_PORT"
 }
 
@@ -463,6 +498,10 @@ case "${1:-}" in
     ;;
   smoke)
     smoke
+    ;;
+  token)
+    operator_token
+    printf '\n'
     ;;
   down)
     down

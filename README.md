@@ -52,6 +52,7 @@ Build the entrant image and run the backend:
 
 ```bash
 docker/build.sh                                # -> arena-entrant:dev
+export ARENA_OPERATOR_TOKEN=$(openssl rand -hex 24)   # required; controls are operator-only
 ARENA_DB=:memory: pnpm --filter backend dev    # Fastify on :4177
 ```
 
@@ -60,10 +61,40 @@ Create a run and watch the feed:
 ```bash
 curl -X POST http://127.0.0.1:4177/runs \
   -H 'content-type: application/json' \
+  -H "authorization: Bearer $ARENA_OPERATOR_TOKEN" \
   -d '{"preset":"docker-duel","autoStart":true}'
 
-curl -N http://127.0.0.1:4177/runs/<id>/events # SSE
+curl -N http://127.0.0.1:4177/runs/<id>/events # SSE, no token needed
 ```
+
+The mock frontend needs the same token in its own terminal — its dev proxy adds the
+operator header, so the browser never holds the token. Without it the lanes still
+stream, but "start race" and "steer" answer `401`.
+
+```bash
+export ARENA_OPERATOR_TOKEN=<the same token>
+pnpm --filter mock-frontend dev
+```
+
+`scripts/demo.sh` does all of this for you (see [DEMO.md](DEMO.md)).
+
+To try the wallet login instead, list your address before starting the backend:
+
+```bash
+export ARENA_OPERATOR_ADDRESSES=0xYourAddress
+export ARENA_SIWE_DOMAINS=localhost:5173,127.0.0.1:5173   # required
+```
+
+`ARENA_SIWE_DOMAINS` lists the hosts a signed message may claim, and it has to
+include the one in your address bar: `pnpm --filter mock-frontend dev` serves
+`localhost:5173`, while `scripts/demo.sh` passes `--host 127.0.0.1`. Listing both
+covers either route. Login answers `401 Message domain does not match this server`
+when the host you are on is missing.
+
+"sign in with wallet" then appears in the mock frontend's header. Once you are signed
+in the dev proxy stops adding the token, so the buttons run on the session cookie and
+you are exercising the real path rather than a masked one. Without an allowlist the
+`/auth` routes answer `503` and the arena stays token-only.
 
 Smoke one real agent, or the funding gate, without a full run:
 
@@ -101,5 +132,8 @@ If either preflight fails, the run fails and both containers are torn down. Neit
 | POST | `/runs/:id/broadcast` | inject one director message into every live agent |
 | GET | `/runs/:id` | snapshot: state, entrants, addresses, scores, last event id |
 | GET | `/runs/:id/events` | replayable SSE feed |
+| GET/POST | `/auth/*` | wallet login: `nonce`, `verify`, `session`, `logout` |
 
-Control endpoints are operator-only for v1. The API contract travels as checked-in files (`contract/API.md` + `contract/arena-types.ts`); the frontend fork copies the types.
+Control endpoints are operator-only. Every POST needs one of two credentials — `Authorization: Bearer $ARENA_OPERATOR_TOKEN` for scripts and server-side proxies, or the `arena_operator` session cookie the operator gets by signing in with his wallet — and answers `401` with neither, while the snapshot and the SSE feed stay open for spectators. The backend refuses to start when `ARENA_OPERATOR_TOKEN` is unset, so a deploy cannot leave the controls open.
+
+Wallet login is Sign-In with Ethereum and stays off until `ARENA_OPERATOR_ADDRESSES` lists the operator's address. When the address list is set, `ARENA_SIWE_DOMAINS` is required and must list the hostname the wallet shows. Whichever credential a frontend uses, the secret stays out of the page — see [ADR-0012](docs/adr/decisions-log.md). The API contract travels as checked-in files (`contract/API.md` + `contract/arena-types.ts`); the frontend fork copies the types.

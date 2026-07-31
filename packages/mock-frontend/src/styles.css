@@ -190,6 +190,33 @@ input.steer:focus-visible {
   cursor: default;
 }
 
+/* The login sits in the masthead, so it stays quieter than the run controls. */
+.btn.ghost {
+  color: var(--text);
+  background: transparent;
+  border-color: var(--faint);
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.operator-login {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.operator-address {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.operator-error {
+  font-size: 11px;
+  color: var(--red);
+  max-width: 260px;
+}
+
 .run-id {
   font-size: 12px;
   color: var(--faint);

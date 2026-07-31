@@ -2,6 +2,80 @@
 
 The backend listens on `PORT`, or port `4177` when `PORT` is unset. JSON request bodies use `Content-Type: application/json`.
 
+## Operator auth
+
+Every mutating route (create, start, stop, steer, broadcast) needs one of two credentials. The snapshot, the event stream, and the history read are open, so spectators need neither.
+
+**Shared token** — for scripts, the launcher, and a frontend that proxies from its own server:
+
+```text
+Authorization: Bearer <ARENA_OPERATOR_TOKEN>
+```
+
+**Wallet session** — for the operator signing in on a site with his wallet. Cookie `arena_operator`, minted by `POST /auth/verify` below and sent by the browser automatically.
+
+A request carrying neither returns status `401` and `{"error":"Operator token required"}`.
+
+`ARENA_OPERATOR_TOKEN` is required — the backend refuses to start without it, so a deployment cannot leave the controls open by accident. Wallet login is optional and switches on only when `ARENA_OPERATOR_ADDRESSES` lists at least one address; with it unset the `/auth` routes answer `503` and the arena is token-only.
+
+**For a frontend:** either credential works, and both keep the secret out of the browser. With the token, proxy the control calls through your own server — a route handler that holds `ARENA_OPERATOR_TOKEN` in its environment and adds the header. With wallet login, the cookie is `HttpOnly`, so page scripts cannot read it either. What you must not do is ship the token to the page and send it from there: that exposes it to any XSS and to anyone reading devtools over the operator's shoulder on a live stream. See ADR-0012.
+
+## Wallet login
+
+Sign-In with Ethereum ([EIP-4361](https://eips.ethereum.org/EIPS/eip-4361)). Three steps: take a nonce, have the operator sign a message carrying it, exchange the signature for a session.
+
+### `GET /auth/nonce`
+
+```json
+{"nonce":"8Vf3kPqR2sT"}
+```
+
+Single use and valid for 10 minutes. `Cache-Control: no-store`. The value carries its own expiry under a MAC, so the backend stores nothing until a signature spends it — take one per login attempt and do not cache it.
+
+### `POST /auth/verify`
+
+Body is the EIP-4361 message the wallet signed, verbatim, plus its signature.
+
+```json
+{"message":"arena.example.com wants you to sign in with your Ethereum account:\n0x…","signature":"0x…"}
+```
+
+Status `200` mints the session and sets the cookie.
+
+```json
+{"address":"0x…","expiresAt":"2026-07-31T04:12:00.000Z"}
+```
+
+Status `401` names what failed: an unknown or already used nonce, a message domain that is not this server's, an expired message, an address outside the allowlist, or a signature that does not match. Status `503` means wallet login is not configured.
+
+The message's `domain` must match one of the hosts listed in `ARENA_SIWE_DOMAINS`, and the message's `uri` must carry that same host. `ARENA_SIWE_DOMAINS` is required whenever wallet login is on, and the backend refuses to start without it: checking the signed domain against the request's own `Host` would compare two values the caller supplies, which accepts a phished origin. List the hostname the operator's browser is on — the one your frontend serves — because that is what the wallet shows him before he signs, and it is the anti-phishing check.
+
+The signed message must also carry `Version: 1`, and its `uri` must be `https` unless the domain is a loopback host — the local demo is the only thing served over plain http.
+
+Only externally owned accounts are verified. A smart-contract wallet (ERC-1271 / ERC-6492) needs a client on the chain that holds it and is not supported yet.
+
+### `GET /auth/session`
+
+```json
+{"authenticated":true,"address":"0x…","expiresAt":"2026-07-31T04:12:00.000Z"}
+```
+
+```json
+{"authenticated":false,"configured":true}
+```
+
+Open to anyone, so a page can render its own login state. `configured` is `false` when the backend has no operator allowlist — hide the sign-in control rather than offer one that can only answer `503`.
+
+### `POST /auth/logout`
+
+Drops the session and clears the cookie. Takes no credential, since it only destroys the caller's own session.
+
+### Session and cookie
+
+The cookie is `HttpOnly; SameSite=Strict; Path=/`, plus `Secure` unless the request host is loopback. `SameSite=Strict` is the CSRF defence: a browser will not attach the cookie to a request started by another site, so a hostile page cannot stop a race with the operator's own session.
+
+A session lasts 12 hours. Sessions and nonces live in the backend process, so a restart signs the operator out — the same restart already drops the run it was driving.
+
 ## Runs
 
 ### `POST /runs`

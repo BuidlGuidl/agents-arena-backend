@@ -118,3 +118,24 @@ export interface BroadcastResponse {
   delivered: string[];
   failed: { entrantId: string; message: string }[];
 }
+
+export interface NonceResponse {
+  nonce: string;
+}
+
+// The EIP-4361 message the operator's wallet signed, verbatim, plus its signature.
+export interface VerifyRequest {
+  message: string;
+  signature: string;
+}
+
+export interface VerifyResponse {
+  address: string;
+  expiresAt: string;
+}
+
+// `configured` is false when the backend has no operator allowlist, so a page can
+// hide its sign-in control instead of offering one that can only answer 503.
+export type SessionResponse =
+  | { authenticated: false; configured: boolean }
+  | { authenticated: true; address: string; expiresAt: string };

@@ -16,7 +16,7 @@ Working today:
 Not wired yet:
 - Auto-nudge. An idle entrant that still has flags to win is not nudged.
 - The `base` profile addresses in `config/chains.json` are stale until the CTF contracts are redeployed. ADR-0009's startup cross-check throws until they are.
-- The `base` profile's `funderAddress` is the zero address, which rejects every seed signature. Before any base run, set it to the treasury wallet that will sign and fund — and that wallet must be a plain EOA: burner keys derive from its signature (ADR-0011), and a Safe or MPC signer cannot re-produce one to recover funds.
+- The `base` profile's `funderAddress` is the zero address, which rejects every seed signature. Before any base run, set it to the treasury wallet that will sign and fund — and that wallet must be a plain EOA: burner keys derive from its signature (ADR-0012), and a Safe or MPC signer cannot re-produce one to recover funds.
 
 In any real deployment, serve `POST /runs/:id/seed` over TLS. Configure proxies not to log request bodies on that route because the signature is a bearer secret.
 

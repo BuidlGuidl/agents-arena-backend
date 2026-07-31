@@ -51,6 +51,7 @@ describe('EventJournal', () => {
       const appended = journal.append(runId, 'codex-1', 'tool.result', {
         entrantId: 'codex-1',
         tool: 'shell',
+        toolCallId: 'redaction-call',
         ok: true,
         detail: `cast send --private-key ${privateKey}; echoed ${upperKey}`,
       });
@@ -240,6 +241,7 @@ describe('EventJournal', () => {
       const second = journal.append('run-1', 'opencode-1', 'tool.call', {
         entrantId: 'opencode-1',
         tool: 'shell',
+        toolCallId: 'call-second',
         detail: 'second',
       });
       journal.append('run-2', 'codex-1', 'agent.message', {
@@ -249,6 +251,7 @@ describe('EventJournal', () => {
       const third = journal.append('run-1', 'codex-1', 'tool.call', {
         entrantId: 'codex-1',
         tool: 'shell',
+        toolCallId: 'call-third',
         detail: 'third',
       });
       const head = journal.append('run-1', 'opencode-1', 'agent.message', {

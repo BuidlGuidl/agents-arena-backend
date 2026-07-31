@@ -62,7 +62,7 @@ hard-to-reverse decisions from the design session, 2026-07-22. one entry per dec
 
 ## ADR-0005 — fresh wallet + identity per entrant per run, gated on a balance-watch
 
-**Status:** accepted (2026-07-22) — supersedes an earlier manual-fixture model. the funding half (how keys exist and who sends the money) is superseded by ADR-0011 and ADR-0012 (2026-07-30); the virgin-wallet-per-run rationale and the `awaiting_funding` barrier stand.
+**Status:** accepted (2026-07-22) — supersedes an earlier manual-fixture model. the funding half (how keys exist and who sends the money) is superseded by ADR-0012 and ADR-0013 (2026-07-30); the virgin-wallet-per-run rationale and the `awaiting_funding` barrier stand.
 
 **Decision:** at `preparing`, the arena generates a fresh keypair per entrant. it does NOT hold a hot treasury key as a hard dependency. funding arrives one of two ways into the same gate:
 - **live event:** the dashboard shows both addresses, Austin sends Base ETH from the BuidlGuidl treasury on stream.
@@ -172,7 +172,23 @@ the same endpoint caps `eth_getLogs` at a 10,000 block span (`-32614`). in the s
 
 ---
 
-## ADR-0011 — burner keys are derived from a funder signature and never stored
+## ADR-0011 — entrant status stays the four observable states; tool events carry the harness call id
+
+**Status:** accepted (2026-07-29) — reconciles the contract with the frontend (issue #5); the glossary's state vocabulary stands
+
+**Decision:** `EntrantStatus` stays `working | idle | blocked | done`, unchanged in names and count. the backend emits only states it can observe; the frontend maps its richer display vocabulary onto these four, never the reverse. separately, the `tool.call` and `tool.result` payloads gain a required `toolCallId`, read off the id the harness already puts on its raw frames — codex's `item.id`, opencode's `part.callID` — never re-minted by the arena.
+
+**Why:** the frontend sketched six statuses (`working | thinking | exploiting | stuck | submitting | idle`); only two overlapped with ours. the tempting fix was to widen our enum to match the UI. but the backend has no honest source for `exploiting` or `stuck` — emitting them would be guessing — and `thinking` is not a lifecycle state at all, it is a content channel. we sanity-checked the vocabulary against vercel's ai sdk — the widest-deployed public protocol for streaming agent activity into a UI — and it makes the same cuts: reasoning is a separate stream alongside text, not a status, and a tool call waiting on a human is its own frame (`tool-approval-request`), which is exactly our `blocked`. statuses here are coarse per-entrant lifecycle; activity detail belongs on the event feed.
+
+the call id exists because pairing a `tool.result` to its `tool.call` by arrival order breaks the moment an agent runs tools in parallel, which is normal behaviour. both parsers were already handed a correlation id by their harness and dropped it.
+
+**Trade-off:** `submitting` would be honest once on-chain solve detection (issue #11) can see a pending transaction, and `thinking` once a real reasoning channel exists — both deferred until the emitter exists, so the enum is closed but not frozen. making `toolCallId` required is a small lie about rows journaled before this change, which replay without it; accepted because runs so far are disposable dev data, and an optional field would force every consumer to keep the pair-by-order fallback forever — the exact code path the id exists to kill. one more caveat: codex's `item.id` is unique per exec process, not per run — each turn spawns a fresh `codex exec resume` and the counter restarts at `item_0` — so a client pairs a result against the latest unresolved call for that (source, toolCallId), never the first match in history. the codex synthetic fallback only satisfies the required field: without ids, started and completed frames get different synthetic ids, so the entry stays unresolved. opencode's fallback pairs only because both events come from one frame. the mock frontend's projection is the reference for this.
+
+**Consequence:** the frontend drops `exploiting`/`stuck` from its set and needs renderings for `blocked` (agent stuck at a permission prompt — under `dontAsk` a policy bug worth surfacing on stream) and `done`. per ADR-0002 the frontend re-copies `arena-types.ts`. a client can now render a tool call as one entry with a running → ok/fail state instead of two unrelated log lines; the mock frontend does, as the reference implementation.
+
+---
+
+## ADR-0012 — burner keys are derived from a funder signature and never stored
 
 **Status:** accepted (2026-07-30) — amends the key-handling half of ADR-0005; from #28. amended 2026-07-31: the seed is EIP-712 typed data, not a personal_sign string — domain `{name: 'agents-arena', version: '1', chainId}`, type `Seed {runId}`. austin signs from metamask (confirmed), which renders typed data as a structured prompt; the domain binds the chain, so a local seed can never verify on base, and wallets can flag a signing request from the wrong origin. the signature bytes, canonicalization, and derivation below are unchanged — only what is signed moved.
 
@@ -188,11 +204,11 @@ the same endpoint caps `eth_getLogs` at a 10,000 block span (`-32614`). in the s
 
 ---
 
-## ADR-0012 — funding moves to the funder; the gate only watches
+## ADR-0013 — funding moves to the funder; the gate only watches
 
-**Status:** accepted (2026-07-30) — with ADR-0011, supersedes the funding half of ADR-0005; from #28 and the 2026-07-29 meeting
+**Status:** accepted (2026-07-30) — with ADR-0012, supersedes the funding half of ADR-0005; from #28 and the 2026-07-29 meeting
 
-**Decision:** the arena never sends funds on base. the run lifecycle gains a state: `created → awaiting_signature → preparing → awaiting_funding → ready → running → stopping → finished`. a new endpoint accepts the funder's seed signature before container prep; the arena verifies it recovers to the profile's pinned `funderAddress` and derives the burner addresses from it (ADR-0011). the funding gate is the balance watcher alone, identical on both profiles. the local faucet survives as an explicitly local-only dev helper outside the gate, so the dev loop stays one-click; on local the arena also signs the seed itself with the anvil dev key (an env knob disables auto-sign to exercise the real sign flow). per-profile config carries `funderAddress`, `fundingThresholdEth` (0.05 local, 0.005 base), and the funding timeout (15 min local; none on base — human-gated states hold until stop or reset, and the waiting room shows the prompt).
+**Decision:** the arena never sends funds on base. the run lifecycle gains a state: `created → awaiting_signature → preparing → awaiting_funding → ready → running → stopping → finished`. a new endpoint accepts the funder's seed signature before container prep; the arena verifies it recovers to the profile's pinned `funderAddress` and derives the burner addresses from it (ADR-0012). the funding gate is the balance watcher alone, identical on both profiles. the local faucet survives as an explicitly local-only dev helper outside the gate, so the dev loop stays one-click; on local the arena also signs the seed itself with the anvil dev key (an env knob disables auto-sign to exercise the real sign flow). per-profile config carries `funderAddress`, `fundingThresholdEth` (0.05 local, 0.005 base), and the funding timeout (15 min local; none on base — human-gated states hold until stop or reset, and the waiting room shows the prompt).
 
 **Why:** carlos killed the rehearsal auto-send along with key storage — a human funds through a waiting-room UI, possibly with a multisend. the threshold is a floor that confirms money arrived, not the race stake: austin estimates the amount at race time, and the sweep (re-sign, re-derive) recovers leftovers, so the arena does not own that number. the signature check is the anti-theft gate: without it, anyone who reaches the endpoint could seed a run with their own signature, and whatever the funder sends to the displayed addresses would be recoverable by the attacker instead.
 

@@ -81,7 +81,7 @@ active chain profile — redeploy the chain and restart the run if that happens.
 
 On the `base` chain profile no pack is mounted. The prompt points the entrant at
 the public CTF site instead. A funder must sign the seed typed data and fund the
-displayed addresses; the gate never sends funds. See ADR-0009 and ADR-0012.
+displayed addresses; the gate never sends funds. See ADR-0009 and ADR-0013.
 
 Once the run is active the backend polls each entrant's flag state every 3 seconds,
 reading at `head - confirmations`. A mint reaches the board a few seconds after it

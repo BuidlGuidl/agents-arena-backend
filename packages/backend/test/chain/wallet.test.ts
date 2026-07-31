@@ -2,7 +2,19 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { parseSignature, serializeSignature, toHex, type Hex } from 'viem';
+import {
+  SignTypedDataVersion,
+  signTypedData,
+  TypedDataUtils,
+} from '@metamask/eth-sig-util';
+import {
+  hashTypedData,
+  parseSignature,
+  recoverTypedDataAddress,
+  serializeSignature,
+  toHex,
+  type Hex,
+} from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -31,7 +43,9 @@ describe('derived entrant wallets', () => {
   it('builds the pinned seed typed data', () => {
     expect(JSON.stringify(seedTypedData('run-1', 31337))).toBe(
       '{"domain":{"name":"agents-arena","version":"1","chainId":31337},'
-      + '"types":{"Seed":[{"name":"runId","type":"string"}]},'
+      + '"types":{"EIP712Domain":[{"name":"name","type":"string"},'
+      + '{"name":"version","type":"string"},{"name":"chainId","type":"uint256"}],'
+      + '"Seed":[{"name":"runId","type":"string"}]},'
       + '"primaryType":"Seed","message":{"runId":"run-1"}}',
     );
   });
@@ -57,6 +71,21 @@ describe('derived entrant wallets', () => {
       '0x4ee3BE13180D87C59dC5ae8EE7E631923ffFE254',
       '0xd790a2797650D602F49f56C438ac89dDCF0F109F',
     ]);
+  });
+
+  it('matches MetaMask signing and hashing', async () => {
+    const typedData = seedTypedData('1', 31337);
+    // This guards against drift between clients that synthesize domain types and clients that require them literally.
+    const signature = signTypedData({
+      privateKey: Buffer.from(LOCAL_DEV_FUNDER_PRIVATE_KEY.slice(2), 'hex'),
+      data: typedData,
+      version: SignTypedDataVersion.V4,
+    }) as Hex;
+
+    expect(await recoverTypedDataAddress({ ...typedData, signature }))
+      .toBe(account.address);
+    expect(toHex(TypedDataUtils.eip712Hash(typedData, SignTypedDataVersion.V4)))
+      .toBe(hashTypedData(typedData));
   });
 
   it('derives the same wallet again from the same signature and entrant id', async () => {

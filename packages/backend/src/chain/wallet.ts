@@ -26,16 +26,22 @@ export function seedTypedData(runId: string, chainId: number) {
     domain: {
       name: 'agents-arena',
       version: '1',
-      chainId,
+      // viem types uint256 as bigint, while the JSON sent to MetaMask requires a number.
+      chainId: chainId as number & bigint,
     },
     types: {
+      EIP712Domain: [
+        { name: 'name', type: 'string' } as const,
+        { name: 'version', type: 'string' } as const,
+        { name: 'chainId', type: 'uint256' } as const,
+      ],
       Seed: [
-        { name: 'runId', type: 'string' },
+        { name: 'runId', type: 'string' } as const,
       ],
     },
-    primaryType: 'Seed',
+    primaryType: 'Seed' as const,
     message: { runId },
-  } as const;
+  };
 }
 
 export function canonicalizeSeedSignature(signature: Hex): Hex {

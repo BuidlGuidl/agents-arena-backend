@@ -120,7 +120,9 @@ describe('requestSeedSignature', () => {
     expect(injectedProvider()).toBeUndefined();
     expect(JSON.stringify(seedTypedData('1', SEED_CHAIN_ID))).toBe(
       '{"domain":{"name":"agents-arena","version":"1","chainId":31337},'
-      + '"types":{"Seed":[{"name":"runId","type":"string"}]},'
+      + '"types":{"EIP712Domain":[{"name":"name","type":"string"},'
+      + '{"name":"version","type":"string"},{"name":"chainId","type":"uint256"}],'
+      + '"Seed":[{"name":"runId","type":"string"}]},'
       + '"primaryType":"Seed","message":{"runId":"1"}}',
     );
   });

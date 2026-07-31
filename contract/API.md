@@ -147,6 +147,20 @@ The funder signs this typed data. `chainId` is the active chain profile's chain 
     "chainId": 31337
   },
   "types": {
+    "EIP712Domain": [
+      {
+        "name": "name",
+        "type": "string"
+      },
+      {
+        "name": "version",
+        "type": "string"
+      },
+      {
+        "name": "chainId",
+        "type": "uint256"
+      }
+    ],
     "Seed": [
       {
         "name": "runId",

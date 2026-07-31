@@ -12,13 +12,18 @@ export function seedTypedData(runId: string, chainId: number) {
       chainId,
     },
     types: {
+      EIP712Domain: [
+        { name: 'name', type: 'string' } as const,
+        { name: 'version', type: 'string' } as const,
+        { name: 'chainId', type: 'uint256' } as const,
+      ],
       Seed: [
-        { name: 'runId', type: 'string' },
+        { name: 'runId', type: 'string' } as const,
       ],
     },
-    primaryType: 'Seed',
+    primaryType: 'Seed' as const,
     message: { runId },
-  } as const;
+  };
 }
 
 // The two human-gated states the waiting room covers.

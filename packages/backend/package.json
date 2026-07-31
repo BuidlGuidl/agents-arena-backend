@@ -17,6 +17,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@metamask/eth-sig-util": "^8.2.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/dockerode": "^3.3.34",
     "@types/node": "^22.10.2",

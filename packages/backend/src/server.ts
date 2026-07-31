@@ -105,6 +105,11 @@ export function createServer(options: ServerOptions): ArenaServer {
       void reply.status(409).send({ error: error.message });
       return;
     }
+    const clientError = fastifyClientError(error);
+    if (clientError !== undefined) {
+      void reply.status(clientError.status).send({ error: clientError.message });
+      return;
+    }
     app.log.error(error);
     void reply.status(500).send({ error: 'Internal server error' });
   });
@@ -123,7 +128,6 @@ export function createServer(options: ServerOptions): ArenaServer {
       message: body.message,
       // The schema already pinned the 0x-hex shape zod cannot express as a type.
       signature: body.signature as `0x${string}`,
-      requestHost: request.headers.host,
     });
     if (!result.ok) {
       return reply.status(401).send({ error: result.reason });
@@ -285,6 +289,21 @@ export function createServer(options: ServerOptions): ArenaServer {
   });
 
   return { app, journal, manager };
+}
+
+/**
+ * Fastify tags its own client errors — an unparseable body, an unsupported media
+ * type — with an `FST_ERR_` code and the status to answer with, and their messages
+ * are safe to repeat. Anything else that happens to carry a `statusCode` is ours:
+ * the Docker daemon reports a name collision as 409 with the host path in the text,
+ * and that must be logged and hidden behind a 500, not echoed to a spectator.
+ */
+function fastifyClientError(error: unknown): { status: number; message: string } | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const { code, statusCode } = error as { code?: unknown; statusCode?: unknown };
+  if (typeof code !== 'string' || !code.startsWith('FST_ERR_')) return undefined;
+  if (typeof statusCode !== 'number' || statusCode < 400 || statusCode > 499) return undefined;
+  return { status: statusCode, message: error.message };
 }
 
 // No allowlist means no wallet can be the operator, so the route says so rather

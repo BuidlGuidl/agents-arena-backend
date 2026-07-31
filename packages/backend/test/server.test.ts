@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { EntrantUnavailableError } from '../src/adapters/types.js';
-import { MissingOperatorTokenError } from '../src/auth.js';
+import { isSecureRequest, MissingOperatorTokenError } from '../src/auth.js';
 import type { ArenaEvent, HistoryPage, RunSnapshot } from '../src/contract.js';
 import { capEvent, EVENT_TEXT_LIMIT } from '../src/journal.js';
 import { createServer, type ArenaServer } from '../src/server.js';
@@ -674,6 +674,73 @@ describe('operator auth', () => {
     for (const operatorToken of ['', '   ', '\t\n']) {
       expect(() => createServer({ dbPath: ':memory:', operatorToken })).toThrow(MissingOperatorTokenError);
     }
+  });
+
+  it('treats a malformed session cookie as missing', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: { cookie: 'arena_operator=%' },
+      payload: { preset: 'fake-duel' },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: 'Operator token required' });
+  });
+
+  it('treats bracketed IPv6 loopback with a port as insecure', () => {
+    const request = { headers: { host: '[::1]:4177' } } as Parameters<typeof isSecureRequest>[0];
+    expect(isSecureRequest(request)).toBe(false);
+  });
+
+  it('answers a Fastify client error with its own status and hides everything else', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    // The Docker daemon reports a name collision as a 409 carrying the host path,
+    // so a status code alone must not be enough to reach the client.
+    server.app.get('/test-docker-error', async () => {
+      throw Object.assign(new Error('(HTTP code 409) Conflict. The container name "/arena-1" is in use'), {
+        statusCode: 409,
+      });
+    });
+    server.app.get('/test-fastify-error', async () => {
+      throw Object.assign(new Error('Unsupported Media Type: text/csv'), {
+        statusCode: 415,
+        code: 'FST_ERR_CTP_INVALID_MEDIA_TYPE',
+      });
+    });
+
+    const hidden = await server.app.inject({ method: 'GET', url: '/test-docker-error' });
+    expect(hidden.statusCode).toBe(500);
+    expect(hidden.json()).toEqual({ error: 'Internal server error' });
+
+    const passed = await server.app.inject({ method: 'GET', url: '/test-fastify-error' });
+    expect(passed.statusCode).toBe(415);
+  });
+
+  it('rejects every content type a plain HTML form can post before the handler runs', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    const { run } = await server.manager.create({ preset: 'fake-duel' });
+
+    // Body parsing is one of the three layers holding CSRF off the control routes.
+    for (const contentType of [
+      'application/x-www-form-urlencoded',
+      'text/plain',
+      'multipart/form-data; boundary=x',
+    ]) {
+      const response = await server.app.inject({
+        method: 'POST',
+        url: `/runs/${run.id}/stop`,
+        headers: { authorization: `Bearer ${OPERATOR_TOKEN}`, 'content-type': contentType },
+        payload: '',
+      });
+      expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    }
+    expect(server.manager.snapshot(run.id).state).toBe('created');
   });
 
   it('ignores surrounding whitespace on both sides of the comparison', async () => {

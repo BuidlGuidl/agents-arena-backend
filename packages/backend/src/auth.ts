@@ -54,7 +54,11 @@ export function readCookie(header: string | undefined, name: string): string | u
     const separator = part.indexOf('=');
     if (separator < 0) continue;
     if (part.slice(0, separator).trim() !== name) continue;
-    return decodeURIComponent(part.slice(separator + 1).trim());
+    try {
+      return decodeURIComponent(part.slice(separator + 1).trim());
+    } catch {
+      return undefined;
+    }
   }
   return undefined;
 }
@@ -83,9 +87,18 @@ export function serializeSessionCookie(value: string, attributes: CookieAttribut
 
 // A plain-http localhost demo still has to work, so Secure follows the host.
 export function isSecureRequest(request: FastifyRequest): boolean {
-  const host = (request.headers.host ?? '').split(':')[0]?.toLowerCase();
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false;
-  return true;
+  return !isLoopbackHost((request.headers.host ?? '').toLowerCase());
+}
+
+// An IPv6 literal keeps its brackets in the Host header, so strip those before the
+// port rather than splitting on the first colon. All of 127.0.0.0/8 is loopback.
+function isLoopbackHost(host: string): boolean {
+  const closing = host.indexOf(']');
+  const name = host.startsWith('[') && closing > 0
+    ? host.slice(1, closing)
+    : (host.split(':')[0] ?? '');
+  if (name === 'localhost' || name === '::1' || name === '0:0:0:0:0:0:0:1') return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(name);
 }
 
 function routePath(request: FastifyRequest): string {

@@ -1,12 +1,19 @@
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { getAddress, isAddress, isAddressEqual, recoverMessageAddress, type Address } from 'viem';
-import { generateSiweNonce, parseSiweMessage, validateSiweMessage } from 'viem/siwe';
+import { parseSiweMessage, validateSiweMessage } from 'viem/siwe';
 
 export const SESSION_COOKIE = 'arena_operator';
 
 const NONCE_TTL_MS = 10 * 60 * 1_000;
 const SESSION_TTL_MS = 12 * 60 * 60 * 1_000;
+
+// A nonce is `<random><expiry><mac>`, all hex so it satisfies EIP-4361's
+// alphanumeric rule. Widths are fixed, so the parts split by offset.
+const NONCE_RANDOM_CHARS = 16;
+const NONCE_EXPIRY_CHARS = 12;
+const NONCE_MAC_CHARS = 32;
+const NONCE_CHARS = NONCE_RANDOM_CHARS + NONCE_EXPIRY_CHARS + NONCE_MAC_CHARS;
 
 export interface OperatorSession {
   address: Address;
@@ -44,7 +51,10 @@ export class SiweLogin {
   readonly #sessionTtlMs: number;
   readonly #nonceTtlMs: number;
   readonly #now: () => number;
-  readonly #nonces = new Map<string, number>();
+  // Only spent nonces are stored, and only a completed login spends one, so an
+  // anonymous flood of /auth/nonce writes nothing here.
+  readonly #spentNonces = new Map<string, number>();
+  readonly #nonceKey = randomBytes(32);
   readonly #sessions = new Map<string, OperatorSession>();
 
   constructor(options: SiweLoginOptions) {
@@ -65,19 +75,26 @@ export class SiweLogin {
     return this.#allowlist.length > 0;
   }
 
+  /**
+   * The nonce carries its own expiry under a MAC, so issuing one stores nothing.
+   * `/auth/nonce` is open to anyone, and a map written by every anonymous caller
+   * is a memory drip with no safe eviction policy — dropping the oldest entry
+   * under a flood would delete the one sitting in the operator's wallet prompt.
+   */
   issueNonce(): string {
-    this.#sweep();
-    const nonce = generateSiweNonce();
-    this.#nonces.set(nonce, this.#now() + this.#nonceTtlMs);
-    return nonce;
+    const random = randomBytes(NONCE_RANDOM_CHARS / 2).toString('hex');
+    const expiry = (this.#now() + this.#nonceTtlMs).toString(16).padStart(NONCE_EXPIRY_CHARS, '0');
+    if (expiry.length !== NONCE_EXPIRY_CHARS) {
+      throw new Error('Nonce expiry does not fit its field');
+    }
+    return `${random}${expiry}${this.#nonceMac(random + expiry)}`;
   }
 
   async login(attempt: LoginAttempt): Promise<LoginResult> {
     this.#sweep();
     const parsed = parseSiweMessage(attempt.message);
     const nonce = parsed.nonce;
-    if (nonce === undefined || !this.#nonces.delete(nonce)) {
-      // Deleted on first use, so a captured message cannot be replayed.
+    if (nonce === undefined || !this.#nonceValid(nonce) || this.#spentNonces.has(nonce)) {
       return { ok: false, reason: 'Unknown or already used nonce' };
     }
     const domain = parsed.domain;
@@ -87,14 +104,19 @@ export class SiweLogin {
     if (parsed.version !== '1') {
       return { ok: false, reason: 'Unsupported SIWE version' };
     }
-    let uriHost: string;
+    let uri: URL;
     try {
-      uriHost = new URL(parsed.uri ?? '').host;
+      uri = new URL(parsed.uri ?? '');
     } catch {
       return { ok: false, reason: 'Message URI is invalid' };
     }
-    if (uriHost.toLowerCase() !== domain.toLowerCase()) {
+    if (uri.host.toLowerCase() !== domain.toLowerCase()) {
       return { ok: false, reason: 'Message URI host does not match its domain' };
+    }
+    // A loopback host is the local demo, which is served over plain http. Anything
+    // else the operator reaches over the network must have shown him an https URI.
+    if (uri.protocol !== 'https:' && !isLoopbackDomain(domain)) {
+      return { ok: false, reason: 'Message URI must be https' };
     }
     // Only `time` is worth passing: viem compares its other arguments against the
     // same parsed message, so handing it our own domain and nonce back would
@@ -115,6 +137,9 @@ export class SiweLogin {
       return { ok: false, reason: 'Signature does not match the claimed address' };
     }
 
+    // Spent only now, on a login that carried a real operator signature, so the
+    // map cannot be grown by anyone who is not already allowed to drive the run.
+    this.#spentNonces.set(nonce, this.#nonceExpiry(nonce));
     const sessionId = randomBytes(32).toString('hex');
     const session: OperatorSession = {
       address: getAddress(claimed),
@@ -147,10 +172,30 @@ export class SiweLogin {
     return this.#domains.includes(claimed);
   }
 
+  #nonceMac(payload: string): string {
+    return createHmac('sha256', this.#nonceKey).update(payload).digest('hex').slice(0, NONCE_MAC_CHARS);
+  }
+
+  #nonceExpiry(nonce: string): number {
+    return Number.parseInt(nonce.slice(NONCE_RANDOM_CHARS, NONCE_RANDOM_CHARS + NONCE_EXPIRY_CHARS), 16);
+  }
+
+  // A nonce this process did not mint cannot carry the right MAC, and one it
+  // minted names its own deadline, so neither needs a record of the issue.
+  #nonceValid(nonce: string): boolean {
+    if (nonce.length !== NONCE_CHARS || !/^[0-9a-f]+$/.test(nonce)) return false;
+    const payload = nonce.slice(0, NONCE_RANDOM_CHARS + NONCE_EXPIRY_CHARS);
+    const mac = Buffer.from(nonce.slice(NONCE_RANDOM_CHARS + NONCE_EXPIRY_CHARS), 'hex');
+    const expected = Buffer.from(this.#nonceMac(payload), 'hex');
+    if (mac.length !== expected.length || !timingSafeEqual(mac, expected)) return false;
+    const expiry = this.#nonceExpiry(nonce);
+    return Number.isSafeInteger(expiry) && expiry > this.#now();
+  }
+
   #sweep(): void {
     const now = this.#now();
-    for (const [nonce, expiresAt] of this.#nonces) {
-      if (expiresAt <= now) this.#nonces.delete(nonce);
+    for (const [nonce, expiresAt] of this.#spentNonces) {
+      if (expiresAt <= now) this.#spentNonces.delete(nonce);
     }
     for (const [id, session] of this.#sessions) {
       if (session.expiresAt <= now) this.#sessions.delete(id);
@@ -163,6 +208,16 @@ export function parseCsvList(value: string | undefined): string[] {
     .split(',')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+// Mirrors the loopback rule the session cookie uses for `Secure`, so the local
+// demo and the deployed arena agree on which one they are.
+function isLoopbackDomain(domain: string): boolean {
+  const host = domain.toLowerCase();
+  const closing = host.indexOf(']');
+  const name = host.startsWith('[') && closing > 0 ? host.slice(1, closing) : (host.split(':')[0] ?? '');
+  if (name === 'localhost' || name === '::1' || name === '0:0:0:0:0:0:0:1') return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(name);
 }
 
 function normalizeAddress(value: string): Address {

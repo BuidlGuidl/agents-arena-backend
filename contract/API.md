@@ -30,7 +30,7 @@ Sign-In with Ethereum ([EIP-4361](https://eips.ethereum.org/EIPS/eip-4361)). Thr
 {"nonce":"8Vf3kPqR2sT"}
 ```
 
-Single use and valid for 10 minutes. `Cache-Control: no-store`.
+Single use and valid for 10 minutes. `Cache-Control: no-store`. The value carries its own expiry under a MAC, so the backend stores nothing until a signature spends it — take one per login attempt and do not cache it.
 
 ### `POST /auth/verify`
 
@@ -50,7 +50,7 @@ Status `401` names what failed: an unknown or already used nonce, a message doma
 
 The message's `domain` must match one of the hosts listed in `ARENA_SIWE_DOMAINS`, and the message's `uri` must carry that same host. `ARENA_SIWE_DOMAINS` is required whenever wallet login is on, and the backend refuses to start without it: checking the signed domain against the request's own `Host` would compare two values the caller supplies, which accepts a phished origin. List the hostname the operator's browser is on — the one your frontend serves — because that is what the wallet shows him before he signs, and it is the anti-phishing check.
 
-The signed message must also carry `Version: 1`.
+The signed message must also carry `Version: 1`, and its `uri` must be `https` unless the domain is a loopback host — the local demo is the only thing served over plain http.
 
 Only externally owned accounts are verified. A smart-contract wallet (ERC-1271 / ERC-6492) needs a client on the chain that holds it and is not supported yet.
 

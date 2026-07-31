@@ -281,4 +281,83 @@ describe('operator wallet login', () => {
       operatorAddresses: [operator.address],
     })).toThrow(MissingSiweDomainError);
   });
+
+  it('rejects an http URI unless the domain is loopback', async () => {
+    const server = startServer();
+    const nonce = await nonceFrom(server);
+    const message = createSiweMessage({
+      address: operator.address,
+      chainId: 8453,
+      domain: HOST,
+      nonce,
+      uri: `http://${HOST}/`,
+      version: '1',
+    });
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/auth/verify',
+      headers: { host: HOST },
+      payload: { message, signature: await operator.signMessage({ message }) },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: 'Message URI must be https' });
+  });
+});
+
+// The nonce carries its own MAC and expiry instead of being remembered, so these
+// cover what a stored nonce used to give for free.
+describe('self-describing nonce', () => {
+  function login(overrides: { nonceTtlMs?: number; now?: () => number } = {}): SiweLogin {
+    return new SiweLogin({
+      operatorAddresses: [operator.address],
+      domains: [HOST],
+      ...overrides,
+    });
+  }
+
+  async function attempt(target: SiweLogin, nonce: string): Promise<string> {
+    const message = createSiweMessage({
+      address: operator.address,
+      chainId: 8453,
+      domain: HOST,
+      nonce,
+      uri: `https://${HOST}/`,
+      version: '1',
+    });
+    const result = await target.login({ message, signature: await operator.signMessage({ message }) });
+    return result.ok ? 'ok' : result.reason;
+  }
+
+  it('is hex and long enough for EIP-4361', () => {
+    expect(login().issueNonce()).toMatch(/^[0-9a-f]{60}$/);
+  });
+
+  it('refuses a nonce another process minted, a tampered one, and its own once spent', async () => {
+    const mine = login();
+    const theirs = login();
+
+    expect(await attempt(mine, theirs.issueNonce())).toBe('Unknown or already used nonce');
+
+    const issued = mine.issueNonce();
+    const tampered = `${issued.slice(0, 59)}${issued.endsWith('a') ? 'b' : 'a'}`;
+    expect(await attempt(mine, tampered)).toBe('Unknown or already used nonce');
+
+    expect(await attempt(mine, issued)).toBe('ok');
+    expect(await attempt(mine, issued)).toBe('Unknown or already used nonce');
+  });
+
+  it('refuses its own nonce once the deadline it carries has passed', async () => {
+    let clock = 1_800_000_000_000;
+    const expiring = login({ nonceTtlMs: 60_000, now: () => clock });
+    const nonce = expiring.issueNonce();
+
+    clock += 59_000;
+    expect(await attempt(expiring, nonce)).toBe('ok');
+
+    const later = login({ nonceTtlMs: 60_000, now: () => clock });
+    const second = later.issueNonce();
+    clock += 61_000;
+    expect(await attempt(later, second)).toBe('Unknown or already used nonce');
+  });
 });

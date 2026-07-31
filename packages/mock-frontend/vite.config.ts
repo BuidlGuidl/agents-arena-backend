@@ -12,7 +12,12 @@ const withOperatorToken: ProxyOptions = {
   target: BACKEND,
   configure: (proxy) => {
     proxy.on('proxyReq', (proxyReq, request) => {
-      const signedIn = (request.headers.cookie ?? '').includes('arena_operator=');
+      const signedIn = (request.headers.cookie ?? '').split(';').some((cookie) => {
+        const separator = cookie.indexOf('=');
+        return separator >= 0
+          && cookie.slice(0, separator).trim() === 'arena_operator'
+          && cookie.slice(separator + 1).trim() !== '';
+      });
       if (operatorToken !== '' && !signedIn) {
         proxyReq.setHeader('authorization', `Bearer ${operatorToken}`);
       }

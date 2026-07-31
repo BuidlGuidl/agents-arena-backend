@@ -5,7 +5,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import { recordSolve } from '../src/chain/storage.js';
-import { getWallet, seedMessage } from '../src/chain/wallet.js';
+import { getWallet, seedTypedData } from '../src/chain/wallet.js';
 import { entrants } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import {
@@ -458,7 +458,7 @@ describe('RunManager ready barrier', () => {
         starting = manager.start(run.id);
         expect(manager.snapshot(run.id).state).toBe('awaiting_signature');
         const signature = await privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY)
-          .signMessage({ message: seedMessage(run.id) });
+          .signTypedData(seedTypedData(run.id, 31337));
         const unsubscribe = journal.subscribe(run.id, (event) => {
           if (event.type === 'wallet.assigned') published.push(event.source);
         });

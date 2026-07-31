@@ -21,8 +21,21 @@ const runKeys = new Map<string, Map<string, WalletRecord>>();
 const SECP256K1_N =
   0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
-export function seedMessage(runId: string): string {
-  return `agents-arena seed v1\nrun: ${runId}`;
+export function seedTypedData(runId: string, chainId: number) {
+  return {
+    domain: {
+      name: 'agents-arena',
+      version: '1',
+      chainId,
+    },
+    types: {
+      Seed: [
+        { name: 'runId', type: 'string' },
+      ],
+    },
+    primaryType: 'Seed',
+    message: { runId },
+  } as const;
 }
 
 export function canonicalizeSeedSignature(signature: Hex): Hex {

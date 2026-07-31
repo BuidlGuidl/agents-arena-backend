@@ -22,7 +22,7 @@ import type { ArenaEvent } from '../src/contract.js';
 import { awaitFunding, type FundingEntry } from '../src/chain/funding-watcher.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import { getChainProfile } from '../src/chain/profile.js';
-import { deriveEntrantKeys, seedMessage } from '../src/chain/wallet.js';
+import { deriveEntrantKeys, seedTypedData } from '../src/chain/wallet.js';
 import { EventJournal } from '../src/journal.js';
 
 const thresholdEth = process.argv[2] ?? '0.05';
@@ -31,7 +31,7 @@ const runId = `drill-${randomUUID().slice(0, 8)}`;
 
 const journal = new EventJournal(':memory:');
 const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
-const signature = await account.signMessage({ message: seedMessage(runId) });
+const signature = await account.signTypedData(seedTypedData(runId, profile.chainId));
 const addresses = deriveEntrantKeys(runId, signature, ['codex-1', 'opencode-1']);
 
 const entries: FundingEntry[] = [

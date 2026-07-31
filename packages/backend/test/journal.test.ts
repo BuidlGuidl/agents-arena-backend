@@ -6,7 +6,7 @@ import {
   deriveEntrantKeys,
   dropRunKeys,
   getWallet,
-  seedMessage,
+  seedTypedData,
 } from '../src/chain/wallet.js';
 import type { ArenaEvent } from '../src/contract.js';
 import { events as eventRows } from '../src/db/schema.js';
@@ -41,7 +41,7 @@ describe('EventJournal', () => {
     const journal = new EventJournal(':memory:');
     try {
       const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
-      const signature = await account.signMessage({ message: seedMessage(runId) });
+      const signature = await account.signTypedData(seedTypedData(runId, 31337));
       deriveEntrantKeys(runId, signature, ['codex-1']);
       const privateKey = getWallet(runId, 'codex-1')!.privateKey;
       const upperKey = `0x${privateKey.slice(2).toUpperCase()}`;
@@ -96,7 +96,7 @@ describe('EventJournal', () => {
     const journal = new EventJournal(':memory:');
     try {
       const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
-      const signature = await account.signMessage({ message: seedMessage(runId) });
+      const signature = await account.signTypedData(seedTypedData(runId, 31337));
       deriveEntrantKeys(runId, signature, ['codex-1']);
       const privateKey = getWallet(runId, 'codex-1')!.privateKey;
       dropRunKeys(runId);

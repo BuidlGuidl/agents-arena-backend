@@ -65,7 +65,7 @@ Create the Docker duel:
 ./scripts/demo.sh real
 ```
 
-During startup the backend auto-signs the run's EIP-191 seed message with anvil
+During startup the backend auto-signs the run's EIP-712 seed typed data with anvil
 account 0. It derives each entrant key from that signature, keeps the keys in
 process memory, and injects the key and chain RPC URL into its container. An
 explicit local dev faucet funds both burners while the watcher-only gate waits
@@ -80,7 +80,7 @@ fails if `AI_CTF_REPO` is unset, or if the deployed addresses disagree with the
 active chain profile — redeploy the chain and restart the run if that happens.
 
 On the `base` chain profile no pack is mounted. The prompt points the entrant at
-the public CTF site instead. A funder must sign the seed message and fund the
+the public CTF site instead. A funder must sign the seed typed data and fund the
 displayed addresses; the gate never sends funds. See ADR-0009 and ADR-0012.
 
 Once the run is active the backend polls each entrant's flag state every 3 seconds,

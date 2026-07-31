@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { and, asc, count, eq, max, sql } from 'drizzle-orm';
-import { recoverMessageAddress, type Hex } from 'viem';
+import { recoverTypedDataAddress, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
 import type {
@@ -20,7 +20,7 @@ import {
   canonicalizeSeedSignature,
   deriveEntrantKeys,
   dropRunKeys,
-  seedMessage,
+  seedTypedData,
 } from './chain/wallet.js';
 import { buildOpeningPrompt, type OpeningPromptBuilder } from './ctf/prompt.js';
 import { roundUsd } from './pricing.js';
@@ -277,8 +277,8 @@ export class RunManager {
 
     let recovered: string;
     try {
-      recovered = await recoverMessageAddress({
-        message: seedMessage(runId),
+      recovered = await recoverTypedDataAddress({
+        ...seedTypedData(runId, activeChainProfile.chainId),
         signature: canonicalSignature,
       });
     } catch {
@@ -378,7 +378,9 @@ export class RunManager {
           try {
             if (localAutoSignEnabled()) {
               const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
-              const signature = await account.signMessage({ message: seedMessage(runId) });
+              const signature = await account.signTypedData(
+                seedTypedData(runId, activeChainProfile.chainId),
+              );
               await this.submitSeed(runId, signature);
             }
             await withAbort(seedWaiter.promise, controller);

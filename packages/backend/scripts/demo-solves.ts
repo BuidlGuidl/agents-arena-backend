@@ -30,7 +30,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import type { ChainProfile } from '../src/chain/profile.js';
 import { SolvePoller } from '../src/chain/solve-poller.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
-import { deriveEntrantKeys, getWallet, seedMessage } from '../src/chain/wallet.js';
+import { deriveEntrantKeys, getWallet, seedTypedData } from '../src/chain/wallet.js';
 import { entrants, runs } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 
@@ -110,7 +110,7 @@ console.log(`deployed NFTFlags=${nftFlags} registry=${registry} challenge1=${cha
 
 const journal = new EventJournal(':memory:');
 const runId = 'e2e-run';
-const signature = await account.signMessage({ message: seedMessage(runId) });
+const signature = await account.signTypedData(seedTypedData(runId, chain.id));
 const burnerAddress = deriveEntrantKeys(runId, signature, ['codex-1']).get('codex-1')!;
 const burnerKey = getWallet(runId, 'codex-1')!.privateKey;
 const burner = privateKeyToAccount(burnerKey);

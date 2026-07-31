@@ -86,8 +86,8 @@ Credentials come from the host: `codex` reads `~/.codex/auth.json`, `opencode` r
 
 `POST /runs/:id/start`:
 
-1. Move to `awaiting_signature`. The funder signs `agents-arena seed v1\nrun: <runId>` and submits it to `POST /runs/:id/seed`. Local signs automatically unless `ARENA_AUTO_SIGN=false`.
-2. Verify that the EIP-191 signature recovers to the profile's `funderAddress`. Derive each entrant key in memory and store only its address.
+1. Move to `awaiting_signature`. The funder signs the run's EIP-712 `Seed {runId}` typed data under the active profile's chain ID and submits it to `POST /runs/:id/seed`. Local signs automatically unless `ARENA_AUTO_SIGN=false`.
+2. Verify that the EIP-712 signature recovers to the profile's `funderAddress`. Derive each entrant key in memory and store only its address.
 3. Prepare each entrant — build a fresh container, inject its in-memory key and RPC URL, seed its harness credentials, mount the challenge pack read-only at `/ctf` on a local chain (Base mounts nothing), and run preflight.
 4. Move to `awaiting_funding`. The gate only watches balances; a local dev helper funds from anvil account 0, while a Base operator funds the displayed addresses.
 5. Hold at the ready barrier until both report ready. Record one start time and release both with their opening prompt.

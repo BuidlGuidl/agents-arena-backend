@@ -14,11 +14,32 @@ import {
   canonicalizeSeedSignature,
   deriveEntrantKeys,
   getWallet,
+  seedTypedData,
 } from '../src/chain/wallet.js';
 
 const args = process.argv.slice(2);
+const hasChainId = args.includes('--chain-id');
+const hasRecoveryOptions = args.includes('--rpc-url') || args.includes('--sweep');
+const printTypedDataRunId = takeOption(args, '--print-typed-data');
+const chainIdText = takeOption(args, '--chain-id') ?? '31337';
 const rpcUrl = takeOption(args, '--rpc-url') ?? process.env.RPC_URL;
 const sweepText = takeOption(args, '--sweep') ?? process.env.SWEEP_TO;
+
+if (printTypedDataRunId !== undefined) {
+  if (hasRecoveryOptions || args.length > 0) {
+    throw new Error(`Unknown arguments: ${args.join(' ')}`);
+  }
+  const chainId = Number(chainIdText);
+  if (!Number.isSafeInteger(chainId) || chainId <= 0) {
+    throw new Error('--chain-id must be a positive safe integer.');
+  }
+  console.log(JSON.stringify(seedTypedData(printTypedDataRunId, chainId)));
+  process.exit(0);
+}
+if (hasChainId) {
+  throw new Error('--chain-id requires --print-typed-data.');
+}
+
 const [argumentSignature, argumentRunId, argumentEntrants, ...extra] = args;
 if (extra.length > 0 || argumentSignature?.startsWith('--')) {
   throw new Error(`Unknown arguments: ${args.join(' ')}`);
@@ -30,7 +51,9 @@ const entrantsText = argumentEntrants ?? process.env.ENTRANT_IDS ?? 'codex-1,ope
 if (signature === undefined || runId === undefined) {
   throw new Error(
     'Usage: tsx scripts/recover-keys.ts <signature> <runId> [entrant-ids] '
-    + '[--rpc-url <url>] [--sweep <to-address>]',
+    + '[--rpc-url <url>] [--sweep <to-address>]\n'
+    + '       tsx scripts/recover-keys.ts --print-typed-data <runId> '
+    + '[--chain-id <id>] (default 31337)',
   );
 }
 if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) {

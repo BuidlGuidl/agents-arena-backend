@@ -12,7 +12,7 @@ import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/typ
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import {
   deriveEntrantKeys,
-  seedMessage,
+  seedTypedData,
 } from '../src/chain/wallet.js';
 import type { ArenaEvent, HistoryPage, RunSnapshot } from '../src/contract.js';
 import { entrants } from '../src/db/schema.js';
@@ -514,7 +514,7 @@ describe('seed endpoint', () => {
       servers.push(server);
       const { run } = await server.manager.create({ preset: 'docker-duel' });
       const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
-      const signature = await account.signMessage({ message: seedMessage(run.id) });
+      const signature = await account.signTypedData(seedTypedData(run.id, 31337));
 
       const response = await server.app.inject({
         method: 'POST',
@@ -533,7 +533,7 @@ describe('seed endpoint', () => {
       const { run } = await server.manager.create({ preset: 'docker-duel' });
       server.manager.transition(run.id, 'awaiting_signature');
       const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
-      const signature = await account.signMessage({ message: seedMessage(run.id) });
+      const signature = await account.signTypedData(seedTypedData(run.id, 31337));
 
       const response = await server.app.inject({
         method: 'POST',
@@ -559,7 +559,7 @@ describe('seed endpoint', () => {
       });
       const { run } = created.json() as { run: RunSnapshot };
       const wrongAccount = privateKeyToAccount(generatePrivateKey());
-      const signature = await wrongAccount.signMessage({ message: seedMessage(run.id) });
+      const signature = await wrongAccount.signTypedData(seedTypedData(run.id, 31337));
 
       const response = await server.app.inject({
         method: 'POST',
@@ -585,7 +585,7 @@ describe('seed endpoint', () => {
       });
       const { run } = created.json() as { run: RunSnapshot };
       const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
-      const signature = await account.signMessage({ message: seedMessage(run.id) });
+      const signature = await account.signTypedData(seedTypedData(run.id, 31337));
 
       const response = await server.app.inject({
         method: 'POST',
@@ -613,7 +613,7 @@ describe('seed endpoint', () => {
       });
       const { run } = created.json() as { run: RunSnapshot };
       const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
-      const canonicalSignature = await account.signMessage({ message: seedMessage(run.id) });
+      const canonicalSignature = await account.signTypedData(seedTypedData(run.id, 31337));
       const entrantIds = run.entrants.map((entrant) => entrant.id);
       const expected = deriveEntrantKeys(run.id, canonicalSignature, entrantIds);
 
@@ -644,7 +644,7 @@ describe('seed endpoint', () => {
       const { run } = created.json() as { run: RunSnapshot };
       expect(run.state).toBe('awaiting_signature');
       const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
-      const signature = await account.signMessage({ message: seedMessage(run.id) });
+      const signature = await account.signTypedData(seedTypedData(run.id, 31337));
 
       const response = await server.app.inject({
         method: 'POST',

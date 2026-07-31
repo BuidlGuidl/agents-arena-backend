@@ -174,7 +174,7 @@ the same endpoint caps `eth_getLogs` at a 10,000 block span (`-32614`). in the s
 
 ## ADR-0011 — burner keys are derived from a funder signature and never stored
 
-**Status:** accepted (2026-07-30) — amends the key-handling half of ADR-0005; from #28
+**Status:** accepted (2026-07-30) — amends the key-handling half of ADR-0005; from #28. amended 2026-07-31: the seed is EIP-712 typed data, not a personal_sign string — domain `{name: 'agents-arena', version: '1', chainId}`, type `Seed {runId}`. austin signs from metamask (confirmed), which renders typed data as a structured prompt; the domain binds the chain, so a local seed can never verify on base, and wallets can flag a signing request from the wrong origin. the signature bytes, canonicalization, and derivation below are unchanged — only what is signed moved.
 
 **Decision:** the arena stores no private key, on any profile. at run creation the funder signs a fixed per-run message with the wallet that will fund the race. the arena derives each entrant's key from that signature (`keccak(signature ‖ entrantId)` shape; exact derivation pinned in code), holds the keys in process memory for the run's lifetime, injects them into the container env as before, and drops them at teardown. derivation consumes only the canonical signature bytes — low-s, v ∈ {27, 28}; high-s submissions are rejected and v encodings are normalized before use — so every accepted encoding of one signature yields one key set, and offline recovery canonicalizes the same way. the database keeps addresses only. on the local profile the arena signs with the dev funder key itself, so the loop stays zero-touch.
 

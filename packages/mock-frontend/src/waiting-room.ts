@@ -1,14 +1,24 @@
 import type { RunState } from '../../../contract/arena-types';
 
-// The seed flow, minus the rendering. The arena stores no private keys: the
-// funder signs one message per run and the backend derives every burner wallet
-// from that signature, so this module is the client half of ADR-0011/0012.
+// The backend does not expose its active chain yet, so this local mock stays
+// pinned to Anvil until RunSnapshot carries the profile chain ID.
+export const SEED_CHAIN_ID = 31337;
 
-// Byte-for-byte the string `seedMessage` builds in
-// packages/backend/src/chain/wallet.ts, one literal newline included. A message
-// that differs anywhere recovers a different address and the seed is rejected.
-export function seedMessage(runId: string): string {
-  return `agents-arena seed v1\nrun: ${runId}`;
+export function seedTypedData(runId: string, chainId: number) {
+  return {
+    domain: {
+      name: 'agents-arena',
+      version: '1',
+      chainId,
+    },
+    types: {
+      Seed: [
+        { name: 'runId', type: 'string' },
+      ],
+    },
+    primaryType: 'Seed',
+    message: { runId },
+  } as const;
 }
 
 // The two human-gated states the waiting room covers.
@@ -55,26 +65,18 @@ export function injectedProvider(): Eip1193Provider | undefined {
   return typeof window === 'undefined' ? undefined : window.ethereum;
 }
 
-export function encodeSeedMessage(message: string): string {
-  return `0x${Array.from(new TextEncoder().encode(message))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')}`;
-}
-
-// personal_sign takes the hex-encoded UTF-8 message first and the signer second.
 export async function requestSeedSignature(
   provider: Eip1193Provider,
-  message: string,
+  typedData: ReturnType<typeof seedTypedData>,
 ): Promise<string> {
   const accounts = await provider.request({ method: 'eth_requestAccounts' });
   const account = Array.isArray(accounts) ? accounts[0] : undefined;
   if (typeof account !== 'string') {
     throw new Error('the wallet returned no account.');
   }
-  const hexMessage = encodeSeedMessage(message);
   const signature = await provider.request({
-    method: 'personal_sign',
-    params: [hexMessage, account],
+    method: 'eth_signTypedData_v4',
+    params: [account, JSON.stringify(typedData)],
   });
   if (typeof signature !== 'string') {
     throw new Error('the wallet returned no signature.');

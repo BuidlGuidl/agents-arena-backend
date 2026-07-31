@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ChainProfile } from '../../src/chain/profile.js';
 import { CHALLENGE_IDS, SolvePoller } from '../../src/chain/solve-poller.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../../src/chain/local-dev.js';
-import { deriveEntrantKeys, seedMessage } from '../../src/chain/wallet.js';
+import { deriveEntrantKeys, seedTypedData } from '../../src/chain/wallet.js';
 import { entrants, runs } from '../../src/db/schema.js';
 import { EventJournal } from '../../src/journal.js';
 import {
@@ -34,7 +34,7 @@ async function seedEntrants(
   entrantIds: readonly string[],
 ) {
   const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
-  const signature = await account.signMessage({ message: seedMessage(runId) });
+  const signature = await account.signTypedData(seedTypedData(runId, 31337));
   const addresses = deriveEntrantKeys(runId, signature, entrantIds);
   journal.database.insert(runs).values({
     id: runId,

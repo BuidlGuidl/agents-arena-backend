@@ -416,7 +416,7 @@ flowchart LR
         <tr><td><code>SSE</code></td><td>Server-Sent Events: an HTTP response the server holds open and keeps writing to, which the browser reads live.</td><td><span class="path">src/server.ts</span></td></tr>
         <tr><td><code>gate</code></td><td>A step that must finish before the run moves on. Seed submission makes burners; the funding gate watches their balances.</td><td><span class="path">src/run-manager.ts</span> · <span class="path">src/chain/funding-gate.ts</span></td></tr>
         <tr><td><code>funder</code></td><td>The wallet that pays for the race. One EOA per chain profile, pinned in config as <code>funderAddress</code>.</td><td><span class="path">config/chains.json</span></td></tr>
-        <tr><td><code>seed</code></td><td>The funder's signature over one per-run message. Every burner key in the run is derived from it.</td><td><code>seedMessage</code> · <code>deriveEntrantKeys</code></td></tr>
+        <tr><td><code>seed</code></td><td>The funder's signature over one run's typed data. Every burner key in the run is derived from it.</td><td><code>seedTypedData</code> · <code>deriveEntrantKeys</code></td></tr>
         <tr><td><code>burner</code></td><td>An entrant's throwaway wallet for one run. Derived, never generated, never stored.</td><td><span class="path">src/chain/wallet.ts</span></td></tr>
         <tr><td>waiting room</td><td>The pre-race panel the funder uses: sign the seed, then watch the addresses fund.</td><td><span class="path">packages/mock-frontend/src/waiting-room.ts</span></td></tr>
         <tr><td><code>steer</code></td><td>A free-text turn an operator injects into a live agent mid-race.</td><td><code>RunManager.steer</code></td></tr>
@@ -452,7 +452,7 @@ sequenceDiagram
     WR->>RM: POST /runs {preset, autoStart}
     RM->>RM: state awaiting_signature
     RM-->>WR: run.state over SSE
-    WR->>WR: build agents-arena seed v1 + run id
+    WR->>WR: build Seed typed data + run id + chain id
     OP->>WR: sign with wallet, or paste a signature
     WR->>RM: POST /runs/:id/seed {signature}
     RM->>RM: canonicalize, recover funder, derive keys in memory
@@ -493,9 +493,9 @@ sequenceDiagram
     <h3>What the funder sees</h3>
     <p>The mock frontend ships the reference waiting room. It appears whenever the run sits in <code>awaiting_signature</code> or <code>awaiting_funding</code>, and it is the one screen that needs a human. <span class="path">packages/mock-frontend/src/waiting-room.ts</span> · <span class="path">main.tsx</span></p>
     <ul class="facts">
-      <li>In <code>awaiting_signature</code> the panel prints the run id and the exact message to sign. The browser builds that string itself, byte for byte, from the run id — the backend never ships it. A copy button hands it to a wallet that lives somewhere else.</li>
-      <li>With an injected wallet present, <b>sign with wallet</b> calls <code>eth_requestAccounts</code>, then <code>personal_sign</code> with the message first and the account second, and posts what comes back. A dismissed prompt arrives as EIP-1193 code <code>4001</code> and reads "wallet request rejected", not as a failure.</li>
-      <li>With no injected wallet, the panel falls back to a paste box. It tests the text against <code>/^0x[0-9a-fA-F]{130}$/</code>, the same shape the backend's schema accepts, so a typo never reaches the network.</li>
+      <li>In <code>awaiting_signature</code> the panel prints the run id and the exact typed-data JSON to sign. The browser builds that JSON itself, byte for byte, from the run id and its local chain id — the backend never ships it. A copy button hands it to <code>cast wallet sign --data</code> or another wallet.</li>
+      <li>With an injected wallet present, <b>sign with wallet</b> calls <code>eth_requestAccounts</code>, then <code>eth_signTypedData_v4</code> with the account first and the JSON string second. MetaMask renders the domain and <code>Seed.runId</code> as a structured prompt. A dismissed prompt arrives as EIP-1193 code <code>4001</code> and reads "wallet request rejected", not as a failure.</li>
+      <li>The copy-and-paste fallback stays visible with or without an injected wallet. The paste box tests the signature against <code>/^0x[0-9a-fA-F]{130}$/</code>, the same shape the backend's schema accepts, so a typo never reaches the network.</li>
       <li>A rejection names the status, never the wallet: 403 says the signature did not come from the wallet this profile funds with, 409 says the run is no longer waiting, 400 says the string is not a signature it can read.</li>
       <li>Under the panel sits the roster, one row per entrant: entrant id, the full address as a click-to-copy button, and a funding status. Before the signature lands, that middle column reads "address arrives with the signature".</li>
       <li>In <code>awaiting_funding</code> the panel shrinks to one line — send ETH to each address below — and each roster row flips from waiting to funded with its balance beside it. A top-up to the same address counts, because the gate reads balances rather than transfers.</li>
@@ -504,7 +504,7 @@ sequenceDiagram
     <h3>How the burner is born</h3>
     <p>Every key in a run is born in one call, the moment the seed is accepted. <code>POST /runs/:id/seed</code> takes <code>{signature}</code> and works only while the run is in <code>awaiting_signature</code>. <span class="path">src/server.ts</span> · <span class="path">src/run-manager.ts</span> · <code>submitSeed</code></p>
     <ul class="facts">
-      <li>The message is <code>agents-arena seed v1\nrun: &lt;runId&gt;</code>, one literal newline, signed as EIP-191. It carries the run id because flags cannot be minted twice to one address, so every run needs virgin wallets. <span class="path">src/chain/wallet.ts</span> · <code>seedMessage</code></li>
+      <li>The funder signs EIP-712 typed data with domain <code>{name: 'agents-arena', version: '1', chainId}</code>, primary type <code>Seed</code>, and one field: <code>runId: string</code>. There is no verifying contract. The run id gives every run virgin wallets; the domain binds the signature to one chain. <span class="path">src/chain/wallet.ts</span> · <code>seedTypedData</code></li>
       <li><code>canonicalizeSeedSignature</code> runs first. A high-s signature is rejected outright; the rest are re-serialized low-s with <code>v</code> 27 or 28. Every accepted encoding of one signature therefore collapses to one byte string, and one key set.</li>
       <li>Recovery runs against those canonical bytes. A signature that does not recover to the profile's <code>funderAddress</code> gets a 403 and the run stays put. A post from any other state gets a 409, and so does a second post while the first is still in flight.</li>
       <li><code>deriveEntrantKeys</code> then computes each key as <code>keccak256(canonical signature bytes ‖ utf8 entrantId)</code> and takes its address. The keys go into a per-run map in process memory, keyed by run id then entrant id; the function itself returns addresses only.</li>
@@ -513,29 +513,39 @@ sequenceDiagram
 
     <p>Here is one real run of that derivation: the local profile, <code>runId</code> "1", and the local dev funder — anvil account&nbsp;0. That account's private key is printed in every anvil banner, so the burner keys below are public arithmetic and guard nothing. They are here to show the shape.</p>
 
-    <p class="eg-label">the message the funder signs</p>
-    <pre class="eg-code">agents-arena seed v1
-run: 1</pre>
+    <p class="eg-label">the typed data the funder signs</p>
+    <pre class="eg-code">{
+  <span class="jk">"domain"</span>: {
+    <span class="jk">"name"</span>: <span class="jv">"agents-arena"</span>,
+    <span class="jk">"version"</span>: <span class="jv">"1"</span>,
+    <span class="jk">"chainId"</span>: <span class="jv">31337</span>
+  },
+  <span class="jk">"types"</span>: {
+    <span class="jk">"Seed"</span>: [{ <span class="jk">"name"</span>: <span class="jv">"runId"</span>, <span class="jk">"type"</span>: <span class="jv">"string"</span> }]
+  },
+  <span class="jk">"primaryType"</span>: <span class="jv">"Seed"</span>,
+  <span class="jk">"message"</span>: { <span class="jk">"runId"</span>: <span class="jv">"1"</span> }
+}</pre>
 
     <p class="eg-label">the signature that comes back — one 65-byte string, r ‖ s ‖ v</p>
-    <pre class="eg-code">0x a5a56be28f9d244409d14a074112c46591dca81bdb85140892f6ae83cb1f99e6  <span class="jk">r</span>
-   7c8842e3f4be2e4a31f416521e7b418a95d2c06f4cfd33d4e3d94f9d39949c22  <span class="jk">s</span>
+    <pre class="eg-code">0x 9e1dce6fe4da1ae1bbaa92eb2a158f2d71a183351c5ff203a2e4fc6a127f2e27  <span class="jk">r</span>
+   2ce63b02c9a17c02f2d8ee57a46d21492abbc35cfd9fbf2540bf298c83be644d  <span class="jk">s</span>
    1b                                                                <span class="jk">v = 27, so already canonical</span></pre>
 
     <p class="eg-label">the two keys that fall out of it</p>
     <pre class="eg-code"><span class="jk">codex-1</span>
-  key      <span class="jv">0x9e30862148d3d08073d0f4fcb2879ae6b77a44775914d26c55736097dd355a49</span>
-  address  <span class="jv">0x3189838a5dD1dAE2dbAE85cd945e558c98F6Ef3F</span>
+  key      <span class="jv">0x4d44297d498894431b90b3be967a19b0233bab737ddf056b643262519fa527ff</span>
+  address  <span class="jv">0x4ee3BE13180D87C59dC5ae8EE7E631923ffFE254</span>
 
 <span class="jk">opencode-1</span>
-  key      <span class="jv">0xf081f77901235ae551738e804e72b43e6e97a07a155b85563eece8a26f108b01</span>
-  address  <span class="jv">0x62F16E026500757A6F4dDF42acdD94AbDfF1ad0C</span></pre>
+  key      <span class="jv">0x919f4b9a269a75b2add473c35c2b2024daa189a41632282ac682ec2a3e88ecba</span>
+  address  <span class="jv">0xd790a2797650D602F49f56C438ac89dDCF0F109F</span></pre>
 
     <ul class="facts">
-      <li><code>recoverMessageAddress</code> over that message and signature returns <code>0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266</code>, which is the local profile's <code>funderAddress</code>, so the seed is accepted. Any other signer recovers to some other address and gets a 403.</li>
+      <li><code>recoverTypedDataAddress</code> over that typed data and signature returns <code>0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266</code>, which is the local profile's <code>funderAddress</code>, so the seed is accepted. Any other signer recovers to some other address and gets a 403.</li>
       <li>The two addresses go to <code>entrants.address</code> in SQLite. The two keys go only to the in-memory vault, and from there to each container's <code>WALLET_PRIVATE_KEY</code>.</li>
-      <li>Signing that same message again returns byte-identical output — the nonce comes from the key and the message, not from randomness (RFC&nbsp;6979). That is why re-signing next week re-derives these same two wallets and recovers whatever ETH is left in them.</li>
-      <li>The run id never enters the hash. It reaches the keys only through the message the funder signed, which is where run-uniqueness comes from.</li>
+      <li>Signing that same typed data again returns byte-identical output — the nonce comes from the key and digest, not from randomness (RFC&nbsp;6979). That is why re-signing next week re-derives these same two wallets and recovers whatever ETH is left in them.</li>
+      <li>The run id reaches the keys only through the typed data the funder signed, which is where run-uniqueness comes from. The chain id changes the signature before derivation, so the same run id on another chain produces other burners.</li>
       <li>A keccak256 output works as a secp256k1 private key for a dull reason: a private key is only a 256-bit number below the curve order, and a hash hands you 256 high-entropy bits.</li>
     </ul>
 
@@ -565,7 +575,7 @@ run: 1</pre>
       <li><code>stop</code> drops the run's keys before it touches a container, and teardown drops them again once the drivers settle. After that the process holds nothing derived from the signature. <span class="path">src/run-manager.ts</span> · <code>dropRunKeys</code></li>
       <li>A stop during <code>awaiting_signature</code> aborts the waiting start and walks <code>stopping → finished</code>, same as a stop from <code>running</code>. A stop from <code>preparing</code>, <code>awaiting_funding</code>, or <code>ready</code> lands on <code>failed</code> with the reason "stopped by operator before running".</li>
       <li>A backend restart takes the key map and the in-memory seed waiter with it. A run parked in <code>awaiting_signature</code> is orphaned: the row still reads <code>awaiting_signature</code>, but a seed post now answers 409. Stop that run and create a new one — the backend resumes no pre-terminal run. <span class="path">contract/API.md</span></li>
-      <li>Money already sent survives all of that. ECDSA signing is deterministic, so the funder signs the same message again, canonicalizes it the same way, hashes it with each entrant id, and holds the same keys — offline, with no server in the path. The sweep is the funder's capability, not the arena's. <span class="path">docs/adr/decisions-log.md</span> · ADR-0011</li>
+      <li>Money already sent survives all of that. ECDSA signing is deterministic, so the funder signs the same typed data again, canonicalizes it the same way, hashes it with each entrant id, and holds the same keys — offline, with no server in the path. The sweep is the funder's capability, not the arena's. <span class="path">docs/adr/decisions-log.md</span> · ADR-0011</li>
       <li>The addresses outlive both the keys and the run. <code>entrants.address</code> stays written, and the solve poller reads it to score: a <code>scores</code> row is unique on <code>(run, address, challenge)</code>. <span class="path">src/chain/solve-poller.ts</span></li>
     </ul>
 
@@ -843,7 +853,7 @@ flowchart TB
         <tr><td><span class="path">src/chain/storage.ts</span></td><td>Creates the scores table and drops any old <code>wallets</code> table.</td></tr>
         <tr><td><span class="path">src/server.ts</span></td><td>Fastify routes, seed submission, SSE replay-then-live.</td></tr>
         <tr><td><span class="path">packages/mock-frontend/src/feed-projection.ts</span></td><td>Dedupe, gap detect, lane split, wallet header, waiting-room roster, describeEvent.</td></tr>
-        <tr><td><span class="path">packages/mock-frontend/src/waiting-room.ts</span></td><td>Seed message, signature shape check, personal_sign call, seed error text.</td></tr>
+        <tr><td><span class="path">packages/mock-frontend/src/waiting-room.ts</span></td><td>Seed typed data, signature shape check, eth_signTypedData_v4 call, seed error text.</td></tr>
       </tbody>
     </table>
   </section>

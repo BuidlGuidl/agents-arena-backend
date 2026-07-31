@@ -30,8 +30,9 @@ import {
   isWaitingRoomState,
   looksLikeSignature,
   requestSeedSignature,
+  SEED_CHAIN_ID,
   seedErrorMessage,
-  seedMessage,
+  seedTypedData,
   walletErrorMessage,
 } from './waiting-room';
 import './styles.css';
@@ -297,7 +298,7 @@ function WalletAddress({ address, full = false }: { address: string; full?: bool
 }
 
 // The pre-race panel. Two states share it: `awaiting_signature`, where the
-// funder signs the seed message, and `awaiting_funding`, where they send ETH to
+// funder signs the seed typed data, and `awaiting_funding`, where they send ETH to
 // the addresses that signature derived. Presentation stays deliberately plain —
 // blockies, explorer links, and multisend belong to the real frontend.
 function WaitingRoom({ run, feed }: { run: RunSnapshot; feed: FeedState }) {
@@ -305,9 +306,10 @@ function WaitingRoom({ run, feed }: { run: RunSnapshot; feed: FeedState }) {
   const [pasted, setPasted] = useState('');
   const [walletError, setWalletError] = useState<string | null>(null);
   const [signing, setSigning] = useState(false);
-  const [messageCopied, copyMessage] = useCopyFlag();
+  const [typedDataCopied, copyTypedData] = useCopyFlag();
 
-  const message = seedMessage(run.id);
+  const typedData = seedTypedData(run.id, SEED_CHAIN_ID);
+  const typedDataJson = JSON.stringify(typedData);
   const provider = injectedProvider();
   const roster = useMemo(
     () => deriveWaitingRoom(run.entrants, feed.events, run.state),
@@ -339,7 +341,7 @@ function WaitingRoom({ run, feed }: { run: RunSnapshot; feed: FeedState }) {
     setWalletError(null);
     setSigning(true);
     try {
-      seed.mutate(await requestSeedSignature(provider, message));
+      seed.mutate(await requestSeedSignature(provider, typedData));
     } catch (error) {
       setWalletError(walletErrorMessage(error));
     } finally {
@@ -359,13 +361,17 @@ function WaitingRoom({ run, feed }: { run: RunSnapshot; feed: FeedState }) {
             run <b>{run.id}</b>
           </p>
           <p className="seed-hint">
-            the funder signs this message once. the arena derives every burner wallet from the
+            the funder signs this typed data once. the arena derives every burner wallet from the
             signature and keeps no key.
           </p>
           <div className="seed-msg">
-            <pre data-testid="seed-message">{message}</pre>
-            <button type="button" className="btn copy-btn" onClick={() => copyMessage(message)}>
-              {messageCopied ? 'copied ✓' : 'copy message'}
+            <pre data-testid="seed-typed-data">{typedDataJson}</pre>
+            <button
+              type="button"
+              className="btn copy-btn"
+              onClick={() => copyTypedData(typedDataJson)}
+            >
+              {typedDataCopied ? 'copied ✓' : 'copy typed data'}
             </button>
           </div>
 
@@ -381,8 +387,8 @@ function WaitingRoom({ run, feed }: { run: RunSnapshot; feed: FeedState }) {
           ) : null}
           <p className="seed-hint">
             {provider === undefined
-              ? 'no injected wallet here. sign the message above elsewhere and paste the signature.'
-              : 'if wallet signing fails, sign the message elsewhere and paste the signature.'}
+              ? 'no injected wallet here. sign the typed data above with cast wallet sign --data, then paste the signature.'
+              : 'if wallet signing fails, sign the typed data with cast wallet sign --data, then paste the signature.'}
           </p>
           <div className="seed-paste">
             <input

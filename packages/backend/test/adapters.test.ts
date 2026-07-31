@@ -15,7 +15,7 @@ import {
   type RunRecord,
 } from '../src/adapters/types.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
-import { deriveEntrantKeys, getWallet, seedMessage } from '../src/chain/wallet.js';
+import { deriveEntrantKeys, getWallet, seedTypedData } from '../src/chain/wallet.js';
 import { entrants, runs } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import { RunManager } from '../src/run-manager.js';
@@ -142,7 +142,7 @@ async function setup(
   if (model !== undefined) entrant = { ...entrant, model };
   if (withWallet) {
     const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
-    const signature = await account.signMessage({ message: seedMessage(run.id) });
+    const signature = await account.signTypedData(seedTypedData(run.id, 31337));
     deriveEntrantKeys(run.id, signature, [entrant.id]);
   }
 

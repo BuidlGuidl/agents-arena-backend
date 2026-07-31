@@ -12,6 +12,7 @@ const NO_TOTALS: SessionTotals = { inputTokens: 0, outputTokens: 0, cachedInputT
 
 export class CodexEventParser {
   unknownEvents = 0;
+  private syntheticToolCallCount = 0;
 
   // turn.completed reports the session running total, not the turn
   // (openai/codex#17539: exec emits ThreadTokenUsage.total and never .last), and
@@ -90,6 +91,7 @@ export class CodexEventParser {
           payload: {
             entrantId: this.entrantId,
             tool: 'shell',
+            toolCallId: this.toolCallId(item.id),
             detail: stringValue(item.command) ?? '',
           },
         }],
@@ -103,6 +105,7 @@ export class CodexEventParser {
           payload: {
             entrantId: this.entrantId,
             tool: 'shell',
+            toolCallId: this.toolCallId(item.id),
             ok: exitCode === 0,
             detail: stringValue(item.aggregated_output) ?? '',
           },
@@ -137,7 +140,12 @@ export class CodexEventParser {
         return {
           events: [{
             type: 'tool.call',
-            payload: { entrantId: this.entrantId, tool: itemType, detail },
+            payload: {
+              entrantId: this.entrantId,
+              tool: itemType,
+              toolCallId: this.toolCallId(item.id),
+              detail,
+            },
           }],
         };
       }
@@ -147,6 +155,7 @@ export class CodexEventParser {
           payload: {
             entrantId: this.entrantId,
             tool: itemType,
+            toolCallId: this.toolCallId(item.id),
             ok: !genericToolFailed(item),
             detail,
           },
@@ -178,6 +187,10 @@ export class CodexEventParser {
       type: 'entrant.error',
       payload: { entrantId: this.entrantId, message },
     };
+  }
+
+  private toolCallId(rawId: unknown): string {
+    return stringValue(rawId) ?? `synthetic-${++this.syntheticToolCallCount}`;
   }
 
   private recordUnknown(type: string): void {

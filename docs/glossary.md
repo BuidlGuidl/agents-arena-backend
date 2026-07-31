@@ -17,6 +17,7 @@ canonical vocabulary for the arena backend. terms only, no implementation. built
 - **harness adapter** — the seam that hides harness-specific details. owns the CLI command, credential home, preflight, raw-event parser, and mapping into `ArenaEvent`. the run lifecycle only knows: prepare, report ready, start, steer, stop, emit events.
 - **arena event** — one normalized, journaled fact about a run: an agent message, tool call, command, file change, transaction, score, nudge, steer, error, or usage line. the public unit of the feed.
 - **event journal** — the append-only store of arena events (SQLite). one global id, stable per-source seq, replayable after `Last-Event-ID`.
+- **tool call id** — the id minted where a tool call is born (the harness, or the model api behind it), carried on `tool.call` and `tool.result` so a client pairs a result to its call without guessing arrival order. the arena threads it through, never re-mints it.
 - **solve poller** — reads each entrant's flag state straight from `NFTFlags.hasMinted` on an interval, maps wallet → entrant, and projects new solves into the journal as score events. the only judge; there is no off-chain answer and no indexer in the path. replaces the term *game-state adapter* used in the PRD and the v1 spec.
 - **flag** — an nft minted on-chain when an entrant solves a challenge. the atomic scoring unit. 12 exist; flag #1 (register) is mandatory and gates the rest.
 - **solve** — one entrant capturing one flag: the `(runId, entrantId, challengeId)` fact plus the `txHash`, `tokenId`, and timestamp read off the mint log. the unit `EntrantSummary.solves` carries. deduped on `(runId, entrantAddress, challengeId)`, so it is a set membership, never a counter.
@@ -33,3 +34,5 @@ per-entrant lifecycle, distinct from run state:
 - **idle** — the session settled with no pending turn. triggers auto-nudge if flags < 12 and time remains.
 - **blocked** — the session is waiting on an approval/permission prompt. under the `dontAsk` policy this should never happen; if it does, it's a policy bug to surface.
 - **done** — finished AND the arena has consumed the exit (checked flag count, decided not to nudge). a process exiting is NOT the entrant being done.
+
+the set is closed until a state has an honest emitter: `submitting` becomes possible once on-chain solve detection can see a transaction before the flag confirms; a `thinking` state would need a reasoning channel that does not exist yet. the UI maps its display vocabulary onto these four, not the reverse. outside reference: vercel's ai sdk — the widest-deployed public protocol for streaming agent activity to a UI — makes the same cuts: reasoning is a channel, not a status, and its `tool-approval-request` frame is our `blocked`.

@@ -4,6 +4,7 @@ type JsonObject = Record<string, unknown>;
 
 export class OpenCodeEventParser {
   unknownEvents = 0;
+  private syntheticToolCallCount = 0;
 
   constructor(
     private readonly entrantId: string,
@@ -30,17 +31,18 @@ export class OpenCodeEventParser {
       const input = objectValue(state?.input);
       const metadata = objectValue(state?.metadata);
       const tool = stringValue(part?.tool) ?? 'tool';
+      const toolCallId = stringValue(part?.callID) ?? `synthetic-${++this.syntheticToolCallCount}`;
       const detail = stringValue(input?.command) ?? JSON.stringify(input ?? {});
       const output = stringValue(state?.output) ?? stringValue(metadata?.output) ?? '';
       const exit = numberValue(metadata?.exit);
       return withSession([
         {
           type: 'tool.call',
-          payload: { entrantId: this.entrantId, tool, detail },
+          payload: { entrantId: this.entrantId, tool, toolCallId, detail },
         },
         {
           type: 'tool.result',
-          payload: { entrantId: this.entrantId, tool, ok: exit === 0, detail: output },
+          payload: { entrantId: this.entrantId, tool, toolCallId, ok: exit === 0, detail: output },
         },
       ], sessionId);
     }

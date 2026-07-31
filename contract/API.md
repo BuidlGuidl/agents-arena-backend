@@ -48,7 +48,9 @@ Status `200` mints the session and sets the cookie.
 
 Status `401` names what failed: an unknown or already used nonce, a message domain that is not this server's, an expired message, an address outside the allowlist, or a signature that does not match. Status `503` means wallet login is not configured.
 
-The message's `domain` must match `ARENA_SIWE_DOMAINS` when that is set, and the request's own `Host` when it is not. Set it when a frontend proxies the arena under its own hostname — that hostname is what the wallet shows the operator, and it is the anti-phishing check.
+The message's `domain` must match one of the hosts listed in `ARENA_SIWE_DOMAINS`, and the message's `uri` must carry that same host. `ARENA_SIWE_DOMAINS` is required whenever wallet login is on, and the backend refuses to start without it: checking the signed domain against the request's own `Host` would compare two values the caller supplies, which accepts a phished origin. List the hostname the operator's browser is on — the one your frontend serves — because that is what the wallet shows him before he signs, and it is the anti-phishing check.
+
+The signed message must also carry `Version: 1`.
 
 Only externally owned accounts are verified. A smart-contract wallet (ERC-1271 / ERC-6492) needs a client on the chain that holds it and is not supported yet.
 

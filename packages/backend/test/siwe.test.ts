@@ -3,7 +3,12 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { createSiweMessage } from 'viem/siwe';
 
 import { createServer, type ArenaServer } from '../src/server.js';
-import { InvalidOperatorAddressError, SESSION_COOKIE } from '../src/siwe.js';
+import {
+  InvalidOperatorAddressError,
+  MissingSiweDomainError,
+  SESSION_COOKIE,
+  SiweLogin,
+} from '../src/siwe.js';
 
 const servers: ArenaServer[] = [];
 const OPERATOR_TOKEN = 'test-operator-token';
@@ -21,7 +26,7 @@ function startServer(overrides: { addresses?: string[]; domains?: string[]; sess
     operatorToken: OPERATOR_TOKEN,
     siwe: {
       operatorAddresses: overrides.addresses ?? [operator.address],
-      ...(overrides.domains === undefined ? {} : { domains: overrides.domains }),
+      domains: overrides.domains ?? [HOST],
       ...(overrides.sessionTtlMs === undefined ? {} : { sessionTtlMs: overrides.sessionTtlMs }),
     },
   });
@@ -106,12 +111,13 @@ describe('operator wallet login', () => {
   });
 
   it('drops Secure on a localhost login so the plain-http demo still works', async () => {
-    const server = startServer({ domains: ['localhost'] });
+    const server = startServer({ domains: ['localhost:4177'] });
     const nonce = await nonceFrom(server);
     const message = createSiweMessage({
       address: operator.address,
       chainId: 8453,
-      domain: 'localhost',
+      // The domain is the URI's authority, port included, the way a browser builds it.
+      domain: 'localhost:4177',
       nonce,
       uri: 'http://localhost:4177/',
       version: '1',
@@ -171,6 +177,51 @@ describe('operator wallet login', () => {
     expect(bareHost.statusCode).toBe(401);
   });
 
+  it('rejects a message whose URI host differs from its domain', async () => {
+    const server = startServer();
+    const nonce = await nonceFrom(server);
+    const message = createSiweMessage({
+      address: operator.address,
+      chainId: 8453,
+      domain: HOST,
+      nonce,
+      uri: 'https://evil.example/',
+      version: '1',
+    });
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/auth/verify',
+      headers: { host: HOST },
+      payload: { message, signature: await operator.signMessage({ message }) },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: 'Message URI host does not match its domain' });
+  });
+
+  it('rejects a SIWE version other than 1', async () => {
+    const server = startServer();
+    const nonce = await nonceFrom(server);
+    const versionOne = createSiweMessage({
+      address: operator.address,
+      chainId: 8453,
+      domain: HOST,
+      nonce,
+      uri: `https://${HOST}/`,
+      version: '1',
+    });
+    const message = versionOne.replace('Version: 1', 'Version: 2');
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/auth/verify',
+      headers: { host: HOST },
+      payload: { message, signature: await operator.signMessage({ message }) },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: 'Unsupported SIWE version' });
+  });
+
   it('stops honouring a session once it expires', async () => {
     const server = startServer({ sessionTtlMs: 1 });
     const login = await signIn(server);
@@ -223,5 +274,11 @@ describe('operator wallet login', () => {
       operatorToken: OPERATOR_TOKEN,
       siwe: { operatorAddresses: ['0xnot-an-address'] },
     })).toThrow(InvalidOperatorAddressError);
+  });
+
+  it('refuses to enable wallet login without a domain allowlist', () => {
+    expect(() => new SiweLogin({
+      operatorAddresses: [operator.address],
+    })).toThrow(MissingSiweDomainError);
   });
 });

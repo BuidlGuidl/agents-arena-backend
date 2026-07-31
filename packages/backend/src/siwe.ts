@@ -16,8 +16,6 @@ export interface OperatorSession {
 export interface LoginAttempt {
   message: string;
   signature: `0x${string}`;
-  /** Host header of the request, used when no domain allowlist is configured. */
-  requestHost: string | undefined;
 }
 
 export type LoginResult =
@@ -27,7 +25,7 @@ export type LoginResult =
 export interface SiweLoginOptions {
   /** Addresses allowed to drive a run. An empty list disables SIWE login. */
   operatorAddresses: readonly string[];
-  /** Domains a signed message may claim. Empty means "must equal the request host". */
+  /** Domains a signed message may claim. Required when SIWE login is enabled. */
   domains?: readonly string[];
   sessionTtlMs?: number;
   nonceTtlMs?: number;
@@ -53,6 +51,11 @@ export class SiweLogin {
     this.#allowlist = options.operatorAddresses.map(normalizeAddress);
     this.#domains = [...(options.domains ?? [])].map((domain) => domain.trim().toLowerCase())
       .filter((domain) => domain.length > 0);
+    if (this.#allowlist.length > 0 && this.#domains.length === 0) {
+      throw new MissingSiweDomainError(
+        'ARENA_SIWE_DOMAINS is required when wallet login is enabled',
+      );
+    }
     this.#sessionTtlMs = options.sessionTtlMs ?? SESSION_TTL_MS;
     this.#nonceTtlMs = options.nonceTtlMs ?? NONCE_TTL_MS;
     this.#now = options.now ?? Date.now;
@@ -77,9 +80,26 @@ export class SiweLogin {
       // Deleted on first use, so a captured message cannot be replayed.
       return { ok: false, reason: 'Unknown or already used nonce' };
     }
-    if (!this.#domainAllowed(parsed.domain, attempt.requestHost)) {
+    const domain = parsed.domain;
+    if (domain === undefined || !this.#domainAllowed(domain)) {
       return { ok: false, reason: 'Message domain does not match this server' };
     }
+    if (parsed.version !== '1') {
+      return { ok: false, reason: 'Unsupported SIWE version' };
+    }
+    let uriHost: string;
+    try {
+      uriHost = new URL(parsed.uri ?? '').host;
+    } catch {
+      return { ok: false, reason: 'Message URI is invalid' };
+    }
+    if (uriHost.toLowerCase() !== domain.toLowerCase()) {
+      return { ok: false, reason: 'Message URI host does not match its domain' };
+    }
+    // Only `time` is worth passing: viem compares its other arguments against the
+    // same parsed message, so handing it our own domain and nonce back would
+    // compare each value to itself. Both are checked above against the allowlist
+    // and the issued-nonce map, which is where the real answer lives.
     if (!validateSiweMessage({ message: parsed, time: new Date(this.#now()) })) {
       return { ok: false, reason: 'Message is expired or not yet valid' };
     }
@@ -120,13 +140,11 @@ export class SiweLogin {
   }
 
   // The domain is what the operator's wallet showed him before he signed, so it
-  // is the anti-phishing check. Configure the list when a frontend proxies the
-  // arena under its own hostname; otherwise the request's own host is the answer.
-  #domainAllowed(messageDomain: string | undefined, requestHost: string | undefined): boolean {
+  // is the anti-phishing check.
+  #domainAllowed(messageDomain: string | undefined): boolean {
     const claimed = messageDomain?.toLowerCase();
     if (claimed === undefined) return false;
-    if (this.#domains.length > 0) return this.#domains.includes(claimed);
-    return requestHost !== undefined && claimed === requestHost.toLowerCase();
+    return this.#domains.includes(claimed);
   }
 
   #sweep(): void {
@@ -155,3 +173,5 @@ function normalizeAddress(value: string): Address {
 }
 
 export class InvalidOperatorAddressError extends Error {}
+
+export class MissingSiweDomainError extends Error {}

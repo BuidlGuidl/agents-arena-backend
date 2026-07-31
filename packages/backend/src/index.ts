@@ -1,7 +1,7 @@
 import { createLocalFundingGate, createWalletGate } from './chain/funding-gate.js';
 import { createSolveWatch } from './chain/solve-poller.js';
 import { createServer } from './server.js';
-import { InvalidOperatorAddressError, parseCsvList } from './siwe.js';
+import { InvalidOperatorAddressError, MissingSiweDomainError, parseCsvList } from './siwe.js';
 
 const port = Number(process.env.PORT ?? 4177);
 const operatorToken = (process.env.ARENA_OPERATOR_TOKEN ?? '').trim();
@@ -33,6 +33,12 @@ const { app } = ((): ReturnType<typeof createServer> => {
     // A typo in the allowlist would otherwise lock the operator out mid-event.
     if (error instanceof InvalidOperatorAddressError) {
       console.error(`ARENA_OPERATOR_ADDRESSES is invalid: ${error.message}`);
+      process.exit(1);
+    }
+    if (error instanceof MissingSiweDomainError) {
+      console.error(
+        'ARENA_SIWE_DOMAINS is required for wallet login. Set it to the hostname the wallet will show, such as the frontend host.',
+      );
       process.exit(1);
     }
     throw error;

@@ -521,6 +521,10 @@ input.steer:focus-visible {
   color: var(--green);
 }
 
+.status-tag.idle {
+  color: var(--muted);
+}
+
 .status-tag.blocked {
   color: var(--red);
 }

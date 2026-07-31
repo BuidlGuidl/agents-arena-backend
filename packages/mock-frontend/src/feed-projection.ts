@@ -14,15 +14,21 @@ export interface FeedGap {
   to: number; // seq of the event that skipped ahead
 }
 
+export interface FeedEntry {
+  event: ArenaEvent;
+  result?: Extract<ArenaEvent, { type: 'tool.result' }>;
+}
+
 export interface FeedState {
-  events: ArenaEvent[]; // deduped, in arrival order
+  events: ArenaEvent[];
+  entries: FeedEntry[];
   seenIds: Set<number>; // every global id already ingested
   lastSeqBySource: Record<string, number>; // highest seq seen per source
   gaps: FeedGap[]; // per-source seq skips observed so far
 }
 
 export function initialFeedState(): FeedState {
-  return { events: [], seenIds: new Set<number>(), lastSeqBySource: {}, gaps: [] };
+  return { events: [], entries: [], seenIds: new Set<number>(), lastSeqBySource: {}, gaps: [] };
 }
 
 // Ingest one streamed event. Pure: returns the same state object when the event
@@ -37,9 +43,21 @@ export function ingestEvent(state: FeedState, event: ArenaEvent): FeedState {
 
   const seenIds = new Set(state.seenIds);
   seenIds.add(event.id);
+  let entries: FeedEntry[];
+  if (event.type === 'tool.result') {
+    const matchingCallIndex = findLatestUnresolvedCall(state.entries, event);
+    entries = matchingCallIndex < 0
+      ? [...state.entries, { event }]
+      : state.entries.map((entry, index) => (
+        index === matchingCallIndex ? { ...entry, result: event } : entry
+      ));
+  } else {
+    entries = [...state.entries, { event }];
+  }
 
   return {
     events: [...state.events, event],
+    entries,
     seenIds,
     lastSeqBySource: {
       ...state.lastSeqBySource,
@@ -49,10 +67,26 @@ export function ingestEvent(state: FeedState, event: ArenaEvent): FeedState {
   };
 }
 
-// Events belonging to one entrant lane. The fake driver stamps entrant events
-// with `source === entrant.id`; run-level events use RUN_SOURCE.
-export function eventsForSource(events: ArenaEvent[], source: string): ArenaEvent[] {
-  return events.filter((event) => event.source === source);
+function findLatestUnresolvedCall(
+  entries: FeedEntry[],
+  event: Extract<ArenaEvent, { type: 'tool.result' }>,
+): number {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]!;
+    if (
+      entry.event.source === event.source
+      && entry.event.type === 'tool.call'
+      && entry.event.payload.toolCallId === event.payload.toolCallId
+      && entry.result === undefined
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+export function entriesForSource(entries: FeedEntry[], source: string): FeedEntry[] {
+  return entries.filter((entry) => entry.event.source === source);
 }
 
 export function isRunLevel(event: ArenaEvent): boolean {
@@ -127,7 +161,7 @@ export function describeEvent(event: ArenaEvent): string {
     case 'agent.reasoning':
       return `thinks: ${event.payload.text}`;
     case 'tool.call':
-      return `calls ${event.payload.tool}: ${event.payload.detail}`;
+      return `${event.payload.tool} → running: ${event.payload.detail}`;
     case 'tool.result':
       return `${event.payload.tool} → ${event.payload.ok ? 'ok' : 'fail'}: ${event.payload.detail}`;
     case 'entrant.steered':
@@ -156,6 +190,20 @@ export function describeEvent(event: ArenaEvent): string {
       // Unknown-to-the-UI type: never blank the row, show the raw payload.
       return rawFallback(event);
   }
+}
+
+export function describeEntry(entry: FeedEntry): string {
+  if (entry.event.type !== 'tool.call') return describeEvent(entry.event);
+  if (entry.result === undefined) {
+    return `${entry.event.payload.tool} → running: ${entry.event.payload.detail}`;
+  }
+
+  const callDetail = entry.event.payload.detail;
+  const resultDetail = entry.result.payload.detail;
+  const resultSuffix = resultDetail.length > 0 && resultDetail !== callDetail
+    ? ` ⇒ ${resultDetail}`
+    : '';
+  return `${entry.event.payload.tool} → ${entry.result.payload.ok ? 'ok' : 'fail'}: ${callDetail}${resultSuffix}`;
 }
 
 function rawFallback(event: ArenaEvent): string {

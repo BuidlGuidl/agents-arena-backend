@@ -15,7 +15,8 @@ describe('CodexEventParser', () => {
     const parser = new CodexEventParser('codex-1');
     const parsed = (await fixture('codex-events.jsonl')).map((line) => parser.parse(line));
 
-    expect(parsed.flatMap((result) => result.events)).toEqual([
+    const events = parsed.flatMap((result) => result.events);
+    expect(events).toEqual([
       {
         type: 'entrant.error',
         payload: {
@@ -32,12 +33,19 @@ describe('CodexEventParser', () => {
         payload: {
           entrantId: 'codex-1',
           tool: 'shell',
+          toolCallId: 'item_2',
           detail: "/bin/zsh -lc 'echo hello arena'",
         },
       },
       {
         type: 'tool.result',
-        payload: { entrantId: 'codex-1', tool: 'shell', ok: true, detail: 'hello arena\n' },
+        payload: {
+          entrantId: 'codex-1',
+          tool: 'shell',
+          toolCallId: 'item_2',
+          ok: true,
+          detail: 'hello arena\n',
+        },
       },
       {
         type: 'agent.message',
@@ -48,6 +56,8 @@ describe('CodexEventParser', () => {
         payload: { entrantId: 'codex-1', inputTokens: 36126, outputTokens: 126, cachedInputTokens: 27136, costUsd: null },
       },
     ]);
+    const toolEvents = events.filter((event) => event.type === 'tool.call' || event.type === 'tool.result');
+    expect(toolEvents[0]?.payload.toolCallId).toBe(toolEvents[1]?.payload.toolCallId);
     expect(parsed[0]?.sessionId).toBe('019f8878-f894-7dd1-863c-9d91442434b2');
     expect(parsed.at(-1)?.turnEnded).toBe(true);
   });
@@ -143,6 +153,7 @@ describe('CodexEventParser', () => {
       payload: {
         entrantId: 'codex-1',
         tool: 'file_change',
+        toolCallId: 'item-file-1',
         detail: 'packages/backend/src/example.ts',
       },
     }]);
@@ -151,10 +162,17 @@ describe('CodexEventParser', () => {
       payload: {
         entrantId: 'codex-1',
         tool: 'file_change',
+        toolCallId: 'item-file-1',
         ok: true,
         detail: 'packages/backend/src/example.ts',
       },
     }]);
+    const startedEvent = started.events[0];
+    const completedEvent = completed.events[0];
+    if (startedEvent?.type !== 'tool.call' || completedEvent?.type !== 'tool.result') {
+      throw new Error('generic tool pair missing');
+    }
+    expect(startedEvent.payload.toolCallId).toBe(completedEvent.payload.toolCallId);
     expect(parser.unknownEvents).toBe(0);
   });
 
@@ -176,10 +194,26 @@ describe('CodexEventParser', () => {
       payload: {
         entrantId: 'codex-1',
         tool: 'file_change',
+        toolCallId: 'item-file-2',
         ok: false,
         detail: 'packages/backend/src/example.ts',
       },
     }]);
+  });
+
+  it('uses per-parser synthetic ids when Codex omits item ids', () => {
+    const parser = new CodexEventParser('codex-1');
+    const started = parser.parse(JSON.stringify({
+      type: 'item.started',
+      item: { type: 'command_execution', command: 'pwd' },
+    }));
+    const completed = parser.parse(JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'command_execution', exit_code: 0 },
+    }));
+
+    expect(started.events[0]?.payload).toMatchObject({ toolCallId: 'synthetic-1' });
+    expect(completed.events[0]?.payload).toMatchObject({ toolCallId: 'synthetic-2' });
   });
 });
 
@@ -188,14 +222,26 @@ describe('OpenCodeEventParser', () => {
     const parser = new OpenCodeEventParser('opencode-1');
     const parsed = (await fixture('opencode-events.jsonl')).map((line) => parser.parse(line));
 
-    expect(parsed.flatMap((result) => result.events)).toEqual([
+    const events = parsed.flatMap((result) => result.events);
+    expect(events).toEqual([
       {
         type: 'tool.call',
-        payload: { entrantId: 'opencode-1', tool: 'bash', detail: 'echo hello arena' },
+        payload: {
+          entrantId: 'opencode-1',
+          tool: 'bash',
+          toolCallId: 'call_00_7kEdm3hh7CQuyhLOI92R7648',
+          detail: 'echo hello arena',
+        },
       },
       {
         type: 'tool.result',
-        payload: { entrantId: 'opencode-1', tool: 'bash', ok: true, detail: 'hello arena\n' },
+        payload: {
+          entrantId: 'opencode-1',
+          tool: 'bash',
+          toolCallId: 'call_00_7kEdm3hh7CQuyhLOI92R7648',
+          ok: true,
+          detail: 'hello arena\n',
+        },
       },
       // The tool-calls step is mid-turn, but its tokens are real spend.
       {
@@ -211,6 +257,9 @@ describe('OpenCodeEventParser', () => {
         payload: { entrantId: 'opencode-1', inputTokens: 15213, outputTokens: 3, cachedInputTokens: 15104, costUsd: null },
       },
     ]);
+    const toolEvents = events.filter((event) => event.type === 'tool.call' || event.type === 'tool.result');
+    expect(toolEvents[0]?.payload.toolCallId).toBe('call_00_7kEdm3hh7CQuyhLOI92R7648');
+    expect(toolEvents[0]?.payload.toolCallId).not.toBe('prt_f8878ffad001vvHNmblpjdVwDF');
     expect(parsed.every((result) => result.sessionId === 'ses_077870ef7ffeaZ3Asz0lQdr92M')).toBe(true);
     expect(parsed.at(-1)?.turnEnded).toBe(true);
   });
@@ -224,6 +273,23 @@ describe('OpenCodeEventParser', () => {
     expect(parser.unknownEvents).toBe(1);
     expect(logger.warn).toHaveBeenCalledOnce();
     expect(logger.info).toHaveBeenCalledOnce();
+  });
+
+  it('shares one synthetic id across an OpenCode tool pair without callID', () => {
+    const parser = new OpenCodeEventParser('opencode-1');
+    const parsed = parser.parse(JSON.stringify({
+      type: 'tool_use',
+      part: {
+        type: 'tool',
+        tool: 'bash',
+        state: { status: 'completed', input: { command: 'pwd' }, metadata: { exit: 0 } },
+      },
+    }));
+
+    expect(parsed.events.map((event) => event.payload)).toEqual([
+      expect.objectContaining({ toolCallId: 'synthetic-1' }),
+      expect.objectContaining({ toolCallId: 'synthetic-1' }),
+    ]);
   });
 
   it('ends a length-limited step and preserves its usage', () => {

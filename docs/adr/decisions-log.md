@@ -172,7 +172,23 @@ the same endpoint caps `eth_getLogs` at a 10,000 block span (`-32614`). in the s
 
 ---
 
-## ADR-0011 — two operator credentials on one gate: a shared token and a wallet session; reads stay open; the backend refuses to start without the token
+## ADR-0011 — entrant status stays the four observable states; tool events carry the harness call id
+
+**Status:** accepted (2026-07-29) — reconciles the contract with the frontend (issue #5); the glossary's state vocabulary stands
+
+**Decision:** `EntrantStatus` stays `working | idle | blocked | done`, unchanged in names and count. the backend emits only states it can observe; the frontend maps its richer display vocabulary onto these four, never the reverse. separately, the `tool.call` and `tool.result` payloads gain a required `toolCallId`, read off the id the harness already puts on its raw frames — codex's `item.id`, opencode's `part.callID` — never re-minted by the arena.
+
+**Why:** the frontend sketched six statuses (`working | thinking | exploiting | stuck | submitting | idle`); only two overlapped with ours. the tempting fix was to widen our enum to match the UI. but the backend has no honest source for `exploiting` or `stuck` — emitting them would be guessing — and `thinking` is not a lifecycle state at all, it is a content channel. we sanity-checked the vocabulary against vercel's ai sdk — the widest-deployed public protocol for streaming agent activity into a UI — and it makes the same cuts: reasoning is a separate stream alongside text, not a status, and a tool call waiting on a human is its own frame (`tool-approval-request`), which is exactly our `blocked`. statuses here are coarse per-entrant lifecycle; activity detail belongs on the event feed.
+
+the call id exists because pairing a `tool.result` to its `tool.call` by arrival order breaks the moment an agent runs tools in parallel, which is normal behaviour. both parsers were already handed a correlation id by their harness and dropped it.
+
+**Trade-off:** `submitting` would be honest once on-chain solve detection (issue #11) can see a pending transaction, and `thinking` once a real reasoning channel exists — both deferred until the emitter exists, so the enum is closed but not frozen. making `toolCallId` required is a small lie about rows journaled before this change, which replay without it; accepted because runs so far are disposable dev data, and an optional field would force every consumer to keep the pair-by-order fallback forever — the exact code path the id exists to kill. one more caveat: codex's `item.id` is unique per exec process, not per run — each turn spawns a fresh `codex exec resume` and the counter restarts at `item_0` — so a client pairs a result against the latest unresolved call for that (source, toolCallId), never the first match in history. the codex synthetic fallback only satisfies the required field: without ids, started and completed frames get different synthetic ids, so the entry stays unresolved. opencode's fallback pairs only because both events come from one frame. the mock frontend's projection is the reference for this.
+
+**Consequence:** the frontend drops `exploiting`/`stuck` from its set and needs renderings for `blocked` (agent stuck at a permission prompt — under `dontAsk` a policy bug worth surfacing on stream) and `done`. per ADR-0002 the frontend re-copies `arena-types.ts`. a client can now render a tool call as one entry with a running → ok/fail state instead of two unrelated log lines; the mock frontend does, as the reference implementation.
+
+---
+
+## ADR-0012 — two operator credentials on one gate: a shared token and a wallet session; reads stay open; the backend refuses to start without the token
 
 **Status:** accepted (2026-07-30) — enforces the "control endpoints are operator-only" line the PRD has carried since 2026-07-22
 

@@ -13,17 +13,18 @@ import type {
 import { projectSnapshot } from './project-snapshot';
 import {
   deriveLaneWallet,
-  describeEvent,
-  eventsForSource,
+  describeEntry,
+  entriesForSource,
   formatWei,
   gapsForSource,
   ingestEvent,
   initialFeedState,
   RUN_SOURCE,
   truncateAddress,
+  type FeedEntry,
   type FeedState,
 } from './feed-projection';
-import { runPhase, styleForEvent } from './event-style';
+import { runPhase, styleForEntry } from './event-style';
 import { OperatorLogin } from './operator-login';
 import './styles.css';
 
@@ -85,7 +86,7 @@ function App() {
     return () => source.close();
   }, [cache, runId]);
 
-  const runLog = useMemo(() => eventsForSource(feed.events, RUN_SOURCE), [feed.events]);
+  const runLog = useMemo(() => entriesForSource(feed.entries, RUN_SOURCE), [feed.entries]);
   const phase = runPhase(run?.state);
   const entrants = run?.entrants ?? [];
   const connClass = connection === 'connected'
@@ -185,7 +186,7 @@ function App() {
       <ul className={`run-log${runLog.length === 0 ? ' empty' : ''}`} data-testid="run-log">
         {runLog.length === 0
           ? <li>no run-level events yet.</li>
-          : runLog.map((event) => <FeedRow key={event.id} event={event} />)}
+          : runLog.map((entry) => <FeedRow key={entry.event.id} entry={entry} />)}
       </ul>
 
       <details className="raw">
@@ -248,12 +249,12 @@ function BroadcastRow({ runId }: { runId: string }) {
   );
 }
 
-function FeedRow({ event }: { event: ArenaEvent }) {
-  const style = styleForEvent(event);
+function FeedRow({ entry }: { entry: FeedEntry }) {
+  const style = styleForEntry(entry);
   return (
     <li className={`row tone-${style.tone}`}>
       <span className="tag">{style.tag}</span>
-      <span className="body">{describeEvent(event)}</span>
+      <span className="body">{describeEntry(entry)}</span>
     </li>
   );
 }
@@ -319,10 +320,11 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, side }: {
     ),
     onSuccess: () => setText(''),
   });
-  const laneEvents = useMemo(
-    () => (entrant ? eventsForSource(feed.events, entrant.id) : []),
-    [entrant, feed.events],
+  const laneEntries = useMemo(
+    () => (entrant ? entriesForSource(feed.entries, entrant.id) : []),
+    [entrant, feed.entries],
   );
+  const laneEvents = useMemo(() => laneEntries.map((entry) => entry.event), [laneEntries]);
   const laneGaps = useMemo(
     () => (entrant ? gapsForSource(feed.gaps, entrant.id) : []),
     [entrant, feed.gaps],
@@ -410,10 +412,10 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, side }: {
       {steer.error instanceof Error ? <p className="error-line">{steer.error.message}</p> : null}
 
       <p className="feed-label">live feed</p>
-      <ul className={`feed${laneEvents.length === 0 ? ' empty' : ''}`} data-testid={`lane-${entrant.id}`}>
-        {laneEvents.length === 0
+      <ul className={`feed${laneEntries.length === 0 ? ' empty' : ''}`} data-testid={`lane-${entrant.id}`}>
+        {laneEntries.length === 0
           ? <li>waiting for the agent to act…</li>
-          : laneEvents.map((event) => <FeedRow key={event.id} event={event} />)}
+          : laneEntries.map((entry) => <FeedRow key={entry.event.id} entry={entry} />)}
       </ul>
     </article>
   );

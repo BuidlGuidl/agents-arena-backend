@@ -3,8 +3,9 @@ import { describe, expect, it } from 'vitest';
 import type { ArenaEvent } from '../../../contract/arena-types';
 import {
   deriveLaneWallet,
+  describeEntry,
   describeEvent,
-  eventsForSource,
+  entriesForSource,
   formatWei,
   gapsForSource,
   ingestEvent,
@@ -14,6 +15,7 @@ import {
   truncateAddress,
   type FeedState,
 } from './feed-projection';
+import { styleForEntry } from './event-style';
 
 // Minimal event builder. Global id and per-source seq are set explicitly so
 // tests exercise the exact skip patterns the backend can produce.
@@ -40,7 +42,7 @@ describe('ingestEvent — seq gap detection', () => {
       evt({ id: 40, source: 'codex-1', seq: 3 }),
     ]);
     expect(feed.gaps).toHaveLength(0);
-    expect(feed.events).toHaveLength(3);
+    expect(feed.entries).toHaveLength(3);
   });
 
   it('flags a real gap when a source seq skips forward', () => {
@@ -74,7 +76,7 @@ describe('ingestEvent — id dedup on replay overlap', () => {
       evt({ id: 11, source: 'codex-1', seq: 2 }),
       evt({ id: 12, source: 'codex-1', seq: 3 }),
     ].reduce(ingestEvent, first);
-    expect(after.events.map((e) => e.id)).toEqual([10, 11, 12]);
+    expect(after.entries.map((entry) => entry.event.id)).toEqual([10, 11, 12]);
     expect(after.gaps).toHaveLength(0);
   });
 
@@ -93,7 +95,227 @@ describe('ingestEvent — id dedup on replay overlap', () => {
       evt({ id: 11, source: 'codex-1', seq: 2 }), // replay overlap
     ]);
     expect(feed.gaps).toHaveLength(0);
-    expect(feed.events).toHaveLength(3);
+    expect(feed.entries).toHaveLength(3);
+  });
+});
+
+describe('ingestEvent — tool call pairing', () => {
+  it('keeps codex command and output details in one paired entry', () => {
+    const events = [
+      evt({
+        id: 10,
+        source: 'codex-1',
+        seq: 1,
+        type: 'tool.call',
+        payload: {
+          entrantId: 'codex-1',
+          tool: 'bash',
+          toolCallId: 'call-1',
+          detail: 'echo command-token',
+        },
+      }),
+      evt({
+        id: 11,
+        source: 'codex-1',
+        seq: 2,
+        type: 'tool.result',
+        payload: {
+          entrantId: 'codex-1',
+          tool: 'bash',
+          toolCallId: 'call-1',
+          ok: true,
+          detail: 'output-token',
+        },
+      }),
+    ];
+    const feed = feedFrom(events);
+
+    expect(feed.events).toEqual(events);
+    expect(feed.entries).toHaveLength(1);
+    expect(describeEntry(feed.entries[0]!)).toContain('echo command-token');
+    expect(describeEntry(feed.entries[0]!)).toContain('output-token');
+  });
+
+  it('pairs back-to-back opencode events and preserves the command', () => {
+    const feed = feedFrom([
+      evt({
+        id: 20,
+        source: 'opencode-1',
+        seq: 1,
+        type: 'tool.call',
+        payload: {
+          entrantId: 'opencode-1',
+          tool: 'bash',
+          toolCallId: 'tool-1',
+          detail: 'forge test',
+        },
+      }),
+      evt({
+        id: 21,
+        source: 'opencode-1',
+        seq: 2,
+        type: 'tool.result',
+        payload: {
+          entrantId: 'opencode-1',
+          tool: 'bash',
+          toolCallId: 'tool-1',
+          ok: true,
+          detail: 'tests passed',
+        },
+      }),
+    ]);
+
+    expect(feed.entries).toHaveLength(1);
+    expect(feed.entries[0]!.event.payload).toMatchObject({ detail: 'forge test' });
+    expect(styleForEntry(feed.entries[0]!)).toEqual({ tone: 'tool', tag: 'ok' });
+  });
+
+  it('pairs a reused id with the latest unresolved call', () => {
+    const feed = feedFrom([
+      evt({
+        id: 30,
+        source: 'codex-1',
+        seq: 1,
+        type: 'tool.call',
+        payload: {
+          entrantId: 'codex-1',
+          tool: 'bash',
+          toolCallId: 'item_2',
+          detail: 'old command',
+        },
+      }),
+      evt({
+        id: 31,
+        source: 'codex-1',
+        seq: 2,
+        type: 'tool.call',
+        payload: {
+          entrantId: 'codex-1',
+          tool: 'bash',
+          toolCallId: 'item_2',
+          detail: 'new command',
+        },
+      }),
+      evt({
+        id: 32,
+        source: 'codex-1',
+        seq: 3,
+        type: 'tool.result',
+        payload: {
+          entrantId: 'codex-1',
+          tool: 'bash',
+          toolCallId: 'item_2',
+          ok: true,
+          detail: 'new output',
+        },
+      }),
+    ]);
+
+    expect(feed.entries).toHaveLength(2);
+    expect(feed.entries[0]!.result).toBeUndefined();
+    expect(styleForEntry(feed.entries[0]!)).toEqual({ tone: 'tool', tag: 'running' });
+    expect(feed.entries[1]!.result).toMatchObject({
+      type: 'tool.result',
+      payload: { detail: 'new output' },
+    });
+    expect(describeEntry(feed.entries[1]!)).toContain('new command');
+  });
+
+  it('keeps a duplicate result for a resolved id as a standalone entry', () => {
+    const feed = feedFrom([
+      evt({
+        id: 40,
+        source: 'codex-1',
+        seq: 1,
+        type: 'tool.call',
+        payload: {
+          entrantId: 'codex-1',
+          tool: 'bash',
+          toolCallId: 'call-1',
+          detail: 'pwd',
+        },
+      }),
+      evt({
+        id: 41,
+        source: 'codex-1',
+        seq: 2,
+        type: 'tool.result',
+        payload: {
+          entrantId: 'codex-1',
+          tool: 'bash',
+          toolCallId: 'call-1',
+          ok: true,
+          detail: '/repo',
+        },
+      }),
+      evt({
+        id: 42,
+        source: 'codex-1',
+        seq: 3,
+        type: 'tool.result',
+        payload: {
+          entrantId: 'codex-1',
+          tool: 'bash',
+          toolCallId: 'call-1',
+          ok: true,
+          detail: '/repo again',
+        },
+      }),
+    ]);
+
+    expect(feed.entries).toHaveLength(2);
+    expect(feed.entries[0]!.result?.id).toBe(41);
+    expect(feed.entries[1]).toEqual({ event: expect.objectContaining({ id: 42, type: 'tool.result' }) });
+  });
+
+  it('keeps an unmatched replay result as a standalone entry', () => {
+    const result = evt({
+      id: 20,
+      source: 'codex-1',
+      seq: 1,
+      type: 'tool.result',
+      payload: {
+        entrantId: 'codex-1',
+        tool: 'bash',
+        toolCallId: 'missing-call',
+        ok: false,
+        detail: 'failed',
+      },
+    });
+
+    expect(feedFrom([result]).entries).toEqual([{ event: result }]);
+  });
+
+  it('does not pair equal synthetic ids from different sources', () => {
+    const feed = feedFrom([
+      evt({
+        id: 30,
+        source: 'codex-1',
+        seq: 1,
+        type: 'tool.call',
+        payload: {
+          entrantId: 'codex-1',
+          tool: 'bash',
+          toolCallId: 'synthetic-1',
+          detail: 'pwd',
+        },
+      }),
+      evt({
+        id: 31,
+        source: 'opencode-1',
+        seq: 1,
+        type: 'tool.result',
+        payload: {
+          entrantId: 'opencode-1',
+          tool: 'bash',
+          toolCallId: 'synthetic-1',
+          ok: true,
+          detail: '/repo',
+        },
+      }),
+    ]);
+
+    expect(feed.entries).toHaveLength(2);
   });
 });
 
@@ -104,14 +326,15 @@ describe('event → lane routing', () => {
     evt({ id: 3, source: 'opencode-1', seq: 1 }),
     evt({ id: 4, source: 'codex-1', seq: 2 }),
   ];
+  const entries = events.map((event) => ({ event }));
 
   it('routes each entrant source to its own lane', () => {
-    expect(eventsForSource(events, 'codex-1').map((e) => e.id)).toEqual([2, 4]);
-    expect(eventsForSource(events, 'opencode-1').map((e) => e.id)).toEqual([3]);
+    expect(entriesForSource(entries, 'codex-1').map((entry) => entry.event.id)).toEqual([2, 4]);
+    expect(entriesForSource(entries, 'opencode-1').map((entry) => entry.event.id)).toEqual([3]);
   });
 
   it('routes run-source events to the run lane only', () => {
-    expect(eventsForSource(events, RUN_SOURCE).map((e) => e.id)).toEqual([1]);
+    expect(entriesForSource(entries, RUN_SOURCE).map((entry) => entry.event.id)).toEqual([1]);
     expect(isRunLevel(events[0]!)).toBe(true);
     expect(isRunLevel(events[1]!)).toBe(false);
   });
@@ -124,8 +347,8 @@ describe('describeEvent — all 16 contract types render', () => {
     { ...base, type: 'entrant.status', payload: { entrantId: 'codex-1', status: 'working' } },
     { ...base, type: 'agent.message', payload: { entrantId: 'codex-1', text: 'hi' } },
     { ...base, type: 'agent.reasoning', payload: { entrantId: 'codex-1', text: 'thinking' } },
-    { ...base, type: 'tool.call', payload: { entrantId: 'codex-1', tool: 'bash', detail: 'ls' } },
-    { ...base, type: 'tool.result', payload: { entrantId: 'codex-1', tool: 'bash', ok: true, detail: 'ok' } },
+    { ...base, type: 'tool.call', payload: { entrantId: 'codex-1', tool: 'bash', toolCallId: 'call-1', detail: 'ls' } },
+    { ...base, type: 'tool.result', payload: { entrantId: 'codex-1', tool: 'bash', toolCallId: 'call-1', ok: true, detail: 'ok' } },
     { ...base, type: 'entrant.steered', payload: { entrantId: 'codex-1', text: 'go' } },
     { ...base, type: 'entrant.prompt', payload: { entrantId: 'codex-1', text: 'begin' } },
     { ...base, type: 'entrant.nudged', payload: { entrantId: 'codex-1', text: 'nudge', flags: 1 } },
@@ -147,6 +370,19 @@ describe('describeEvent — all 16 contract types render', () => {
       const line = describeEvent(event);
       expect(line.length).toBeGreaterThan(0);
     }
+  });
+
+  it('renders tool states as running, ok, and fail', () => {
+    const call = samples.find((event) => event.type === 'tool.call');
+    const result = samples.find((event) => event.type === 'tool.result');
+    if (call === undefined || result === undefined || result.type !== 'tool.result') {
+      throw new Error('tool samples missing');
+    }
+    const failed = { ...result, payload: { ...result.payload, ok: false } };
+
+    expect(describeEvent(call)).toContain('running');
+    expect(describeEvent(result)).toContain('ok');
+    expect(describeEvent(failed)).toContain('fail');
   });
 
   // A missing case still renders through rawFallback, so assert the shaped line.

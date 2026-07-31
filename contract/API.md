@@ -18,7 +18,7 @@ A request carrying neither returns status `401` and `{"error":"Operator token re
 
 `ARENA_OPERATOR_TOKEN` is required — the backend refuses to start without it, so a deployment cannot leave the controls open by accident. Wallet login is optional and switches on only when `ARENA_OPERATOR_ADDRESSES` lists at least one address; with it unset the `/auth` routes answer `503` and the arena is token-only.
 
-**For a frontend:** either credential works, and both keep the secret out of the browser. With the token, proxy the control calls through your own server — a route handler that holds `ARENA_OPERATOR_TOKEN` in its environment and adds the header. With wallet login, the cookie is `HttpOnly`, so page scripts cannot read it either. What you must not do is ship the token to the page and send it from there: that exposes it to any XSS and to anyone reading devtools over the operator's shoulder on a live stream. See ADR-0011.
+**For a frontend:** either credential works, and both keep the secret out of the browser. With the token, proxy the control calls through your own server — a route handler that holds `ARENA_OPERATOR_TOKEN` in its environment and adds the header. With wallet login, the cookie is `HttpOnly`, so page scripts cannot read it either. What you must not do is ship the token to the page and send it from there: that exposes it to any XSS and to anyone reading devtools over the operator's shoulder on a live stream. See ADR-0012.
 
 ## Wallet login
 

@@ -206,6 +206,7 @@ export class RunManager {
           id: entrant.id,
           harness: entrant.harness,
           model: entrant.model,
+          effort: entrant.effort ?? null,
           address: null,
           status: 'idle' as const,
       }))).run();
@@ -233,6 +234,7 @@ export class RunManager {
           id: entrant.id,
           harness: entrant.harness,
           model: entrant.model,
+          ...(entrant.effort === null ? {} : { effort: entrant.effort }),
           address: entrant.address,
           status: entrant.status,
           flags: solves.length,

@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -124,6 +124,7 @@ async function setup(
   watchdogMs = 10 * 60 * 1_000,
   withWallet = false,
   model?: string,
+  effort?: EntrantRecord['effort'],
 ): Promise<{
   journal: EventJournal;
   driver: EntrantDriver;
@@ -147,6 +148,7 @@ async function setup(
   // Cost pricing keys off the entrant's model, so a test can swap in a model the
   // rate table lists (or one it does not).
   if (model !== undefined) entrant = { ...entrant, model };
+  if (effort !== undefined) entrant = { ...entrant, effort };
   if (withWallet) {
     const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
     const signature = await account.signTypedData(seedTypedData(run.id, 31337));
@@ -439,6 +441,36 @@ describe('usage cost', () => {
 });
 
 describe('adapter guardrails', () => {
+  it('writes Codex model reasoning effort to config.toml when set', async () => {
+    const context = await setup('codex', undefined, false, undefined, 'high');
+    try {
+      const config = await readFile(
+        join(context.containerOptions.credentialDir as string, 'config.toml'),
+        'utf8',
+      );
+      expect(config).toContain('model = "gpt-5.5"\n');
+      expect(config).toContain('model_reasoning_effort = "high"\n');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('omits Codex model reasoning effort from config.toml when unset', async () => {
+    const context = await setup('codex');
+    try {
+      const config = await readFile(
+        join(context.containerOptions.credentialDir as string, 'config.toml'),
+        'utf8',
+      );
+      expect(config).toContain('model = "gpt-5.5"\n');
+      expect(config).not.toContain('model_reasoning_effort');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
   it.each(['codex', 'opencode', 'claude'] as const)('%s always injects ETH_RPC_URL into the container', async (harness) => {
     const context = await setup(harness);
     try {
@@ -612,6 +644,7 @@ describe('adapter construction errors', () => {
       id: 'codex-1',
       harness: 'codex',
       model: 'gpt-5.5',
+      effort: null,
       address: null,
       status: 'working',
     };
@@ -642,6 +675,7 @@ describe('adapter construction errors', () => {
       id: `${harness}-1`,
       harness,
       model: harness === 'claude' ? 'claude-opus-5' : 'openrouter/z-ai/glm-5.2',
+      effort: null,
       address: null,
       status: 'idle',
     };
@@ -675,6 +709,7 @@ describe('adapter construction errors', () => {
       id: 'wrong-1',
       harness: harness === 'codex' ? 'opencode' : 'codex',
       model: 'test-model',
+      effort: null,
       address: null,
       status: 'idle',
     };

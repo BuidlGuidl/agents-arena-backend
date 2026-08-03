@@ -27,6 +27,7 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
       id TEXT NOT NULL,
       harness TEXT NOT NULL,
       model TEXT NOT NULL,
+      effort TEXT,
       address TEXT,
       status TEXT NOT NULL,
       FOREIGN KEY (run_id) REFERENCES runs(id)

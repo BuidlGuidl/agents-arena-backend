@@ -722,6 +722,106 @@ describe('run rosters', () => {
     ]);
   });
 
+  it('rejects a model outside the harness allowlist', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        roster: [{ id: 'codex-main', harness: 'codex', model: 'gpt-4' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
+      .toBe('codex models must be one of: gpt-5.5, gpt-5.6-sol');
+  });
+
+  it('rejects a model allowed only for another harness', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        roster: [{ id: 'codex-main', harness: 'codex', model: 'claude-opus-5' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
+      .toBe('codex models must be one of: gpt-5.5, gpt-5.6-sol');
+  });
+
+  it('accepts effort for a Codex roster entrant and exposes it in the snapshot', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        roster: [{ id: 'codex-main', harness: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const { run } = response.json() as { run: RunSnapshot };
+    expect(run.entrants).toEqual([
+      expect.objectContaining({
+        id: 'codex-main',
+        harness: 'codex',
+        model: 'gpt-5.6-sol',
+        effort: 'xhigh',
+      }),
+    ]);
+  });
+
+  it('rejects effort for a Claude roster entrant', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        roster: [{ id: 'claude-main', harness: 'claude', model: 'claude-opus-5', effort: 'high' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
+      .toBe('effort is codex-only for now; claude and opencode have no verified CLI knob');
+  });
+
+  it('rejects an invalid roster effort', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        roster: [{ id: 'codex-main', harness: 'codex', model: 'gpt-5.5', effort: 'extreme' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
   it.each([
     {
       caseName: 'more than ten entrants',
@@ -751,20 +851,12 @@ describe('run rosters', () => {
       roster: [{ id: 'run', harness: 'codex', model: 'gpt-5.5' }],
     },
     {
-      caseName: 'the default model',
+      caseName: 'the default model because it is outside the allowlist',
       roster: [{ id: 'codex-main', harness: 'codex', model: 'default' }],
     },
     {
-      caseName: 'a case-insensitive default model',
-      roster: [{ id: 'codex-main', harness: 'codex', model: 'Default' }],
-    },
-    {
-      caseName: 'a model with leading whitespace',
+      caseName: 'a whitespace-padded model because it is outside the allowlist',
       roster: [{ id: 'codex-main', harness: 'codex', model: ' gpt-5.5' }],
-    },
-    {
-      caseName: 'a model with trailing whitespace',
-      roster: [{ id: 'codex-main', harness: 'codex', model: 'gpt-5.5 ' }],
     },
     {
       caseName: 'an empty roster',

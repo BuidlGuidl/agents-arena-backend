@@ -43,9 +43,15 @@ export class CodexDriver extends HarnessEntrantDriver {
       // login rejects API-only models (gpt-5, gpt-5-codex) with a 400, so 'default'
       // (or empty) leaves codex on the account's own default model.
       const pinsModel = entrant.model !== '' && entrant.model.toLowerCase() !== 'default';
+      const config = [
+        pinsModel ? `model = ${tomlString(entrant.model)}\n` : '',
+        entrant.effort === null
+          ? ''
+          : `model_reasoning_effort = ${tomlString(entrant.effort)}\n`,
+      ].join('');
       await writeFile(
         join(credentialDir, 'config.toml'),
-        pinsModel ? `model = ${tomlString(entrant.model)}\n` : '',
+        config,
         { mode: 0o644 },
       );
       return await this.containerFactory({

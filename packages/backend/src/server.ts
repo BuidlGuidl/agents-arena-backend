@@ -4,9 +4,12 @@ import { z } from 'zod';
 
 import {
   HARNESS_IDS,
+  ROSTER_EFFORTS,
+  ROSTER_MODELS,
   type ArenaEvent,
   type BroadcastResponse,
   type CreateRunRequest,
+  type RosterEntry,
 } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import {
@@ -40,12 +43,25 @@ const rosterEntrySchema = z.object({
     .regex(/^[a-z][a-z0-9-]*$/)
     .refine((id) => id !== 'run'),
   harness: z.enum(HARNESS_IDS),
-  model: z.string().refine((model) => (
-    model.trim().length > 0
-    && model.trim() === model
-    && model.toLowerCase() !== 'default'
-  )),
-}).strict();
+  model: z.string(),
+  effort: z.enum(ROSTER_EFFORTS).optional(),
+}).strict().superRefine((entry, context) => {
+  const allowedModels = ROSTER_MODELS[entry.harness];
+  if (!allowedModels.includes(entry.model)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['model'],
+      message: `${entry.harness} models must be one of: ${allowedModels.join(', ')}`,
+    });
+  }
+  if (entry.effort !== undefined && entry.harness !== 'codex') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['effort'],
+      message: 'effort is codex-only for now; claude and opencode have no verified CLI knob',
+    });
+  }
+});
 
 const createRunSchema = z.object({
   preset: z.string().min(1),
@@ -209,7 +225,14 @@ export function createServer(options: ServerOptions): ArenaServer {
       preset: body.preset,
       ...(body.autoStart === undefined ? {} : { autoStart: body.autoStart }),
       ...(body.idempotencyKey === undefined ? {} : { idempotencyKey: body.idempotencyKey }),
-      ...(body.roster === undefined ? {} : { roster: body.roster }),
+      ...(body.roster === undefined ? {} : {
+        roster: body.roster.map((entry): RosterEntry => ({
+          id: entry.id,
+          harness: entry.harness,
+          model: entry.model,
+          ...(entry.effort === undefined ? {} : { effort: entry.effort }),
+        })),
+      }),
     };
     const result = await manager.create(input);
     return reply.status(result.created ? 201 : 200).send({ run: result.run });

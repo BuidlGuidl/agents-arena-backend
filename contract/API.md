@@ -99,7 +99,13 @@ An optional `roster` replaces the preset entrants. It accepts 1–10 entries:
 }
 ```
 
-Each `id` must match `^[a-z][a-z0-9-]*$`, contain at most 20 characters, and be unique within the roster. Docker names allow 63 characters; `arena-`, the 36-character run UUID, and their separator leave 20 characters for the entrant ID. The ID `run` is reserved for run-level feed events. `harness` must be `codex`, `opencode`, or `claude`. `model` must be a non-empty explicit model ID with no leading or trailing whitespace. Any case variant of `default` is invalid. Unknown model IDs are accepted. They report `costUsd: null` when the harness does not supply a price.
+Each `id` must match `^[a-z][a-z0-9-]*$`, contain at most 20 characters, and be unique within the roster. Docker names allow 63 characters; `arena-`, the 36-character run UUID, and their separator leave 20 characters for the entrant ID. The ID `run` is reserved for run-level feed events. `harness` must be `codex`, `opencode`, or `claude`. The `model` must appear in the selected harness's allowlist:
+
+- `codex`: `gpt-5.5`, `gpt-5.6-sol`
+- `claude`: `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`
+- `opencode`: `openrouter/z-ai/glm-5.2`, `openrouter/moonshotai/kimi-k3`, `openrouter/deepseek/deepseek-v4-flash-0731`
+
+The optional `effort` accepts `low`, `medium`, `high`, or `xhigh`. Only `codex` entries can set it. Claude and OpenCode have no verified CLI setting for effort yet.
 
 The response has status `201` for a new run and status `200` for an existing idempotent run.
 The chainless `fake-duel` preset skips wallet seeding. The `docker-duel` preset uses the seed and funding gates.

@@ -70,6 +70,7 @@ const entrant: EntrantRecord = {
   id: 'entrant-pack',
   harness: 'codex',
   model: 'test-model',
+  effort: null,
   address: null,
   status: 'idle',
 };

@@ -275,3 +275,5 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 **Trade-off:** callers that use rosters must supply stable entrant ids and explicit model ids. unknown models run without derived pricing.
 
 **Consequence:** `entrantId` remains the identity for storage, events, usage, and frontend lanes. harness selects a driver and remains display data elsewhere.
+
+**Amendment (2026-08-03):** roster models now use a per-harness allowlist in the shared contract. growing the list takes a one-line contract edit.

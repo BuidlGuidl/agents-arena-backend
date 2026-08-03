@@ -79,6 +79,14 @@ function App() {
       cache.setQueryData(['run', run.id], run);
     },
   });
+  const stopRun = useMutation({
+    mutationFn: async () => fetchJson<{ run: RunSnapshot }>(`/runs/${runId}/stop`, { method: 'POST' }),
+    onSuccess: ({ run: stopped }) => {
+      // The SSE projection can be ahead of this response; the higher lastEventId wins.
+      cache.setQueryData<RunSnapshot>(['run', stopped.id], (current) =>
+        current !== undefined && current.lastEventId > stopped.lastEventId ? current : stopped);
+    },
+  });
   const run = snapshot.data ?? null;
 
   useEffect(() => {
@@ -140,12 +148,23 @@ function App() {
         <button className="btn start" disabled={createRun.isPending} onClick={() => createRun.mutate()}>
           {createRun.isPending ? 'starting…' : 'start race'}
         </button>
+        {run !== null && run.state !== 'finished' && run.state !== 'failed' ? (
+          <button
+            className="btn ghost"
+            data-testid="stop-run"
+            disabled={stopRun.isPending || run.state === 'stopping'}
+            onClick={() => stopRun.mutate()}
+          >
+            {stopRun.isPending || run.state === 'stopping' ? 'stopping…' : 'stop race'}
+          </button>
+        ) : null}
         <span className="run-id">
           run <b>{run?.id ?? '—'}</b>
         </span>
       </div>
 
       {createRun.error instanceof Error ? <p className="error-line">{createRun.error.message}</p> : null}
+      {stopRun.error instanceof Error ? <p className="error-line">{stopRun.error.message}</p> : null}
 
       {run !== null ? (
         <div className="status-strip">

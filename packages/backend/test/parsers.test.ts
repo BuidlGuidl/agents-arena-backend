@@ -463,6 +463,31 @@ describe('ClaudeEventParser', () => {
     expect(logger.info).toHaveBeenCalledWith('[claude parser] ignored unknown event future_event');
   });
 
+  it('emits an entrant error when a rate limit is not allowed', () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const parser = new ClaudeEventParser('claude-1', logger);
+    const parsed = parser.parse(JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status: 'rejected',
+        overageStatus: 'not_available',
+        resetsAt: 1_786_000_000,
+      },
+    }));
+
+    expect(parsed.events).toEqual([{
+      type: 'entrant.error',
+      payload: {
+        entrantId: 'claude-1',
+        message: 'Claude rate limit status=rejected: '
+          + '{"status":"rejected","overageStatus":"not_available","resetsAt":1786000000}',
+      },
+    }]);
+    expect(logger.info).toHaveBeenCalledWith(
+      '[claude parser] rate limit status=rejected overageStatus=not_available',
+    );
+  });
+
   it('ignores assistant traffic from Task subagents', async () => {
     const parser = new ClaudeEventParser('claude-1');
     const assistant = JSON.parse((await fixture('claude-events.jsonl'))[1] as string) as Record<string, unknown>;
@@ -557,5 +582,58 @@ describe('ClaudeEventParser', () => {
       ],
       turnEnded: true,
     });
+  });
+
+  it('uses the errors array when an error result has no result string', () => {
+    const parser = new ClaudeEventParser('claude-1');
+    const parsed = parser.parse(JSON.stringify({
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      errors: ['Credit balance is too low'],
+      usage: { input_tokens: 3, output_tokens: 1 },
+    }));
+
+    expect(parsed.events).toContainEqual({
+      type: 'entrant.error',
+      payload: {
+        entrantId: 'claude-1',
+        message: 'Credit balance is too low',
+      },
+    });
+  });
+
+  it('forgets unmatched tool names when a result ends the turn', () => {
+    const parser = new ClaudeEventParser('claude-1');
+    parser.parse(JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'toolu_stale', name: 'Bash' }] },
+    }));
+    parser.parse(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }));
+    const lateResult = parser.parse(JSON.stringify({
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_stale',
+          content: 'late',
+        }],
+      },
+    }));
+
+    expect(lateResult.events).toEqual([{
+      type: 'tool.result',
+      payload: {
+        entrantId: 'claude-1',
+        tool: 'tool',
+        toolCallId: 'toolu_stale',
+        ok: true,
+        detail: 'late',
+      },
+    }]);
   });
 });

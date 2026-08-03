@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, lt, max } from 'drizzle-orm';
 
+import { credentialSecrets } from './adapters/credential-secrets.js';
 import { runKeySecrets } from './chain/wallet.js';
 import type { ArenaEvent, HistoryPage } from './contract.js';
 import { openArenaDatabase, type ArenaDatabase } from './db/index.js';
@@ -44,8 +45,11 @@ export class EventJournal {
     payload: EventPayload<T>,
   ): EventOfType<T> {
     const serializedPayload = JSON.stringify(payload);
-    // Agent tool output can echo WALLET_PRIVATE_KEY, so scrub live values before storage and delivery.
-    const payloadJson = redactExactSecrets(serializedPayload, runKeySecrets(runId));
+    // Entrant output can echo wallet and harness credentials, so scrub live values before storage and delivery.
+    const payloadJson = redactExactSecrets(serializedPayload, [
+      ...runKeySecrets(runId),
+      ...credentialSecrets(runId),
+    ]);
     const journalPayload = payloadJson === serializedPayload
       ? payload
       : JSON.parse(payloadJson) as EventPayload<T>;

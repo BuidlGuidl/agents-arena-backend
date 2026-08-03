@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,7 @@ import type { EventJournal } from '../journal.js';
 import type { EntrantContainer } from '../runtime/container.js';
 import { getWallet } from '../chain/wallet.js';
 import { CodexEventParser } from './codex-parser.js';
+import { registerCredentialSecrets } from './credential-secrets.js';
 import {
   HarnessEntrantDriver,
   type HarnessDriverOptions,
@@ -38,6 +39,8 @@ export class CodexDriver extends HarnessEntrantDriver {
     const credentialDir = await createCredentialDir('codex');
     try {
       const wallet = getWallet(run.id, entrant.id);
+      const auth = JSON.parse(await readFile(this.authPath, 'utf8')) as unknown;
+      registerCredentialSecrets(run.id, stringLeaves(auth));
       await copyFile(this.authPath, join(credentialDir, 'auth.json'));
       // Only pin a model when the preset asks for a specific one. A ChatGPT-account
       // login rejects API-only models (gpt-5, gpt-5-codex) with a 400, so 'default'
@@ -127,4 +130,11 @@ async function createCredentialDir(harness: string): Promise<string> {
 
 function tomlString(value: string): string {
   return JSON.stringify(value);
+}
+
+function stringLeaves(value: unknown): string[] {
+  if (typeof value === 'string') return value.length >= 16 ? [value] : [];
+  if (Array.isArray(value)) return value.flatMap(stringLeaves);
+  if (value === null || typeof value !== 'object') return [];
+  return Object.values(value).flatMap(stringLeaves);
 }

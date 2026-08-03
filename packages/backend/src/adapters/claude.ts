@@ -6,6 +6,7 @@ import type { EventJournal } from '../journal.js';
 import type { EntrantContainer } from '../runtime/container.js';
 import { getWallet } from '../chain/wallet.js';
 import { ClaudeEventParser } from './claude-parser.js';
+import { registerCredentialSecrets } from './credential-secrets.js';
 import {
   HarnessEntrantDriver,
   type HarnessDriverOptions,
@@ -46,6 +47,7 @@ export class ClaudeDriver extends HarnessEntrantDriver {
         throw new Error('Claude OAuth token not found in CLAUDE_CODE_OAUTH_TOKEN');
       }
       const wallet = getWallet(run.id, entrant.id);
+      registerCredentialSecrets(run.id, [oauthToken]);
       return await this.containerFactory({
         runId: run.id,
         entrantId: entrant.id,

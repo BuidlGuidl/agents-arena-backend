@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
-import { basename, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createInterface } from 'node:readline';
 
@@ -23,8 +21,12 @@ export interface ContainerOptions {
   entrantId: string;
   image?: string;
   env?: Record<string, string>;
-  credentialDir?: string;
-  credentialTarget?: string;
+  // A directory entry is bare {path}; mode only applies to file content, the
+  // runner creates directories with its own default.
+  credentialFiles?: Array<
+    | { path: string; content?: never; mode?: never }
+    | { path: string; content: string; mode?: number }
+  >;
   challengePackDir?: string;
   challengePackTarget?: string;
   readyTimeoutMs?: number;
@@ -57,12 +59,23 @@ interface RunnerReadyMessage {
   ev: 'ready';
 }
 
+interface RunnerFileOkMessage {
+  ev: 'file-ok';
+  id: string;
+}
+
 interface RunnerErrorMessage {
   ev: 'error';
   msg: string;
 }
 
-type RunnerMessage = RunnerLineMessage | RunnerExitMessage | RunnerReadyMessage | RunnerErrorMessage;
+type RunnerMessage = RunnerLineMessage | RunnerExitMessage | RunnerReadyMessage | RunnerFileOkMessage | RunnerErrorMessage;
+
+interface PendingFile {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+}
 
 class AsyncLineQueue implements AsyncIterable<RuntimeLine> {
   private readonly values: RuntimeLine[] = [];
@@ -150,6 +163,7 @@ class DockerRuntimeExecution implements RuntimeExecution {
 
 export class DockerEntrantContainer implements EntrantContainer {
   private readonly executions = new Map<string, DockerRuntimeExecution>();
+  private readonly pendingFiles = new Map<string, PendingFile>();
   private readonly pendingWriteRejectors = new Set<(error: Error) => void>();
   private activeExecution: DockerRuntimeExecution | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
@@ -166,7 +180,6 @@ export class DockerEntrantContainer implements EntrantContainer {
     private readonly container: Docker.Container,
     private readonly network: Docker.Network,
     private readonly input: NodeJS.ReadWriteStream,
-    private readonly credentialDir: string | undefined,
     runnerOutput: NodeJS.ReadableStream,
     runnerError: NodeJS.ReadableStream,
   ) {
@@ -220,9 +233,6 @@ export class DockerEntrantContainer implements EntrantContainer {
     let container: Docker.Container | undefined;
     try {
       const binds = [
-        ...(options.credentialDir === undefined
-          ? []
-          : [`${resolve(options.credentialDir)}:${options.credentialTarget ?? '/creds'}:rw`]),
         // hardening: the challenge pack is read-only so an entrant cannot edit the
         // briefing or the sources its rival reads from the same assembled pack.
         ...(options.challengePackDir === undefined
@@ -252,7 +262,7 @@ export class DockerEntrantContainer implements EntrantContainer {
           Init: true,
           ExtraHosts: ['host.docker.internal:host-gateway'],
           // hardening: no capabilities, no privilege escalation, bounded PIDs, memory, and CPU.
-          // hardening: each entrant gets a private network and its own credential mount.
+          // hardening: each entrant gets a private network; credentials stay in its writable layer.
           // hardening: never mount the Docker socket and never run a privileged container.
           CapDrop: ['ALL'],
           SecurityOpt: ['no-new-privileges'],
@@ -276,7 +286,6 @@ export class DockerEntrantContainer implements EntrantContainer {
         container,
         network,
         attachment,
-        options.credentialDir,
         runnerOutput,
         runnerError,
       );
@@ -285,6 +294,9 @@ export class DockerEntrantContainer implements EntrantContainer {
       runtime.observeContainerDeath();
       await start;
       await runtime.waitUntilReady(options.readyTimeoutMs ?? 15_000);
+      for (const file of options.credentialFiles ?? []) {
+        await runtime.createFile(file);
+      }
       return runtime;
     } catch (error) {
       const failedContainer = container;
@@ -292,7 +304,6 @@ export class DockerEntrantContainer implements EntrantContainer {
         await ignoreDockerError(() => failedContainer.remove({ force: true }));
       }
       await ignoreDockerError(() => network.remove());
-      if (options.credentialDir !== undefined) await removeCredentialTempDir(options.credentialDir);
       throw error;
     }
   }
@@ -334,7 +345,6 @@ export class DockerEntrantContainer implements EntrantContainer {
     this.terminateExpectedly();
     await ignoreDockerError(() => this.container.remove({ force: true }));
     await ignoreDockerError(() => this.network.remove());
-    if (this.credentialDir !== undefined) await removeCredentialTempDir(this.credentialDir);
   }
 
   private receive(line: string): void {
@@ -350,8 +360,30 @@ export class DockerEntrantContainer implements EntrantContainer {
       this.resolveReady();
       return;
     }
+    if (message.ev === 'file-ok') {
+      const pending = this.pendingFiles.get(message.id);
+      if (pending === undefined) {
+        console.warn(`[arena runner] file event for unknown transfer ${message.id}`);
+        return;
+      }
+      clearTimeout(pending.timer);
+      this.pendingFiles.delete(message.id);
+      pending.resolve();
+      return;
+    }
     if (message.ev === 'error') {
       const error = new Error(message.msg);
+      // Injection is serialized inside create(), before any exec can start, so a
+      // runner error while a transfer is pending can only belong to that transfer —
+      // even when the runner couldn't echo the id (old image, malformed command).
+      if (this.pendingFiles.size > 0) {
+        for (const [id, pending] of this.pendingFiles) {
+          clearTimeout(pending.timer);
+          this.pendingFiles.delete(id);
+          pending.reject(error);
+        }
+        return;
+      }
       if (this.activeExecution !== undefined) {
         this.activeExecution.fail(error);
         this.executions.delete(this.activeExecution.id);
@@ -422,6 +454,11 @@ export class DockerEntrantContainer implements EntrantContainer {
     for (const execution of this.executions.values()) execution.fail(error);
     this.executions.clear();
     this.activeExecution = undefined;
+    for (const [id, pending] of this.pendingFiles) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+      this.pendingFiles.delete(id);
+    }
     this.rejectPendingWrites(error);
   }
 
@@ -433,6 +470,11 @@ export class DockerEntrantContainer implements EntrantContainer {
     for (const execution of this.executions.values()) execution.finish(null);
     this.executions.clear();
     this.activeExecution = undefined;
+    for (const [id, pending] of this.pendingFiles) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+      this.pendingFiles.delete(id);
+    }
     this.rejectPendingWrites(error);
   }
 
@@ -451,6 +493,35 @@ export class DockerEntrantContainer implements EntrantContainer {
       ]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  private async createFile(file: { path: string; content?: string; mode?: number }): Promise<void> {
+    const id = randomUUID();
+    const acknowledgment = new Promise<void>((resolveFile, rejectFile) => {
+      const timer = setTimeout(() => {
+        this.pendingFiles.delete(id);
+        rejectFile(new Error(`Runner file timeout for ${id}: ${file.path}`));
+      }, 10_000);
+      this.pendingFiles.set(id, { resolve: resolveFile, reject: rejectFile, timer });
+    });
+    void acknowledgment.catch(() => undefined);
+    try {
+      await this.write({
+        cmd: 'file',
+        id,
+        path: file.path,
+        ...(file.content === undefined
+          ? {}
+          : { data: Buffer.from(file.content, 'utf8').toString('base64') }),
+        ...(file.mode === undefined ? {} : { mode: file.mode }),
+      });
+      await acknowledgment;
+    } catch (error) {
+      const pending = this.pendingFiles.get(id);
+      if (pending !== undefined) clearTimeout(pending.timer);
+      this.pendingFiles.delete(id);
+      throw error;
     }
   }
 
@@ -502,15 +573,6 @@ async function removeStaleResources(docker: Docker, runId: string, entrantId: st
   await Promise.all(staleNetworks.map(async ({ Id }) => {
     if (Id !== undefined) await ignoreDockerError(() => docker.getNetwork(Id).remove());
   }));
-}
-
-async function removeCredentialTempDir(path: string): Promise<void> {
-  const resolved = resolve(path);
-  const tempRoot = `${resolve(tmpdir())}/`;
-  if (!resolved.startsWith(tempRoot) || !basename(resolved).startsWith('arena-')) {
-    throw new Error(`Refusing to remove non-arena credential directory: ${resolved}`);
-  }
-  await rm(resolved, { recursive: true, force: true });
 }
 
 async function ignoreDockerError(action: () => Promise<unknown>): Promise<void> {

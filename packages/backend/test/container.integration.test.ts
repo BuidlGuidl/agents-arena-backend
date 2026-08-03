@@ -1,7 +1,4 @@
 import { spawn } from 'node:child_process';
-import { access, mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import Docker from 'dockerode';
@@ -36,19 +33,25 @@ async function collect(container: DockerEntrantContainer, argv: string[]): Promi
 }
 
 describe('DockerEntrantContainer', () => {
-  dockerIt('streams preflight commands and removes its resources', async () => {
+  dockerIt('injects credential files, streams commands, and removes its resources', async () => {
     const docker = new Docker();
     await ensureImage(docker);
-    const credentialDir = await mkdtemp(join(tmpdir(), 'arena-integration-'));
     const runId = `integration-${Date.now()}`;
     const entrantId = 'runtime-1';
     const container = await DockerEntrantContainer.create({
       runId,
       entrantId,
-      credentialDir,
-      credentialTarget: '/creds/test',
+      credentialFiles: [
+        { path: '/creds/test/auth.json', content: '{"token":"integration"}', mode: 0o600 },
+        { path: '/creds/test/cache' },
+      ],
     }, docker);
 
+    expect((await collect(container, [
+      'node',
+      '-e',
+      "const fs=require('node:fs'); console.log(fs.readFileSync('/creds/test/auth.json','utf8')); console.log((fs.statSync('/creds/test/auth.json').mode & 0o777).toString(8)); console.log(fs.statSync('/creds/test/cache').isDirectory())",
+    ])).join('\n')).toBe('{"token":"integration"}\n600\ntrue');
     expect((await collect(container, ['forge', '--version'])).join('\n')).toContain('forge');
     expect((await collect(container, ['cast', '--version'])).join('\n')).toContain('cast');
     await container.teardown();
@@ -58,6 +61,5 @@ describe('DockerEntrantContainer', () => {
       filters: { label: [`arena.runId=${runId}`, `arena.entrantId=${entrantId}`] },
     });
     expect(stale).toEqual([]);
-    await expect(access(credentialDir)).rejects.toThrow();
   }, 180_000);
 });

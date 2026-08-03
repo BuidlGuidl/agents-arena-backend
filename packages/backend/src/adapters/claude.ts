@@ -1,7 +1,3 @@
-import { chmod, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import type { EventJournal } from '../journal.js';
 import type { EntrantContainer } from '../runtime/container.js';
 import { getWallet } from '../chain/wallet.js';
@@ -38,36 +34,28 @@ export class ClaudeDriver extends HarnessEntrantDriver {
   }
 
   protected async createContainer(run: RunRecord, entrant: EntrantRecord): Promise<EntrantContainer> {
-    const credentialDir = await mkdtemp(join(tmpdir(), 'arena-claude-'));
-    try {
-      await chmod(credentialDir, 0o755);
-      const oauthToken = this.oauthToken;
-      if (oauthToken === undefined || oauthToken.length === 0) {
-        throw new Error('Claude OAuth token not found in CLAUDE_CODE_OAUTH_TOKEN');
-      }
-      const wallet = getWallet(run.id, entrant.id);
-      return await this.containerFactory({
-        runId: run.id,
-        entrantId: entrant.id,
-        credentialDir,
-        credentialTarget: '/creds/claude',
-        // Claude checks ANTHROPIC_API_KEY first, so a stray API key silently overrides the subscription token.
-        env: {
-          CLAUDE_CONFIG_DIR: '/creds/claude',
-          CLAUDE_CODE_OAUTH_TOKEN: oauthToken,
-          ETH_RPC_URL: this.rpcUrl,
-          ...(wallet === null
-            ? {}
-            : {
-              WALLET_ADDRESS: wallet.address,
-              WALLET_PRIVATE_KEY: wallet.privateKey,
-            }),
-        },
-      });
-    } catch (error) {
-      await rm(credentialDir, { recursive: true, force: true });
-      throw error;
+    const oauthToken = this.oauthToken;
+    if (oauthToken === undefined || oauthToken.length === 0) {
+      throw new Error('Claude OAuth token not found in CLAUDE_CODE_OAUTH_TOKEN');
     }
+    const wallet = getWallet(run.id, entrant.id);
+    return this.containerFactory({
+      runId: run.id,
+      entrantId: entrant.id,
+      credentialFiles: [{ path: '/creds/claude' }],
+      // Claude checks ANTHROPIC_API_KEY first, so a stray API key silently overrides the subscription token.
+      env: {
+        CLAUDE_CONFIG_DIR: '/creds/claude',
+        CLAUDE_CODE_OAUTH_TOKEN: oauthToken,
+        ETH_RPC_URL: this.rpcUrl,
+        ...(wallet === null
+          ? {}
+          : {
+            WALLET_ADDRESS: wallet.address,
+            WALLET_PRIVATE_KEY: wallet.privateKey,
+          }),
+      },
+    });
   }
 
   protected versionArgv(): string[] {

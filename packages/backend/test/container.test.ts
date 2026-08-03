@@ -19,7 +19,7 @@ class FakeDocker {
   readonly runnerError = new PassThrough();
   readonly network = { remove: vi.fn(async () => undefined) };
   readonly container;
-  readonly createNetwork = vi.fn(async () => this.network);
+  readonly createNetwork = vi.fn(async (_options: unknown) => this.network);
   readonly listContainers = vi.fn(async () => []);
   readonly listNetworks = vi.fn(async () => []);
 
@@ -81,6 +81,12 @@ function createdBinds(docker: FakeDocker): string[] {
   return options?.HostConfig?.Binds ?? [];
 }
 
+function createdNetworkName(docker: FakeDocker): string {
+  const options = docker.createNetwork.mock.calls[0]?.[0] as { Name?: string } | undefined;
+  if (options?.Name === undefined) throw new Error('Expected a network to be created');
+  return options.Name;
+}
+
 async function within<T>(promise: Promise<T>): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -96,6 +102,19 @@ async function within<T>(promise: Promise<T>): Promise<T> {
 }
 
 describe('DockerEntrantContainer lifecycle', () => {
+  it('keeps the network uniqueness suffix with a max-length entrant id', async () => {
+    const docker = new FakeDocker();
+
+    await createContainer(docker, {
+      runId: '12345678-1234-1234-1234-123456789abc',
+      entrantId: 'abcdefghijklmnopqrst',
+    });
+
+    const networkName = createdNetworkName(docker);
+    expect(networkName.length).toBeLessThanOrEqual(63);
+    expect(networkName).toMatch(/-[0-9a-f]{8}$/);
+  });
+
   it('rejects readiness when the container dies before the ready event', async () => {
     const docker = new FakeDocker((startedDocker) => startedDocker.die(137));
 

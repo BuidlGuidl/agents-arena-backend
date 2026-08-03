@@ -41,7 +41,9 @@ const rosterEntrySchema = z.object({
   id: z.string()
     .max(20)
     .regex(/^[a-z][a-z0-9-]*$/)
-    .refine((id) => id !== 'run'),
+    .refine((id) => id !== 'run', {
+      message: 'entrant id "run" is reserved for run-level feed events',
+    }),
   harness: z.enum(HARNESS_IDS),
   model: z.string(),
   effort: z.enum(ROSTER_EFFORTS).optional(),
@@ -70,7 +72,9 @@ const createRunSchema = z.object({
   roster: z.array(rosterEntrySchema)
     .min(1)
     .max(10)
-    .refine((roster) => new Set(roster.map((entrant) => entrant.id)).size === roster.length)
+    .refine((roster) => new Set(roster.map((entrant) => entrant.id)).size === roster.length, {
+      message: 'entrant ids must be unique within the roster',
+    })
     .optional(),
 }).strict();
 

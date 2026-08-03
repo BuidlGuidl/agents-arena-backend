@@ -277,3 +277,5 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 **Consequence:** `entrantId` remains the identity for storage, events, usage, and frontend lanes. harness selects a driver and remains display data elsewhere.
 
 **Amendment (2026-08-03):** roster models now use a per-harness allowlist in the shared contract. growing the list takes a one-line contract edit.
+
+**Amendment (2026-08-03):** network names now keep the random suffix outside the 63-character slice, so a 20-character entrant id cannot truncate it.

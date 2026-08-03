@@ -278,6 +278,8 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 
 **Amendment (2026-08-03):** roster models now use a per-harness allowlist in the shared contract. growing the list takes a one-line contract edit.
 
+**Amendment (2026-08-03):** network names now keep the random suffix outside the 63-character slice, so a 20-character entrant id cannot truncate it.
+
 ---
 
 ## ADR-0017 — credentials are injected through the runner, not bind-mounted

@@ -837,6 +837,7 @@ describe('run rosters', () => {
         { id: 'same-id', harness: 'codex', model: 'gpt-5.5' },
         { id: 'same-id', harness: 'claude', model: 'claude-opus-5' },
       ],
+      expectedMessage: 'entrant ids must be unique within the roster',
     },
     {
       caseName: 'invalid entrant id characters',
@@ -849,6 +850,7 @@ describe('run rosters', () => {
     {
       caseName: 'the reserved run entrant id',
       roster: [{ id: 'run', harness: 'codex', model: 'gpt-5.5' }],
+      expectedMessage: 'entrant id "run" is reserved for run-level feed events',
     },
     {
       caseName: 'the default model because it is outside the allowlist',
@@ -862,7 +864,7 @@ describe('run rosters', () => {
       caseName: 'an empty roster',
       roster: [],
     },
-  ])('rejects $caseName', async ({ roster }) => {
+  ])('rejects $caseName', async ({ roster, expectedMessage }) => {
     const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
 
@@ -874,6 +876,10 @@ describe('run rosters', () => {
     });
 
     expect(response.statusCode).toBe(400);
+    if (expectedMessage !== undefined) {
+      expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
+        .toBe(expectedMessage);
+    }
   });
 
   it('streams and prices same-harness entrants by entrant id and model', async () => {

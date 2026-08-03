@@ -7,9 +7,11 @@ import type {
   BroadcastResponse,
   EntrantSolve,
   EntrantSummary,
+  HarnessId,
   RunSnapshot,
   RunState,
 } from '../../../contract/arena-types';
+import { HARNESS_IDS, ROSTER_EFFORTS, ROSTER_MODELS } from '../../../contract/arena-types';
 import { projectSnapshot } from './project-snapshot';
 import {
   deriveLaneWallet,
@@ -37,6 +39,18 @@ import {
   walletErrorMessage,
 } from './waiting-room';
 import { OperatorLogin } from './operator-login';
+import {
+  buildRoster,
+  DEFAULT_EFFORT,
+  laneOrder,
+  MAX_ENTRANTS,
+  newDraft,
+  SUBSTRATE_PRESET,
+  SUBSTRATES,
+  type DraftEntrant,
+  type RosterDraft,
+  type Substrate,
+} from './roster';
 import './styles.css';
 
 const queryClient = new QueryClient();
@@ -60,6 +74,9 @@ const LANE_COLORS = [
 function App() {
   const cache = useQueryClient();
   const [preset, setPreset] = useState<Preset>('fake-duel');
+  const [mode, setMode] = useState<'preset' | 'custom'>('preset');
+  const [substrate, setSubstrate] = useState<Substrate>('fake');
+  const [drafts, setDrafts] = useState<DraftEntrant[]>(() => [newDraft('codex'), newDraft('claude')]);
   const [runId, setRunId] = useState<string | null>(null);
   const [feed, setFeed] = useState<FeedState>(initialFeedState);
   const [connection, setConnection] = useState('disconnected');
@@ -74,11 +91,14 @@ function App() {
       return projected !== undefined && projected.lastEventId > fetched.lastEventId ? projected : fetched;
     },
   });
+  const roster = useMemo(() => buildRoster(drafts), [drafts]);
   const createRun = useMutation({
     mutationFn: async () => fetchJson<{ run: RunSnapshot }>('/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ preset, autoStart: true }),
+      body: JSON.stringify(mode === 'custom'
+        ? { preset: SUBSTRATE_PRESET[substrate], autoStart: true, roster: roster.entries }
+        : { preset, autoStart: true }),
     }),
     onSuccess: ({ run }) => {
       setFeed(initialFeedState());
@@ -130,27 +150,79 @@ function App() {
       </header>
 
       <div className="controls">
-        <span className="field">
-          <label htmlFor="preset">preset</label>
-          <select
-            id="preset"
-            className="preset"
-            value={preset}
-            disabled={createRun.isPending}
-            onChange={(event) => setPreset(event.target.value as Preset)}
+        <span className="seg-group" role="group" aria-label="lineup mode">
+          <button
+            type="button"
+            className={`seg${mode === 'preset' ? ' on' : ''}`}
+            data-testid="mode-preset"
+            onClick={() => setMode('preset')}
           >
-            {PRESETS.map((value) => (
-              <option key={value} value={value}>{value}</option>
-            ))}
-          </select>
+            preset
+          </button>
+          <button
+            type="button"
+            className={`seg${mode === 'custom' ? ' on' : ''}`}
+            data-testid="mode-custom"
+            onClick={() => setMode('custom')}
+          >
+            custom lineup
+          </button>
         </span>
-        <button className="btn start" disabled={createRun.isPending} onClick={() => createRun.mutate()}>
+        {mode === 'preset' ? (
+          <span className="field">
+            <label htmlFor="preset">preset</label>
+            <select
+              id="preset"
+              className="preset"
+              value={preset}
+              disabled={createRun.isPending}
+              onChange={(event) => setPreset(event.target.value as Preset)}
+            >
+              {PRESETS.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </span>
+        ) : (
+          <span className="field">
+            <label htmlFor="substrate">substrate</label>
+            <select
+              id="substrate"
+              className="preset"
+              value={substrate}
+              data-testid="substrate"
+              disabled={createRun.isPending}
+              onChange={(event) => setSubstrate(event.target.value as Substrate)}
+            >
+              {SUBSTRATES.map((value) => (
+                <option key={value} value={value}>
+                  {value === 'fake' ? 'fake · no containers' : 'docker · real containers'}
+                </option>
+              ))}
+            </select>
+          </span>
+        )}
+        <button
+          className="btn start"
+          data-testid="start-run"
+          disabled={createRun.isPending || (mode === 'custom' && roster.problem !== null)}
+          onClick={() => createRun.mutate()}
+        >
           {createRun.isPending ? 'starting…' : 'start race'}
         </button>
         <span className="run-id">
           run <b>{run?.id ?? '—'}</b>
         </span>
       </div>
+
+      {mode === 'custom' ? (
+        <LineupComposer
+          drafts={drafts}
+          roster={roster}
+          disabled={createRun.isPending}
+          onChange={setDrafts}
+        />
+      ) : null}
 
       {createRun.error instanceof Error ? <p className="error-line">{createRun.error.message}</p> : null}
 
@@ -226,6 +298,119 @@ function App() {
         <pre>{feed.events.map((event) => JSON.stringify(event)).join('\n') || 'no events.'}</pre>
       </details>
     </div>
+  );
+}
+
+// Builds the roster the run starts with. Lane names are generated and models come
+// from the contract's allowlist, so every row is valid by construction.
+function LineupComposer({ drafts, roster, disabled, onChange }: {
+  drafts: DraftEntrant[];
+  roster: RosterDraft;
+  disabled: boolean;
+  onChange: (drafts: DraftEntrant[]) => void;
+}) {
+  const update = (index: number, next: DraftEntrant) => {
+    onChange(drafts.map((draft, at) => (at === index ? next : draft)));
+  };
+  const lanes = laneOrder(roster.entries);
+
+  return (
+    <section className="lineup" data-testid="lineup">
+      <ul className="lineup-rows">
+        {drafts.map((draft, index) => {
+          const id = roster.entries[index].id;
+          const models = ROSTER_MODELS[draft.harness];
+          return (
+            <li
+              className="lineup-row"
+              key={index}
+              data-testid={`lineup-row-${index}`}
+              style={{ ['--lane' as string]: LANE_COLORS[lanes[index]] ?? 'var(--muted)' }}
+            >
+              <span className="lineup-id" data-testid={`lineup-id-${index}`}>{id}</span>
+              <select
+                className="preset pick"
+                aria-label={`harness for ${id}`}
+                data-testid={`harness-${index}`}
+                value={draft.harness}
+                disabled={disabled}
+                onChange={(event) => update(index, newDraft(event.target.value as HarnessId))}
+              >
+                {HARNESS_IDS.map((harness) => (
+                  <option key={harness} value={harness}>{harness}</option>
+                ))}
+              </select>
+              <select
+                className="preset pick model"
+                aria-label={`model for ${id}`}
+                data-testid={`model-${index}`}
+                value={draft.model}
+                disabled={disabled}
+                onChange={(event) => update(index, { ...draft, model: event.target.value })}
+              >
+                {models.map((model) => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+              </select>
+              {draft.harness === 'codex' ? (
+                <span className="field lineup-effort">
+                  <label htmlFor={`effort-${index}`}>effort</label>
+                  <select
+                    id={`effort-${index}`}
+                    className="preset pick"
+                    data-testid={`effort-${index}`}
+                    value={draft.effort}
+                    disabled={disabled}
+                    onChange={(event) => update(index, {
+                      ...draft,
+                      effort: event.target.value as DraftEntrant['effort'],
+                    })}
+                  >
+                    <option value={DEFAULT_EFFORT}>{DEFAULT_EFFORT}</option>
+                    {ROSTER_EFFORTS.map((effort) => (
+                      <option key={effort} value={effort}>{effort}</option>
+                    ))}
+                  </select>
+                </span>
+              ) : null}
+              <button
+                type="button"
+                className="btn row-btn"
+                data-testid={`remove-${index}`}
+                disabled={disabled || drafts.length === 1}
+                title={drafts.length === 1 ? 'a run needs one entrant' : `remove ${id}`}
+                onClick={() => onChange(drafts.filter((_, at) => at !== index))}
+              >
+                remove
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+
+      <div className="lineup-foot">
+        <button
+          type="button"
+          className="btn row-btn add"
+          data-testid="add-entrant"
+          disabled={disabled || drafts.length >= MAX_ENTRANTS}
+          onClick={() => onChange([...drafts, newDraft('codex')])}
+        >
+          add entrant
+        </button>
+        <span className="lineup-count">
+          <b>{drafts.length}</b> of {MAX_ENTRANTS} lanes
+        </span>
+      </div>
+
+      {roster.problem !== null ? (
+        <p className="error-line lineup-problem" data-testid="lineup-problem">{roster.problem}</p>
+      ) : null}
+
+      <p className="lineup-note">
+        the model list is server-enforced. effort is a codex knob, so only codex rows carry it.
+      </p>
+    </section>
   );
 }
 

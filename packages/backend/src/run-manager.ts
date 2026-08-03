@@ -25,6 +25,7 @@ import {
 import { buildOpeningPrompt, type OpeningPromptBuilder } from './ctf/prompt.js';
 import { roundUsd } from './pricing.js';
 import type { EventJournal } from './journal.js';
+import { dropCredentialSecrets } from './adapters/credential-secrets.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './adapters/types.js';
 
 export const LEGAL_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> = {
@@ -357,6 +358,7 @@ export class RunManager {
       });
     } catch (error) {
       dropRunKeys(runId);
+      dropCredentialSecrets(runId);
       waiter.submitting = false;
       throw error;
     }
@@ -482,6 +484,7 @@ export class RunManager {
     this.operatorStops.add(runId);
     this.stopSolveWatch(runId);
     dropRunKeys(runId);
+    dropCredentialSecrets(runId);
     try {
       if (run.state === 'awaiting_signature') {
         this.startControllers.get(runId)?.abort(new Error(OPERATOR_STOP_REASON));
@@ -618,6 +621,7 @@ export class RunManager {
       runEntrants.map((entrant) => this.driver.stop(run, entrant)),
     ).finally(() => {
       dropRunKeys(runId);
+      dropCredentialSecrets(runId);
     });
     this.teardownPromises.set(runId, teardown);
     return teardown;

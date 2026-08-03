@@ -8,6 +8,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ClaudeDriver } from '../src/adapters/claude.js';
 import { CodexDriver } from '../src/adapters/codex.js';
+import {
+  credentialSecrets,
+  dropCredentialSecrets,
+} from '../src/adapters/credential-secrets.js';
 import { DockerEntrantDriver } from '../src/adapters/docker.js';
 import { FakeDriver } from '../src/adapters/fake.js';
 import { OpenCodeDriver, scrubOpenCodeEnvironment } from '../src/adapters/opencode.js';
@@ -20,7 +24,7 @@ import {
 } from '../src/adapters/types.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import { deriveEntrantKeys, getWallet, seedTypedData } from '../src/chain/wallet.js';
-import { entrants, runs } from '../src/db/schema.js';
+import { entrants, events as eventRows, runs } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import { RunManager } from '../src/run-manager.js';
 import type {
@@ -33,6 +37,12 @@ import type {
 
 const temporaryPaths: string[] = [];
 type TestHarness = 'claude' | 'codex' | 'opencode';
+const testCredentials = {
+  claude: 'test-oauth-token-claude-12345',
+  codex: 'test-codex-access-token-12345',
+  codexRefresh: 'test-codex-refresh-token-67890',
+  opencode: 'test-openrouter-key-12345',
+} as const;
 
 afterEach(async () => {
   await Promise.all(temporaryPaths.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -165,17 +175,23 @@ async function setup(
     const authDirectory = await mkdtemp(join(tmpdir(), 'arena-test-auth-'));
     temporaryPaths.push(authDirectory);
     const authPath = join(authDirectory, 'auth.json');
-    await writeFile(authPath, '{}');
+    await writeFile(authPath, JSON.stringify({
+      auth: {
+        access: testCredentials.codex,
+        nested: { refresh: testCredentials.codexRefresh },
+      },
+      short: 'ignored',
+    }));
     driver = new CodexDriver(journal, { authPath, containerFactory });
   } else if (harness === 'opencode') {
     driver = new OpenCodeDriver(journal, {
-      apiKey: 'test-key',
+      apiKey: testCredentials.opencode,
       containerFactory,
       turnWatchdogMs: watchdogMs,
     });
   } else {
     driver = new ClaudeDriver(journal, {
-      oauthToken: 'test-oauth-token',
+      oauthToken: testCredentials.claude,
       containerFactory,
       turnWatchdogMs: watchdogMs,
     });
@@ -439,6 +455,63 @@ describe('usage cost', () => {
 });
 
 describe('adapter guardrails', () => {
+  it.each(['codex', 'opencode', 'claude'] as const)(
+    '%s credentials are scrubbed after prepare and exposed after teardown cleanup',
+    async (harness) => {
+      const context = await setup(harness);
+      const credential = testCredentials[harness];
+      const streamed: unknown[] = [];
+      context.journal.subscribe(context.run.id, (event) => streamed.push(event));
+      try {
+        const redacted = context.journal.append(context.run.id, context.entrant.id, 'tool.result', {
+          entrantId: context.entrant.id,
+          tool: 'shell',
+          toolCallId: 'credential-echo',
+          ok: true,
+          detail: `env credential=${credential}`,
+        });
+        const stored = context.journal.database
+          .select({ payloadJson: eventRows.payloadJson })
+          .from(eventRows)
+          .where(eq(eventRows.id, redacted.id))
+          .get();
+
+        expect(redacted.payload.detail).toBe('env credential=[redacted-key]');
+        expect(stored?.payloadJson).toBe(JSON.stringify(redacted.payload));
+        expect(streamed).toEqual([redacted]);
+
+        await context.driver.stop(context.run, context.entrant);
+        dropCredentialSecrets(context.run.id);
+        const exposed = context.journal.append(context.run.id, context.entrant.id, 'tool.result', {
+          entrantId: context.entrant.id,
+          tool: 'shell',
+          toolCallId: 'credential-after-drop',
+          ok: true,
+          detail: credential,
+        });
+        expect(exposed.payload.detail).toBe(credential);
+      } finally {
+        await context.driver.stop(context.run, context.entrant);
+        dropCredentialSecrets(context.run.id);
+        context.journal.close();
+      }
+    },
+  );
+
+  it('registers every long string leaf from Codex auth JSON', async () => {
+    const context = await setup('codex');
+    try {
+      expect(credentialSecrets(context.run.id)).toEqual([
+        testCredentials.codex,
+        testCredentials.codexRefresh,
+      ]);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      dropCredentialSecrets(context.run.id);
+      context.journal.close();
+    }
+  });
+
   it.each(['codex', 'opencode', 'claude'] as const)('%s always injects ETH_RPC_URL into the container', async (harness) => {
     const context = await setup(harness);
     try {
@@ -538,7 +611,7 @@ describe('adapter guardrails', () => {
       expect(await readdir(context.containerOptions.credentialDir as string)).toEqual([]);
       expect(context.containerOptions.env).toEqual({
         CLAUDE_CONFIG_DIR: '/creds/claude',
-        CLAUDE_CODE_OAUTH_TOKEN: 'test-oauth-token',
+        CLAUDE_CODE_OAUTH_TOKEN: testCredentials.claude,
         ETH_RPC_URL: 'http://host.docker.internal:8545',
       });
       expect(context.containerOptions.env).not.toHaveProperty('ANTHROPIC_API_KEY');

@@ -31,11 +31,22 @@ export class ClaudeEventParser {
     if (type === 'result') return this.result(value);
     if (type === 'rate_limit_event') {
       const info = objectValue(value.rate_limit_info);
+      const status = stringValue(info?.status) ?? '<missing>';
       this.logger.info(
-        `[claude parser] rate limit status=${stringValue(info?.status) ?? '<missing>'}`
+        `[claude parser] rate limit status=${status}`
         + ` overageStatus=${stringValue(info?.overageStatus) ?? '<missing>'}`,
       );
-      return { events: [] };
+      return status === 'allowed'
+        ? { events: [] }
+        : {
+          events: [{
+            type: 'entrant.error',
+            payload: {
+              entrantId: this.entrantId,
+              message: `Claude rate limit status=${status}: ${detailValue(info)}`,
+            },
+          }],
+        };
     }
     this.recordUnknown(type ?? '<missing>');
     return { events: [] };
@@ -113,6 +124,7 @@ export class ClaudeEventParser {
 
   private result(value: JsonObject): ParsedHarnessLine {
     // Claude reports usage only on the result line, so a watchdog-killed turn has no usage event.
+    this.toolNames.clear();
     const usage = objectValue(value.usage);
     const cachedInputTokens = numberValue(usage?.cache_read_input_tokens);
     const events: ParsedArenaEvent[] = [];
@@ -121,7 +133,7 @@ export class ClaudeEventParser {
         type: 'entrant.error',
         payload: {
           entrantId: this.entrantId,
-          message: stringValue(value.result) ?? 'Claude reported an error',
+          message: resultErrorMessage(value),
         },
       });
     }
@@ -173,6 +185,16 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function resultErrorMessage(value: JsonObject): string {
+  const result = stringValue(value.result);
+  if (result !== undefined) return result;
+  if (Array.isArray(value.errors)) {
+    const errors = value.errors.filter((error): error is string => typeof error === 'string');
+    if (errors.length > 0) return errors.join('; ');
+  }
+  return 'Claude reported an error';
 }
 
 function detailValue(value: unknown): string {

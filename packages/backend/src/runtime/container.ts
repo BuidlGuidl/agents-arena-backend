@@ -507,15 +507,20 @@ export class DockerEntrantContainer implements EntrantContainer {
     });
     void acknowledgment.catch(() => undefined);
     try {
-      await this.write({
-        cmd: 'file',
-        id,
-        path: file.path,
-        ...(file.content === undefined
-          ? {}
-          : { data: Buffer.from(file.content, 'utf8').toString('base64') }),
-        ...(file.mode === undefined ? {} : { mode: file.mode }),
-      });
+      // Race the write against the ack timer: a stalled attach stream otherwise
+      // blocks here forever, with the timeout rejection going unobserved.
+      await Promise.race([
+        this.write({
+          cmd: 'file',
+          id,
+          path: file.path,
+          ...(file.content === undefined
+            ? {}
+            : { data: Buffer.from(file.content, 'utf8').toString('base64') }),
+          ...(file.mode === undefined ? {} : { mode: file.mode }),
+        }),
+        acknowledgment,
+      ]);
       await acknowledgment;
     } catch (error) {
       const pending = this.pendingFiles.get(id);

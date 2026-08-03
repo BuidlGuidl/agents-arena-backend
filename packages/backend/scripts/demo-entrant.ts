@@ -54,8 +54,13 @@ const driver: EntrantDriver = harness === 'codex'
     ? new OpenCodeDriver(journal)
     : new ClaudeDriver(journal);
 let prepared = false;
+// A turn can reach idle after erroring every step of the way (a codex account
+// past its usage limit still "completes" its turn), so PASS requires a clean
+// journal, not just a turn end.
+let sawEntrantError = false;
 const unsubscribe = journal.subscribe(runId, (event) => {
   console.log(JSON.stringify(event));
+  if (event.type === 'entrant.error') sawEntrantError = true;
 });
 
 try {
@@ -73,6 +78,11 @@ try {
   if (prepared) await driver.stop(run, entrant);
   unsubscribe();
   journal.close();
+}
+
+if (sawEntrantError) {
+  console.error(`The ${harness} turn journaled entrant.error events; the harness cannot play.`);
+  process.exit(1);
 }
 
 function waitForTurn(

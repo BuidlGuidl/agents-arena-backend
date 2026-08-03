@@ -1,5 +1,5 @@
-import { chmod, copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import type { EventJournal } from '../journal.js';
@@ -36,47 +36,37 @@ export class CodexDriver extends HarnessEntrantDriver {
   }
 
   protected async createContainer(run: RunRecord, entrant: EntrantRecord): Promise<EntrantContainer> {
-    const credentialDir = await createCredentialDir('codex');
-    try {
-      const wallet = getWallet(run.id, entrant.id);
-      const auth = JSON.parse(await readFile(this.authPath, 'utf8')) as unknown;
-      registerCredentialSecrets(run.id, stringLeaves(auth));
-      await copyFile(this.authPath, join(credentialDir, 'auth.json'));
-      // Only pin a model when the preset asks for a specific one. A ChatGPT-account
-      // login rejects API-only models (gpt-5, gpt-5-codex) with a 400, so 'default'
-      // (or empty) leaves codex on the account's own default model.
-      const pinsModel = entrant.model !== '' && entrant.model.toLowerCase() !== 'default';
-      const config = [
-        pinsModel ? `model = ${tomlString(entrant.model)}\n` : '',
-        entrant.effort === null
-          ? ''
-          : `model_reasoning_effort = ${tomlString(entrant.effort)}\n`,
-      ].join('');
-      await writeFile(
-        join(credentialDir, 'config.toml'),
-        config,
-        { mode: 0o644 },
-      );
-      return await this.containerFactory({
-        runId: run.id,
-        entrantId: entrant.id,
-        credentialDir,
-        credentialTarget: '/creds/codex',
-        env: {
-          CODEX_HOME: '/creds/codex',
-          ETH_RPC_URL: this.rpcUrl,
-          ...(wallet === null
-            ? {}
-            : {
-              WALLET_ADDRESS: wallet.address,
-              WALLET_PRIVATE_KEY: wallet.privateKey,
-            }),
-        },
-      });
-    } catch (error) {
-      await rm(credentialDir, { recursive: true, force: true });
-      throw error;
-    }
+    const authJson = await readFile(this.authPath, 'utf8');
+    registerCredentialSecrets(run.id, stringLeaves(JSON.parse(authJson) as unknown));
+    const wallet = getWallet(run.id, entrant.id);
+    // Only pin a model when the preset asks for a specific one. A ChatGPT-account
+    // login rejects API-only models (gpt-5, gpt-5-codex) with a 400, so 'default'
+    // (or empty) leaves codex on the account's own default model.
+    const pinsModel = entrant.model !== '' && entrant.model.toLowerCase() !== 'default';
+    const config = [
+      pinsModel ? `model = ${tomlString(entrant.model)}\n` : '',
+      entrant.effort === null
+        ? ''
+        : `model_reasoning_effort = ${tomlString(entrant.effort)}\n`,
+    ].join('');
+    return this.containerFactory({
+      runId: run.id,
+      entrantId: entrant.id,
+      credentialFiles: [
+        { path: '/creds/codex/auth.json', content: authJson, mode: 0o600 },
+        { path: '/creds/codex/config.toml', content: config, mode: 0o644 },
+      ],
+      env: {
+        CODEX_HOME: '/creds/codex',
+        ETH_RPC_URL: this.rpcUrl,
+        ...(wallet === null
+          ? {}
+          : {
+            WALLET_ADDRESS: wallet.address,
+            WALLET_PRIVATE_KEY: wallet.privateKey,
+          }),
+      },
+    });
   }
 
   protected versionArgv(): string[] {
@@ -120,12 +110,6 @@ export class CodexDriver extends HarnessEntrantDriver {
   protected validateResumeSession(): boolean {
     return true;
   }
-}
-
-async function createCredentialDir(harness: string): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), `arena-${harness}-`));
-  await chmod(directory, 0o755);
-  return directory;
 }
 
 function tomlString(value: string): string {

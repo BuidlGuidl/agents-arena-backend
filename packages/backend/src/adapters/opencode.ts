@@ -1,5 +1,5 @@
-import { readFile, rm, mkdtemp, chmod } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import type { EventJournal } from '../journal.js';
@@ -42,35 +42,26 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
   }
 
   protected async createContainer(run: RunRecord, entrant: EntrantRecord): Promise<EntrantContainer> {
-    const credentialDir = await mkdtemp(join(tmpdir(), 'arena-opencode-'));
-    await chmod(credentialDir, 0o755);
-    try {
-      const wallet = getWallet(run.id, entrant.id);
-      const apiKey = this.apiKey ?? await readOpenRouterKey(this.authPath);
-      if (apiKey === undefined || apiKey.length === 0) {
-        throw new Error(`OpenRouter API key not found in OPENROUTER_API_KEY or ${this.authPath}`);
-      }
-      registerCredentialSecrets(run.id, [apiKey]);
-      return await this.containerFactory({
-        runId: run.id,
-        entrantId: entrant.id,
-        credentialDir,
-        credentialTarget: '/creds/opencode',
-        env: scrubOpenCodeEnvironment({
-          OPENROUTER_API_KEY: apiKey,
-          ETH_RPC_URL: this.rpcUrl,
-          ...(wallet === null
-            ? {}
-            : {
-              WALLET_ADDRESS: wallet.address,
-              WALLET_PRIVATE_KEY: wallet.privateKey,
-            }),
-        }),
-      });
-    } catch (error) {
-      await rm(credentialDir, { recursive: true, force: true });
-      throw error;
+    const wallet = getWallet(run.id, entrant.id);
+    const apiKey = this.apiKey ?? await readOpenRouterKey(this.authPath);
+    if (apiKey === undefined || apiKey.length === 0) {
+      throw new Error(`OpenRouter API key not found in OPENROUTER_API_KEY or ${this.authPath}`);
     }
+    registerCredentialSecrets(run.id, [apiKey]);
+    return this.containerFactory({
+      runId: run.id,
+      entrantId: entrant.id,
+      env: scrubOpenCodeEnvironment({
+        OPENROUTER_API_KEY: apiKey,
+        ETH_RPC_URL: this.rpcUrl,
+        ...(wallet === null
+          ? {}
+          : {
+            WALLET_ADDRESS: wallet.address,
+            WALLET_PRIVATE_KEY: wallet.privateKey,
+          }),
+      }),
+    });
   }
 
   protected versionArgv(): string[] {

@@ -252,7 +252,7 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 
 ## ADR-0015 — claude code joins as the third harness, on a setup-token credential
 
-**Status:** accepted (2026-08-03) — supersedes ADR-0008; from #29 and the 2026-07-29 meeting
+**Status:** accepted (2026-08-03) — supersedes ADR-0008; from #29 and the 2026-07-29 meeting. amended 2026-08-03: `/creds/claude` is no longer a mount — ADR-0017 replaced credential bind mounts with runner injection, so the empty writable config dir is created inside the container instead. the env-var-in shape is unchanged.
 
 **Decision:** claude code becomes the third harness, behind the same adapter seam. the credential is a long-lived OAuth token minted once on the host with `claude setup-token` against shiv's Max subscription (interim owner; swaps for an org credential without touching the adapter). the container gets it as `CLAUDE_CODE_OAUTH_TOKEN` env plus an empty writable `CLAUDE_CONFIG_DIR=/creds/claude` mount — opencode-shaped (env var in), not codex-shaped (auth-file copy). cost stays comparable across harnesses the way codex's already is: the parser reports token counts with no dollar figure, and `MODEL_RATES` prices them at API rates. presets therefore always pin an explicit model id, never `'default'` — `costForTokens` keys on `entrant.model` and a `'default'` row matches nothing. the run lineup gains `docker-arena` (one entrant per harness, claude on `claude-opus-5`), and real-vs-fake dispatch moves off the `preset === 'docker-duel'` string literal onto a `substrate` property the preset declares.
 
@@ -279,3 +279,17 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 **Amendment (2026-08-03):** roster models now use a per-harness allowlist in the shared contract. growing the list takes a one-line contract edit.
 
 **Amendment (2026-08-03):** network names now keep the random suffix outside the 63-character slice, so a 20-character entrant id cannot truncate it.
+
+---
+
+## ADR-0017 — credentials are injected through the runner, not bind-mounted
+
+**Status:** accepted (2026-08-03), from #35
+
+**Decision:** the credential bind mount is gone. the runner protocol gains a `file` command — base64 content plus mode, or a bare path for a directory — and after the runner reports ready, before any exec, the driver pushes each credential file over the attach stream and awaits an acknowledgment (10s timeout; failure tears the container down). codex sends `auth.json` (0600) and `config.toml` (0644) into `/creds/codex`; claude sends a bare directory for `CLAUDE_CONFIG_DIR`; opencode sends nothing, since nothing ever referenced its old mount. the challenge pack stays a read-only bind mount.
+
+**Why:** the mount coupled two permission domains docker never translates. the host temp dir was chmod 0755 and owned by the backend's uid; the container writes as `node` (uid 1000). docker desktop's file-sharing layer remaps ownership, so it worked on the mac — on a native linux host with backend uid ≠ 1000, every adapter's credential write fails at container start. 0755 also left codex's `auth.json` readable by any host user in `/tmp`. injection makes the writer and the owner the same user by construction, and credentials never touch host disk.
+
+**Trade-off:** the backend and the image now share a protocol vocabulary. an image built before the `file` command answers `Unknown command: file`, which the driver attributes to the pending transfer and surfaces as the creation failure. nothing detects a stale image yet — `demo.sh` and the integration test only check that the image exists — so a runner change means remembering `./docker/build.sh`.
+
+**Consequence:** `docker/build.sh` runs again after this change. the host-side mkdtemp/chmod/cleanup lifecycle is deleted. a runner error while a transfer is pending is attributed to that transfer, which is sound because injection is serialized inside container creation, before any exec can start.

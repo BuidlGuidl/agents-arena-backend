@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 
 let active = null;
@@ -34,6 +36,26 @@ function killActive(id) {
   // pending, it could later SIGKILL a new child that reused this process-group id.
   active.force = setTimeout(() => killProcessGroup(child, 'SIGKILL'), 2_000);
   active.force.unref();
+}
+
+async function createFile(message) {
+  try {
+    if (message.data === undefined) {
+      await mkdir(message.path, { recursive: true });
+    } else {
+      await mkdir(dirname(message.path), { recursive: true });
+      await writeFile(message.path, Buffer.from(message.data, 'base64'), {
+        mode: message.mode ?? 0o600,
+      });
+    }
+    send({ ev: 'file-ok', id: message.id });
+  } catch (error) {
+    send({
+      ev: 'error',
+      ...(typeof message.id === 'string' ? { id: message.id } : {}),
+      msg: `File ${message.id} failed: ${error.message}`,
+    });
+  }
 }
 
 function execute(message) {
@@ -81,7 +103,9 @@ input.on('line', (line) => {
     return;
   }
 
-  if (message.cmd === 'exec') {
+  if (message.cmd === 'file') {
+    void createFile(message);
+  } else if (message.cmd === 'exec') {
     execute(message);
   } else if (message.cmd === 'kill') {
     killActive(message.id);

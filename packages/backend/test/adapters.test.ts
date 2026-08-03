@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -43,6 +43,15 @@ const testCredentials = {
   codexRefresh: 'test-codex-refresh-token-67890',
   opencode: 'test-openrouter-key-12345',
 } as const;
+const testCodexAuth = JSON.stringify({
+  auth: {
+    access: testCredentials.codex,
+    account: 'codex-user@example-account.com',
+    issuer: 'https://auth.openai.example/realms/codex',
+    nested: { refresh: testCredentials.codexRefresh },
+  },
+  short: 'ignored',
+});
 
 afterEach(async () => {
   await Promise.all(temporaryPaths.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -169,7 +178,6 @@ async function setup(
   let containerOptions: ContainerOptions | undefined;
   const containerFactory: ContainerFactory = async (options: ContainerOptions) => {
     containerOptions = options;
-    if (options.credentialDir !== undefined) temporaryPaths.push(options.credentialDir);
     return container;
   };
   let driver: EntrantDriver;
@@ -177,15 +185,7 @@ async function setup(
     const authDirectory = await mkdtemp(join(tmpdir(), 'arena-test-auth-'));
     temporaryPaths.push(authDirectory);
     const authPath = join(authDirectory, 'auth.json');
-    await writeFile(authPath, JSON.stringify({
-      auth: {
-        access: testCredentials.codex,
-        account: 'codex-user@example-account.com',
-        issuer: 'https://auth.openai.example/realms/codex',
-        nested: { refresh: testCredentials.codexRefresh },
-      },
-      short: 'ignored',
-    }));
+    await writeFile(authPath, testCodexAuth);
     driver = new CodexDriver(journal, { authPath, containerFactory });
   } else if (harness === 'opencode') {
     driver = new OpenCodeDriver(journal, {
@@ -314,11 +314,10 @@ describe('parser isolation', () => {
     const authDirectory = await mkdtemp(join(tmpdir(), 'arena-test-auth-'));
     temporaryPaths.push(authDirectory);
     const authPath = join(authDirectory, 'auth.json');
-    await writeFile(authPath, '{}');
+    await writeFile(authPath, testCodexAuth);
 
     const containers: ControlledContainer[] = [];
-    const containerFactory: ContainerFactory = async (options) => {
-      if (options.credentialDir !== undefined) temporaryPaths.push(options.credentialDir);
+    const containerFactory: ContainerFactory = async () => {
       const container = new ControlledContainer();
       containers.push(container);
       return container;
@@ -462,12 +461,18 @@ describe('adapter guardrails', () => {
   it('writes Codex model reasoning effort to config.toml when set', async () => {
     const context = await setup('codex', undefined, false, undefined, 'high');
     try {
-      const config = await readFile(
-        join(context.containerOptions.credentialDir as string, 'config.toml'),
-        'utf8',
-      );
-      expect(config).toContain('model = "gpt-5.5"\n');
-      expect(config).toContain('model_reasoning_effort = "high"\n');
+      expect(context.containerOptions.credentialFiles).toEqual([
+        {
+          path: '/creds/codex/auth.json',
+          content: testCodexAuth,
+          mode: 0o600,
+        },
+        {
+          path: '/creds/codex/config.toml',
+          content: 'model = "gpt-5.5"\nmodel_reasoning_effort = "high"\n',
+          mode: 0o644,
+        },
+      ]);
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();
@@ -477,10 +482,9 @@ describe('adapter guardrails', () => {
   it('omits Codex model reasoning effort from config.toml when unset', async () => {
     const context = await setup('codex');
     try {
-      const config = await readFile(
-        join(context.containerOptions.credentialDir as string, 'config.toml'),
-        'utf8',
-      );
+      const config = context.containerOptions.credentialFiles?.find(
+        (file) => file.path === '/creds/codex/config.toml',
+      )?.content;
       expect(config).toContain('model = "gpt-5.5"\n');
       expect(config).not.toContain('model_reasoning_effort');
     } finally {
@@ -640,9 +644,7 @@ describe('adapter guardrails', () => {
   it('passes an OAuth token into an otherwise empty Claude credential home', async () => {
     const context = await setup('claude');
     try {
-      expect(context.containerOptions.credentialTarget).toBe('/creds/claude');
-      expect(context.containerOptions.credentialDir).toContain('arena-claude-');
-      expect(await readdir(context.containerOptions.credentialDir as string)).toEqual([]);
+      expect(context.containerOptions.credentialFiles).toEqual([{ path: '/creds/claude' }]);
       expect(context.containerOptions.env).toEqual({
         CLAUDE_CONFIG_DIR: '/creds/claude',
         CLAUDE_CODE_OAUTH_TOKEN: testCredentials.claude,
@@ -651,6 +653,16 @@ describe('adapter guardrails', () => {
       expect(context.containerOptions.env).not.toHaveProperty('ANTHROPIC_API_KEY');
       expect(context.containerOptions.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
       expect(context.containerOptions.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('passes no credential files for OpenCode', async () => {
+    const context = await setup('opencode');
+    try {
+      expect(context.containerOptions.credentialFiles).toBeUndefined();
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();
@@ -701,6 +713,39 @@ describe('adapter guardrails', () => {
 });
 
 describe('adapter construction errors', () => {
+  it('does not create a Codex container when auth.json is missing', async () => {
+    const journal = new EventJournal(':memory:');
+    const containerFactory: ContainerFactory = vi.fn(async () => new ControlledContainer());
+    const run: RunRecord = {
+      id: 'missing-codex-auth-run',
+      state: 'created',
+      preset: 'docker-duel',
+      startedAt: null,
+      deadlineAt: null,
+      idempotencyKey: null,
+    };
+    const entrant: EntrantRecord = {
+      runId: run.id,
+      id: 'codex-1',
+      harness: 'codex',
+      model: 'gpt-5.5',
+      effort: null,
+      address: null,
+      status: 'idle',
+    };
+    const driver = new CodexDriver(journal, {
+      authPath: '/missing/codex-auth.json',
+      containerFactory,
+    });
+
+    try {
+      await expect(driver.prepare(run, entrant)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(containerFactory).not.toHaveBeenCalled();
+    } finally {
+      journal.close();
+    }
+  });
+
   it('routes an unknown legacy preset to Docker during teardown', async () => {
     const journal = new EventJournal(':memory:');
     const dockerStop = vi.spyOn(DockerEntrantDriver.prototype, 'stop').mockResolvedValue();

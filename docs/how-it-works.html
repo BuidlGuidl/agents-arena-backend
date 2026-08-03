@@ -595,19 +595,18 @@ sequenceDiagram
       <span class="num">02</span>
       <h2>Credentials into each container</h2>
     </div>
-    <p>Each entrant runs in its own hardened container. Before the container starts, the driver builds a temporary credential directory on the host and mounts it in. Login files go in over a mount; the wallet and the RPC URL go in as environment variables.</p>
+    <p>Each entrant runs in its own hardened container. Once the in-container runner reports ready, the driver pushes login files to it over the runner's stdin protocol; they land in the container's own writable layer, owned by the container user. No credential ever touches the host disk or a mount. The wallet and the RPC URL go in as environment variables.</p>
 
     <figure class="diagram">
       <pre class="mermaid">
 flowchart LR
     subgraph host [host]
-      A["auth.json"]
-      T["temp credential dir"]
-      CF["config.toml"]
+      A["auth.json read into memory"]
+      CF["config.toml built in memory"]
       W["run key map in memory"]
     end
     subgraph cx [codex container]
-      CXm["/creds/codex mount"]
+      CXm["/creds/codex (container-local)"]
       CXe["ETH_RPC_URL / WALLET_ADDRESS / WALLET_PRIVATE_KEY"]
     end
     subgraph oc [opencode container]
@@ -615,31 +614,29 @@ flowchart LR
       OCe["ETH_RPC_URL / WALLET_ADDRESS / WALLET_PRIVATE_KEY"]
     end
     CH["dev chain 8545"]
-    A --> T
-    CF --> T
-    T -->|mount| CXm
-    T -->|env| OCk
+    A -->|runner file command| CXm
+    CF -->|runner file command| CXm
     W -->|env| CXe
     W -->|env| OCe
     CXe -.->|host.docker.internal:8545| CH
     OCe -.->|host.docker.internal:8545| CH
     classDef own fill:#15251f,stroke:#7ad6b0,color:#dbeee4;
     classDef ext fill:#171d29,stroke:#3a4353,color:#9aa6b8;
-    class A,CF,T,W,CXm,CXe,OCk,OCe own;
+    class A,CF,W,CXm,CXe,OCk,OCe own;
     class CH ext;
       </pre>
-      <figcaption>Per-entrant credential mount + env · codex.ts / opencode.ts</figcaption>
+      <figcaption>Per-entrant credential injection + env · codex.ts / opencode.ts</figcaption>
     </figure>
 
     <h3>codex</h3>
     <ul class="facts">
-      <li>Makes a fresh temp dir, copies the operator's <code>auth.json</code> in, and writes a <code>config.toml</code>. It pins a model only when the preset names one; a ChatGPT-account login rejects API-only model ids, so the default login stays on its own default. <span class="path">src/adapters/codex.ts</span> · <code>createContainer</code></li>
-      <li>Mounts that dir at <code>/creds/codex</code> and sets <code>CODEX_HOME</code> to the same path so the CLI finds the login.</li>
+      <li>Reads the operator's <code>auth.json</code> into memory and builds a <code>config.toml</code>. It pins a model only when the preset names one; a ChatGPT-account login rejects API-only model ids, so the default login stays on its own default. <span class="path">src/adapters/codex.ts</span> · <code>createContainer</code></li>
+      <li>Pushes both files into <code>/creds/codex</code> through the runner (<code>auth.json</code> mode 0600) and sets <code>CODEX_HOME</code> to the same path so the CLI finds the login.</li>
     </ul>
 
     <h3>opencode</h3>
     <ul class="facts">
-      <li>Makes a temp dir mounted at <code>/creds/opencode</code>. The OpenRouter key comes from <code>OPENROUTER_API_KEY</code> or the operator's opencode <code>auth.json</code>, and rides in as the <code>OPENROUTER_API_KEY</code> env var. <span class="path">src/adapters/opencode.ts</span></li>
+      <li>Needs no files at all. The OpenRouter key comes from <code>OPENROUTER_API_KEY</code> or the operator's opencode <code>auth.json</code>, and rides in as the <code>OPENROUTER_API_KEY</code> env var. <span class="path">src/adapters/opencode.ts</span></li>
       <li><code>OPENCODE_SERVER_PASSWORD</code> and <code>OPENCODE_PORT</code> get stripped from the container environment before launch. <span class="path">scrubOpenCodeEnvironment</span></li>
     </ul>
 
@@ -652,7 +649,7 @@ flowchart LR
     <h3>Why the container is boxed in</h3>
     <ul class="facts">
       <li><code>CapDrop: ['ALL']</code> and <code>SecurityOpt: ['no-new-privileges']</code>: no Linux capabilities, no privilege escalation. Never privileged, never mounts the Docker socket. <span class="path">src/runtime/container.ts</span></li>
-      <li>Bounded resources: <code>PidsLimit 512</code>, <code>Memory 2&nbsp;GiB</code>, <code>NanoCpus 2</code>. One private bridge network per entrant, and its own credential mount.</li>
+      <li>Bounded resources: <code>PidsLimit 512</code>, <code>Memory 2&nbsp;GiB</code>, <code>NanoCpus 2</code>. One private bridge network per entrant; credentials live only in its own writable layer.</li>
       <li><code>ExtraHosts: ['host.docker.internal:host-gateway']</code> lets the container reach the chain running on the host. <code>ETH_RPC_URL</code> points at <code>http://host.docker.internal:8545</code>.</li>
     </ul>
 

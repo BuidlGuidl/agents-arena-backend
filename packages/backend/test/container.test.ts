@@ -22,13 +22,21 @@ class FakeDocker {
   readonly createNetwork = vi.fn(async (_options: unknown) => this.network);
   readonly listContainers = vi.fn(async () => []);
   readonly listNetworks = vi.fn(async () => []);
+  readonly commands: Array<Record<string, unknown>> = [];
 
   private resolveWait!: (result: FakeWaitResult) => void;
+  private inputBuffer = '';
   private readonly waitResult = new Promise<FakeWaitResult>((resolveWait) => {
     this.resolveWait = resolveWait;
   });
 
-  constructor(private readonly onStart: (docker: FakeDocker) => void = (docker) => docker.send({ ev: 'ready' })) {
+  constructor(
+    private readonly onStart: (docker: FakeDocker) => void = (docker) => docker.send({ ev: 'ready' }),
+    private readonly onCommand: (docker: FakeDocker, command: Record<string, unknown>) => void = (docker, command) => {
+      if (command.cmd === 'file') docker.send({ ev: 'file-ok', id: command.id });
+    },
+  ) {
+    this.attachment.on('data', (chunk: Buffer) => this.receiveCommandChunk(chunk));
     this.container = {
       attach: vi.fn(async () => this.attachment),
       start: vi.fn(async () => this.onStart(this)),
@@ -45,6 +53,19 @@ class FakeDocker {
   }
 
   readonly createContainer = vi.fn(async (_options: unknown) => this.container);
+
+  private receiveCommandChunk(chunk: Buffer): void {
+    this.inputBuffer += chunk.toString('utf8');
+    let newline = this.inputBuffer.indexOf('\n');
+    while (newline !== -1) {
+      const line = this.inputBuffer.slice(0, newline);
+      this.inputBuffer = this.inputBuffer.slice(newline + 1);
+      const command = JSON.parse(line) as Record<string, unknown>;
+      this.commands.push(command);
+      this.onCommand(this, command);
+      newline = this.inputBuffer.indexOf('\n');
+    }
+  }
 
   send(message: object): void {
     this.runnerOutput.write(`${JSON.stringify(message)}\n`);
@@ -198,16 +219,123 @@ describe('DockerEntrantContainer mounts', () => {
     expect(createdBinds(docker).some((bind) => bind.endsWith(':ro'))).toBe(false);
   });
 
-  it('keeps credentials read-write when both mounts are present', async () => {
+  it('injects credentials and only binds the challenge pack', async () => {
     const docker = new FakeDocker();
-    const credentialDir = './test-credentials';
     const challengePackDir = './test-challenge-pack';
 
-    await createContainer(docker, { credentialDir, challengePackDir });
+    await createContainer(docker, {
+      credentialFiles: [
+        { path: '/creds/test/auth.json', content: '{"token":"secret"}', mode: 0o600 },
+        { path: '/creds/test/cache' },
+      ],
+      challengePackDir,
+    });
 
-    expect(createdBinds(docker)).toEqual([
-      `${resolve(credentialDir)}:/creds:rw`,
-      `${resolve(challengePackDir)}:/ctf:ro`,
+    expect(createdBinds(docker)).toEqual([`${resolve(challengePackDir)}:/ctf:ro`]);
+    expect(docker.commands).toEqual([
+      {
+        cmd: 'file',
+        id: expect.any(String),
+        path: '/creds/test/auth.json',
+        data: Buffer.from('{"token":"secret"}', 'utf8').toString('base64'),
+        mode: 0o600,
+      },
+      {
+        cmd: 'file',
+        id: expect.any(String),
+        path: '/creds/test/cache',
+      },
     ]);
+  });
+
+  it('tears down creation when credential injection fails', async () => {
+    const docker = new FakeDocker(
+      (startedDocker) => startedDocker.send({ ev: 'ready' }),
+      (startedDocker, command) => {
+        if (command.cmd === 'file') {
+          startedDocker.send({
+            ev: 'error',
+            id: command.id,
+            msg: `File ${String(command.id)} failed: EACCES`,
+          });
+        }
+      },
+    );
+
+    await expect(createContainer(docker, {
+      credentialFiles: [{ path: '/creds/test/auth.json', content: '{}' }],
+    })).rejects.toThrow('failed: EACCES');
+
+    expect(docker.container.remove).toHaveBeenCalledWith({ force: true });
+    expect(docker.network.remove).toHaveBeenCalledOnce();
+  });
+
+  it('ignores a runner file error for a different transfer id', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const docker = new FakeDocker(
+      (startedDocker) => startedDocker.send({ ev: 'ready' }),
+      (startedDocker, command) => {
+        if (command.cmd === 'file') {
+          startedDocker.send({
+            ev: 'error',
+            id: 'other-file',
+            msg: 'File other-file failed: EACCES',
+          });
+          startedDocker.send({ ev: 'file-ok', id: command.id });
+        }
+      },
+    );
+
+    try {
+      await expect(createContainer(docker, {
+        credentialFiles: [{ path: '/creds/test/auth.json', content: '{}' }],
+      })).resolves.toBeInstanceOf(DockerEntrantContainer);
+
+      expect(warn).toHaveBeenCalledWith(
+        '[arena runner] error for unknown transfer other-file: File other-file failed: EACCES',
+      );
+      expect(docker.container.remove).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('attributes a runner error without the transfer id to the pending file', async () => {
+    // An image built before the file command replies without echoing the id.
+    const docker = new FakeDocker(
+      (startedDocker) => startedDocker.send({ ev: 'ready' }),
+      (startedDocker, command) => {
+        if (command.cmd === 'file') {
+          startedDocker.send({ ev: 'error', msg: 'Unknown command: file' });
+        }
+      },
+    );
+
+    await expect(createContainer(docker, {
+      credentialFiles: [{ path: '/creds/test/auth.json', content: '{}' }],
+    })).rejects.toThrow('Unknown command: file');
+
+    expect(docker.container.remove).toHaveBeenCalledWith({ force: true });
+  });
+
+  it('tears down creation when credential injection is not acknowledged', async () => {
+    vi.useFakeTimers();
+    try {
+      const docker = new FakeDocker(
+        (startedDocker) => startedDocker.send({ ev: 'ready' }),
+        () => undefined,
+      );
+      const creation = createContainer(docker, {
+        credentialFiles: [{ path: '/creds/test/auth.json', content: '{}' }],
+      });
+      const rejection = expect(creation).rejects.toThrow(/Runner file timeout/);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      await rejection;
+      expect(docker.container.remove).toHaveBeenCalledWith({ force: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

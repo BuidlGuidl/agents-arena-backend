@@ -36,6 +36,7 @@ const entrant: EntrantRecord = {
   id: entrantId,
   harness,
   model,
+  effort: null,
   address: null,
   status: 'idle',
 };

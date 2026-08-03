@@ -261,3 +261,21 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 **Trade-off:** every claude entrant in a run draws from one subscription's rate limits, so parallel opus entrants can throttle each other into `blocked` mid-race. `costUsd` is a notional API-rate figure, not billed dollars — same caveat codex rows already carry. pricing ignores provider cache-write premiums for every harness, so per-run dollars are comparable across entrants but understate the provider's own bill.
 
 **Consequence:** the entrant image ships `@anthropic-ai/claude-code` pinned like the other two CLIs, so `docker/build.sh` runs again. the same-harness-different-model lineup (#2) becomes preset data — nothing new may key on `harness`, identity stays `entrantId`. the `fake.ts` scripted-solve branch that picked flags by harness is fixed in the same change, since a third harness made its binary else-arm silently wrong.
+
+---
+
+## ADR-0016 — entrant rosters override preset entrants
+
+**Status:** accepted (2026-08-03), from #2
+
+**Decision:** `POST /runs` accepts an optional roster of 1–10 entrants. a roster replaces the preset entrants. the preset remains required and still selects the substrate. each entrant pins an explicit model id. ids must match `^[a-z][a-z0-9-]*$`, contain at most 20 characters, differ from the reserved run-level source `run`, and be unique within the roster. docker names allow 63 characters; `arena-`, the 36-character run UUID, and their separator leave 20 characters for the entrant id. model ids must contain no leading or trailing whitespace, and every case variant of `'default'` is invalid.
+
+**Why:** a run needs flexible lineups, including entrants that share one harness but use different models. the preset still carries deployment policy.
+
+**Trade-off:** callers that use rosters must supply stable entrant ids and explicit model ids. unknown models run without derived pricing.
+
+**Consequence:** `entrantId` remains the identity for storage, events, usage, and frontend lanes. harness selects a driver and remains display data elsewhere.
+
+**Amendment (2026-08-03):** roster models now use a per-harness allowlist in the shared contract. growing the list takes a one-line contract edit.
+
+**Amendment (2026-08-03):** network names now keep the random suffix outside the 63-character slice, so a 20-character entrant id cannot truncate it.

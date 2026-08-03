@@ -9,6 +9,7 @@ const entrant: EntrantRecord = {
   id: 'entrant-1',
   harness: 'codex',
   model: 'gpt-5.5',
+  effort: null,
   address: null,
   status: 'idle',
 };

@@ -1,4 +1,4 @@
-import type { EntrantStatus, HarnessId, RunState } from '../contract.js';
+import type { EntrantStatus, HarnessId, RosterEffort, RunState } from '../contract.js';
 
 export interface RunRecord {
   id: string;
@@ -14,6 +14,7 @@ export interface EntrantRecord {
   id: string;
   harness: HarnessId;
   model: string;
+  effort: RosterEffort | null;
   address: string | null;
   status: EntrantStatus;
 }

@@ -11,7 +11,21 @@ export type RunState =
 
 export type EntrantStatus = 'working' | 'idle' | 'blocked' | 'done';
 
-export type HarnessId = 'codex' | 'opencode' | 'claude';
+export const HARNESS_IDS = ['codex', 'opencode', 'claude'] as const;
+export type HarnessId = (typeof HARNESS_IDS)[number];
+
+export const ROSTER_MODELS: Readonly<Record<HarnessId, readonly string[]>> = {
+  codex: ['gpt-5.5', 'gpt-5.6-sol'],
+  claude: ['claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5'],
+  opencode: [
+    'openrouter/z-ai/glm-5.2',
+    'openrouter/moonshotai/kimi-k3',
+    'openrouter/deepseek/deepseek-v4-flash-0731',
+  ],
+};
+
+export const ROSTER_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+export type RosterEffort = (typeof ROSTER_EFFORTS)[number];
 
 export interface EntrantSolve {
   challengeId: number;
@@ -23,6 +37,7 @@ export interface EntrantSummary {
   id: string;
   harness: HarnessId;
   model: string;
+  effort?: RosterEffort;
   address: string | null;
   status: EntrantStatus;
   flags: number;
@@ -94,10 +109,18 @@ export interface HistoryPage {
   lastEventId?: number;
 }
 
+export interface RosterEntry {
+  id: string;
+  harness: HarnessId;
+  model: string;
+  effort?: RosterEffort;
+}
+
 export interface CreateRunRequest {
   preset: string;
   autoStart?: boolean;
   idempotencyKey?: string;
+  roster?: RosterEntry[];
 }
 
 export interface CreateRunResponse {

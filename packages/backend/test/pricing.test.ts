@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { ROSTER_MODELS } from '../src/contract.js';
 import { costForTokens, MODEL_RATES } from '../src/pricing.js';
 
 describe('costForTokens', () => {
@@ -31,5 +32,13 @@ describe('costForTokens', () => {
   it('returns null for a model the table does not list', () => {
     expect(costForTokens('gpt-6-codex-preview', 1_000, 100)).toBeNull();
     expect(MODEL_RATES['gpt-6-codex-preview']).toBeUndefined();
+  });
+
+  it('has a rate for every codex and claude roster model', () => {
+    // OpenCode entrants report their own cost from OpenRouter, so its roster
+    // models price without a table row. Codex and claude rely on the table.
+    for (const model of [...ROSTER_MODELS.codex, ...ROSTER_MODELS.claude]) {
+      expect(MODEL_RATES[model], `missing rate for ${model}`).toBeDefined();
+    }
   });
 });

@@ -94,7 +94,7 @@ restart the backend mid-run, rebuild missed events from Docker logs, reconcile s
 
 ## out of scope for v1
 
-frontend polish (damu + pablo), Claude Code in the race (subscription ban risk, ADR-0008; adapter seam reserved), agent chat / `arena say`, a literal interactive terminal, more than two entrants, public spectator scale, managed sandboxes / microVMs, hooks (deferred to a later iteration, headline use = tx-interception).
+frontend polish (damu + pablo), Claude Code in the race (subscription ban risk, ADR-0008; adapter seam reserved), agent chat / `arena say`, a literal interactive terminal, rosters above 10 entrants, public spectator scale, managed sandboxes / microVMs, hooks (deferred to a later iteration, headline use = tx-interception).
 
 ## open questions (parked — don't block the build)
 

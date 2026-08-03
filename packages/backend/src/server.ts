@@ -2,7 +2,15 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Hex } from 'viem';
 import { z } from 'zod';
 
-import type { ArenaEvent, BroadcastResponse, CreateRunRequest } from './contract.js';
+import {
+  HARNESS_IDS,
+  ROSTER_EFFORTS,
+  ROSTER_MODELS,
+  type ArenaEvent,
+  type BroadcastResponse,
+  type CreateRunRequest,
+  type RosterEntry,
+} from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import {
   isSecureRequest,
@@ -29,10 +37,45 @@ import {
   UnknownPresetError,
 } from './run-manager.js';
 
+const rosterEntrySchema = z.object({
+  id: z.string()
+    .max(20)
+    .regex(/^[a-z][a-z0-9-]*$/)
+    .refine((id) => id !== 'run', {
+      message: 'entrant id "run" is reserved for run-level feed events',
+    }),
+  harness: z.enum(HARNESS_IDS),
+  model: z.string(),
+  effort: z.enum(ROSTER_EFFORTS).optional(),
+}).strict().superRefine((entry, context) => {
+  const allowedModels = ROSTER_MODELS[entry.harness];
+  if (!allowedModels.includes(entry.model)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['model'],
+      message: `${entry.harness} models must be one of: ${allowedModels.join(', ')}`,
+    });
+  }
+  if (entry.effort !== undefined && entry.harness !== 'codex') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['effort'],
+      message: 'effort is codex-only for now; claude and opencode have no verified CLI knob',
+    });
+  }
+});
+
 const createRunSchema = z.object({
   preset: z.string().min(1),
   autoStart: z.boolean().optional(),
   idempotencyKey: z.string().min(1).optional(),
+  roster: z.array(rosterEntrySchema)
+    .min(1)
+    .max(10)
+    .refine((roster) => new Set(roster.map((entrant) => entrant.id)).size === roster.length, {
+      message: 'entrant ids must be unique within the roster',
+    })
+    .optional(),
 }).strict();
 
 // Steer and broadcast carry the same body; only the fan-out differs.
@@ -186,6 +229,14 @@ export function createServer(options: ServerOptions): ArenaServer {
       preset: body.preset,
       ...(body.autoStart === undefined ? {} : { autoStart: body.autoStart }),
       ...(body.idempotencyKey === undefined ? {} : { idempotencyKey: body.idempotencyKey }),
+      ...(body.roster === undefined ? {} : {
+        roster: body.roster.map((entry): RosterEntry => ({
+          id: entry.id,
+          harness: entry.harness,
+          model: entry.model,
+          ...(entry.effort === undefined ? {} : { effort: entry.effort }),
+        })),
+      }),
     };
     const result = await manager.create(input);
     return reply.status(result.created ? 201 : 200).send({ run: result.run });

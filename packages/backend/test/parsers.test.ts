@@ -496,6 +496,20 @@ describe('ClaudeEventParser', () => {
     expect(parser.parse(JSON.stringify(assistant))).toEqual({ events: [] });
   });
 
+  it('logs unhandled assistant block types without emitting events', () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const parser = new ClaudeEventParser('claude-1', logger);
+
+    expect(parser.parse(JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'server_tool_use', id: 'server-tool-1' }] },
+    }))).toEqual({ events: [] });
+    expect(parser.unknownEvents).toBe(1);
+    expect(logger.info).toHaveBeenCalledWith(
+      '[claude parser] ignored unknown event assistant-block:server_tool_use',
+    );
+  });
+
   it('extracts text blocks from array-shaped tool results', () => {
     const parser = new ClaudeEventParser('claude-1');
     parser.parse(JSON.stringify({

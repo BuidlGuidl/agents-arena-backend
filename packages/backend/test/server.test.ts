@@ -694,6 +694,244 @@ describe('seed endpoint', () => {
   });
 });
 
+describe('run rosters', () => {
+  it('creates a run with the roster entrants instead of the preset entrants', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        roster: [
+          { id: 'claude-opus', harness: 'claude', model: 'claude-opus-5' },
+          { id: 'codex-main', harness: 'codex', model: 'gpt-5.5' },
+          { id: 'opencode-main', harness: 'opencode', model: 'openrouter/z-ai/glm-5.2' },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const { run } = response.json() as { run: RunSnapshot };
+    expect(run.entrants.map((entrant) => entrant.id)).toEqual([
+      'claude-opus',
+      'codex-main',
+      'opencode-main',
+    ]);
+  });
+
+  it('rejects a model outside the harness allowlist', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        roster: [{ id: 'codex-main', harness: 'codex', model: 'gpt-4' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
+      .toBe('codex models must be one of: gpt-5.5, gpt-5.6-sol');
+  });
+
+  it('rejects a model allowed only for another harness', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        roster: [{ id: 'codex-main', harness: 'codex', model: 'claude-opus-5' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
+      .toBe('codex models must be one of: gpt-5.5, gpt-5.6-sol');
+  });
+
+  it('accepts effort for a Codex roster entrant and exposes it in the snapshot', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        roster: [{ id: 'codex-main', harness: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const { run } = response.json() as { run: RunSnapshot };
+    expect(run.entrants).toEqual([
+      expect.objectContaining({
+        id: 'codex-main',
+        harness: 'codex',
+        model: 'gpt-5.6-sol',
+        effort: 'xhigh',
+      }),
+    ]);
+  });
+
+  it('rejects effort for a Claude roster entrant', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        roster: [{ id: 'claude-main', harness: 'claude', model: 'claude-opus-5', effort: 'high' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
+      .toBe('effort is codex-only for now; claude and opencode have no verified CLI knob');
+  });
+
+  it('rejects an invalid roster effort', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        roster: [{ id: 'codex-main', harness: 'codex', model: 'gpt-5.5', effort: 'extreme' }],
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it.each([
+    {
+      caseName: 'more than ten entrants',
+      roster: Array.from({ length: 11 }, (_, index) => ({
+        id: `entrant-${index}`,
+        harness: 'codex',
+        model: 'gpt-5.5',
+      })),
+    },
+    {
+      caseName: 'duplicate entrant ids',
+      roster: [
+        { id: 'same-id', harness: 'codex', model: 'gpt-5.5' },
+        { id: 'same-id', harness: 'claude', model: 'claude-opus-5' },
+      ],
+      expectedMessage: 'entrant ids must be unique within the roster',
+    },
+    {
+      caseName: 'invalid entrant id characters',
+      roster: [{ id: 'Bad_id', harness: 'codex', model: 'gpt-5.5' }],
+    },
+    {
+      caseName: 'an entrant id longer than 20 characters',
+      roster: [{ id: 'abcdefghijklmnopqrstu', harness: 'codex', model: 'gpt-5.5' }],
+    },
+    {
+      caseName: 'the reserved run entrant id',
+      roster: [{ id: 'run', harness: 'codex', model: 'gpt-5.5' }],
+      expectedMessage: 'entrant id "run" is reserved for run-level feed events',
+    },
+    {
+      caseName: 'the default model because it is outside the allowlist',
+      roster: [{ id: 'codex-main', harness: 'codex', model: 'default' }],
+    },
+    {
+      caseName: 'a whitespace-padded model because it is outside the allowlist',
+      roster: [{ id: 'codex-main', harness: 'codex', model: ' gpt-5.5' }],
+    },
+    {
+      caseName: 'an empty roster',
+      roster: [],
+    },
+  ])('rejects $caseName', async ({ roster, expectedMessage }) => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: { preset: 'fake-duel', roster },
+    });
+
+    expect(response.statusCode).toBe(400);
+    if (expectedMessage !== undefined) {
+      expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
+        .toBe(expectedMessage);
+    }
+  });
+
+  it('streams and prices same-harness entrants by entrant id and model', async () => {
+    const server = createServer({
+      dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
+      schedule: (task) => {
+        task();
+        return undefined;
+      },
+    });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        autoStart: true,
+        roster: [
+          { id: 'claude-a', harness: 'claude', model: 'claude-opus-5' },
+          { id: 'claude-b', harness: 'claude', model: 'claude-sonnet-5' },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const { run } = response.json() as { run: RunSnapshot };
+    const entrantEvents = server.journal.after(run.id, 0)
+      .filter((event) => event.source === 'claude-a' || event.source === 'claude-b');
+    for (const entrantId of ['claude-a', 'claude-b']) {
+      const events = entrantEvents.filter((event) => event.source === entrantId);
+      expect(events.some((event) => event.type === 'agent.message')).toBe(true);
+      expect(events.filter((event) => event.type === 'usage')).toHaveLength(2);
+      expect(events.every((event) =>
+        !('entrantId' in event.payload) || event.payload.entrantId === entrantId,
+      )).toBe(true);
+    }
+    const toolCallIds = entrantEvents
+      .filter((event) => event.type === 'tool.call')
+      .map((event) => event.payload.toolCallId);
+    expect(new Set(toolCallIds).size).toBe(2);
+
+    const snapshot = server.manager.snapshot(run.id);
+    expect(snapshot.entrants).toMatchObject([
+      { id: 'claude-a', harness: 'claude', model: 'claude-opus-5', costUsd: 0.0224 },
+      { id: 'claude-b', harness: 'claude', model: 'claude-sonnet-5', costUsd: 0.01344 },
+    ]);
+  });
+});
+
 describe('fake run vertical slice', () => {
   it('creates, streams scripted events, steers, and finishes a run', async () => {
     const server = createServer({

@@ -1,15 +1,15 @@
 # agents-arena-backend
 
-Backend for BuidlGuidl's **Agents Arena** — two coding agents race to solve the on-chain AI CTF, live, each in its own Docker container. One `codex` entrant and one `opencode` entrant. Every step streams to the frontend over server-sent events. Scores come from on-chain flag state, not an off-chain answer key.
+Backend for BuidlGuidl's **Agents Arena** — up to ten coding agents race to solve the on-chain AI CTF, live, each in its own Docker container. Entrants use the `codex`, `opencode`, or `claude` harness. Every step streams to the frontend over server-sent events. Scores come from on-chain flag state, not an off-chain answer key.
 
 Backend only — the frontend lives in a separate ai-ctf fork. This repo ships a small mock React frontend so the backend team can exercise the full slice (SSE → browser) on its own.
 
 ## Status
 
 Working today:
-- Two real agents (`codex` + `opencode`) boot in isolated, hardened containers, run bash / `forge` / `cast`, reach the chain, and stream normalized events.
+- Up to ten real agents using `codex`, `opencode`, or `claude` boot in isolated, hardened containers, run bash / `forge` / `cast`, reach the chain, and stream normalized events.
 - One replayable SSE feed per run. A reconnect replays from `Last-Event-ID` with no gap and no duplicate.
-- A mock React frontend renders two lanes and a run log.
+- A mock React frontend renders one lane per entrant and a run log.
 - Seed-derived burner wallets + watcher-only funding gate, proven against the local chain by a drill. Exactly-once scoring, tested against a local node.
 - A docker-duel run scores itself. The solve poller reads each entrant's flag state from `NFTFlags` on an interval and journals `score.flag`.
 
@@ -25,16 +25,16 @@ In any real deployment, serve `POST /runs/:id/seed` over TLS. Configure proxies 
 One process owns a run: lifecycle, containers, credentials, the event journal, and score state. It holds an open Docker socket and a SQLite file. No queue, no websockets, no Kubernetes.
 
 - **Entrant** — a coding-agent CLI + model + funded wallet, running in its own container as one long-lived, steerable session.
-- **Ready barrier** — both entrants prepare and hold. The run releases them together on one recorded start time, so boot time never decides the race.
+- **Ready barrier** — all entrants prepare and hold. The run releases them together on one recorded start time, so boot time never decides the race.
 - **Steer** — an operator injects a free-text turn into a live agent mid-race. An idle agent that still has flags to win is auto-nudged from on-chain truth. Both use one injection path.
 - **Journal** — every fact is one append-only row with a global `id` and a per-source `seq`. The feed is a projection; a reconnect replays it.
 - **Chain profile** — selects addresses, RPC, confirmation depth, funder address, funding threshold, and funding timeout for local or Base.
 
-Transport is each CLI's line-JSON stdout (`codex --json`, `opencode --format json`), normalized into one `ArenaEvent` stream. SSE, not websockets — `Last-Event-ID` replay is native and the traffic is asymmetric (a steer is a plain POST).
+Transport is each CLI's line-JSON stdout (`codex --json`, `opencode --format json`, `claude --output-format stream-json`), normalized into one `ArenaEvent` stream. SSE, not websockets — `Last-Event-ID` replay is native and the traffic is asymmetric (a steer is a plain POST).
 
 ## Stack
 
-TypeScript on Node, one pnpm workspace, `tsx` (no build step), vitest. Fastify (HTTP + SSE), drizzle-orm + better-sqlite3 (the journal), viem (chain reads, signatures, and the local dev faucet), dockerode (containers). Mock frontend: Vite + React + TanStack Query + native EventSource. One pinned Docker image carries Foundry, the `codex` and `opencode` CLIs, and the in-container runner.
+TypeScript on Node, one pnpm workspace, `tsx` (no build step), vitest. Fastify (HTTP + SSE), drizzle-orm + better-sqlite3 (the journal), viem (chain reads, signatures, and the local dev faucet), dockerode (containers). Mock frontend: Vite + React + TanStack Query + native EventSource. One pinned Docker image carries Foundry, the `codex`, `opencode`, and `claude` CLIs, and the in-container runner.
 
 ## Run it
 
@@ -122,10 +122,10 @@ Credentials come from the host: `codex` reads `~/.codex/auth.json`, `opencode` r
 2. Verify that the EIP-712 signature recovers to the profile's `funderAddress`. Derive each entrant key in memory and store only its address.
 3. Prepare each entrant — build a fresh container, inject its in-memory key and RPC URL, seed its harness credentials, mount the challenge pack read-only at `/ctf` on a local chain (Base mounts nothing), and run preflight.
 4. Move to `awaiting_funding`. The gate only watches balances; a local dev helper funds from anvil account 0, while a Base operator funds the displayed addresses.
-5. Hold at the ready barrier until both report ready. Record one start time and release both with their opening prompt.
+5. Hold at the ready barrier until all entrants report ready. Record one start time and release them with their opening prompt.
 6. Parse each agent's stdout into `ArenaEvent`s, append them to the journal, and stream them to the browser.
 
-Keys are dropped at teardown and never enter SQLite. At race time, the funder must save the canonical seed signature because it is that run's recovery key. From `packages/backend`, `scripts/recover-keys.ts` re-derives the burner keys and can sweep their balances. If either preflight fails, the run fails and both containers are torn down. Neither starts.
+Keys are dropped at teardown and never enter SQLite. At race time, the funder must save the canonical seed signature because it is that run's recovery key. From `packages/backend`, `scripts/recover-keys.ts` re-derives the burner keys and can sweep their balances. If any preflight fails, the run fails and every container is torn down. No entrant starts.
 
 ## API
 

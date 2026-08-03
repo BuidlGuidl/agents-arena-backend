@@ -18,7 +18,7 @@ export class DockerEntrantDriver implements EntrantDriver {
   private readonly opencode: OpenCodeDriver;
 
   constructor(journal: EventJournal, options: DockerEntrantDriverOptions = {}) {
-    // Both entrants read the same pack, so the resolver is shared unless a
+    // Every entrant reads the same pack, so the resolver is shared unless a
     // per-harness option overrides it.
     const shared = options.resolveChallengePack === undefined
       ? {}

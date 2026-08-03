@@ -207,7 +207,8 @@ export class DockerEntrantContainer implements EntrantContainer {
     await removeStaleResources(docker, options.runId, options.entrantId);
 
     const suffix = randomUUID().slice(0, 8);
-    const networkName = safeDockerName(`arena-${options.runId}-${options.entrantId}-${suffix}`);
+    // Slice before appending the suffix so a max-length entrant id cannot remove the collision guard.
+    const networkName = `${safeDockerName(`arena-${options.runId}-${options.entrantId}`).slice(0, 54)}-${suffix}`;
     const network = await docker.createNetwork({
       Name: networkName,
       Driver: 'bridge',

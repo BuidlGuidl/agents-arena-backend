@@ -8,7 +8,7 @@ import type {
   CreateRunRequest,
   EntrantSolve,
   EntrantSummary,
-  HarnessId,
+  RosterEntry,
   RunSnapshot,
   RunState,
 } from './contract.js';
@@ -58,11 +58,7 @@ export interface BroadcastResult {
   failed: { entrantId: string; message: string }[];
 }
 
-interface PresetEntrant {
-  id: string;
-  harness: HarnessId;
-  model: string;
-}
+type PresetEntrant = RosterEntry;
 
 export type PresetSubstrate = 'docker' | 'fake';
 
@@ -206,11 +202,12 @@ export class RunManager {
         idempotencyKey: input.idempotencyKey ?? null,
         createdAt: now,
       }).run();
-      transaction.insert(entrants).values(preset.entrants.map((entrant) => ({
+      transaction.insert(entrants).values((input.roster ?? preset.entrants).map((entrant) => ({
           runId: id,
           id: entrant.id,
           harness: entrant.harness,
           model: entrant.model,
+          effort: entrant.effort ?? null,
           address: null,
           status: 'idle' as const,
       }))).run();
@@ -238,6 +235,7 @@ export class RunManager {
           id: entrant.id,
           harness: entrant.harness,
           model: entrant.model,
+          ...(entrant.effort === null ? {} : { effort: entrant.effort }),
           address: entrant.address,
           status: entrant.status,
           flags: solves.length,
@@ -452,11 +450,10 @@ export class RunManager {
       run = this.transition(runId, 'running');
       // Before the entrants start, so the first mint of the race is already covered.
       this.startSolveWatch(run, runEntrants);
-      const preset = PRESETS[run.preset];
-      if (preset === undefined) throw new UnknownPresetError(`Unknown preset: ${run.preset}`);
+      if (PRESETS[run.preset] === undefined) {
+        throw new UnknownPresetError(`Unknown preset: ${run.preset}`);
+      }
       await Promise.all(runEntrants.map(async (entrant) => {
-        const entrantPreset = preset.entrants.find((candidate) => candidate.id === entrant.id);
-        if (entrantPreset === undefined) throw new Error(`Preset has no entrant ${entrant.id}`);
         await this.driver.start(run, entrant, this.promptBuilder(entrant));
       }));
       return this.snapshot(runId);

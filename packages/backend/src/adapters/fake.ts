@@ -17,6 +17,10 @@ const SCRIPTED_FLAG_SETS: readonly (readonly number[])[] = [
   [1, 10],
   [4, 12],
   [6, 8],
+  [2, 12],
+  [3, 8],
+  [5, 10],
+  [6, 11],
 ];
 
 export class FakeDriver implements EntrantDriver {

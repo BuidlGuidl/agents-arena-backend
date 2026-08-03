@@ -180,6 +180,8 @@ async function setup(
     await writeFile(authPath, JSON.stringify({
       auth: {
         access: testCredentials.codex,
+        account: 'codex-user@example-account.com',
+        issuer: 'https://auth.openai.example/realms/codex',
         nested: { refresh: testCredentials.codexRefresh },
       },
       short: 'ignored',
@@ -530,7 +532,7 @@ describe('adapter guardrails', () => {
     },
   );
 
-  it('registers every long string leaf from Codex auth JSON', async () => {
+  it('registers only long secret-shaped leaves from Codex auth JSON', async () => {
     const context = await setup('codex');
     try {
       expect(credentialSecrets(context.run.id)).toEqual([

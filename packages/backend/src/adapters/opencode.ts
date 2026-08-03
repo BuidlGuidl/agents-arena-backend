@@ -9,6 +9,7 @@ import {
   HarnessEntrantDriver,
   type HarnessDriverOptions,
 } from './harness-driver.js';
+import { registerCredentialSecrets } from './credential-secrets.js';
 import { OpenCodeEventParser } from './opencode-parser.js';
 import type { EntrantRecord, RunRecord } from './types.js';
 
@@ -46,6 +47,7 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
     if (apiKey === undefined || apiKey.length === 0) {
       throw new Error(`OpenRouter API key not found in OPENROUTER_API_KEY or ${this.authPath}`);
     }
+    registerCredentialSecrets(run.id, [apiKey]);
     return this.containerFactory({
       runId: run.id,
       entrantId: entrant.id,

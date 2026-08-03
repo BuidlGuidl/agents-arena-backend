@@ -47,5 +47,11 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
     CREATE INDEX IF NOT EXISTS events_run_id_type_id ON events (run_id, type, id);
     CREATE INDEX IF NOT EXISTS events_run_id_source_id ON events (run_id, source, id);
   `);
+  // A pre-roster arena.db has entrants without the effort column, and
+  // CREATE TABLE IF NOT EXISTS never adds it to an existing table.
+  const entrantColumns = sqlite.prepare('PRAGMA table_info(entrants)').all() as Array<{ name: string }>;
+  if (!entrantColumns.some((column) => column.name === 'effort')) {
+    sqlite.exec('ALTER TABLE entrants ADD COLUMN effort TEXT');
+  }
   return { database: drizzle(sqlite, { schema }), sqlite };
 }

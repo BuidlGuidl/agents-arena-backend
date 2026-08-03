@@ -19,7 +19,9 @@ export interface ModelRate {
 export const MODEL_RATES: Readonly<Record<string, ModelRate>> = {
   'gpt-5-codex': { inputPerMillion: 1.25, cachedInputPerMillion: 0.125, outputPerMillion: 10 },
   'gpt-5.5': { inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 30 },
+  'gpt-5.6-sol': { inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 30 },
   'claude-opus-5': { inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 25 },
+  'claude-opus-4-8': { inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 25 },
   'claude-sonnet-5': { inputPerMillion: 3, cachedInputPerMillion: 0.3, outputPerMillion: 15 },
   'claude-fable-5': { inputPerMillion: 10, cachedInputPerMillion: 1, outputPerMillion: 50 },
 };

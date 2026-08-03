@@ -6,6 +6,7 @@ import type { EventJournal } from '../journal.js';
 import type { EntrantContainer } from '../runtime/container.js';
 import { getWallet } from '../chain/wallet.js';
 import { CodexEventParser } from './codex-parser.js';
+import { registerCredentialSecrets } from './credential-secrets.js';
 import {
   HarnessEntrantDriver,
   type HarnessDriverOptions,
@@ -36,6 +37,7 @@ export class CodexDriver extends HarnessEntrantDriver {
 
   protected async createContainer(run: RunRecord, entrant: EntrantRecord): Promise<EntrantContainer> {
     const authJson = await readFile(this.authPath, 'utf8');
+    registerCredentialSecrets(run.id, stringLeaves(JSON.parse(authJson) as unknown));
     const wallet = getWallet(run.id, entrant.id);
     // Only pin a model when the preset asks for a specific one. A ChatGPT-account
     // login rejects API-only models (gpt-5, gpt-5-codex) with a 400, so 'default'
@@ -112,4 +114,11 @@ export class CodexDriver extends HarnessEntrantDriver {
 
 function tomlString(value: string): string {
   return JSON.stringify(value);
+}
+
+function stringLeaves(value: unknown): string[] {
+  if (typeof value === 'string') return value.length >= 16 ? [value] : [];
+  if (Array.isArray(value)) return value.flatMap(stringLeaves);
+  if (value === null || typeof value !== 'object') return [];
+  return Object.values(value).flatMap(stringLeaves);
 }

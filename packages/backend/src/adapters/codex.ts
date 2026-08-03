@@ -117,8 +117,16 @@ function tomlString(value: string): string {
 }
 
 function stringLeaves(value: unknown): string[] {
-  if (typeof value === 'string') return value.length >= 16 ? [value] : [];
+  if (typeof value === 'string') return isCredentialSecretLeaf(value) ? [value] : [];
   if (Array.isArray(value)) return value.flatMap(stringLeaves);
   if (value === null || typeof value !== 'object') return [];
   return Object.values(value).flatMap(stringLeaves);
+}
+
+function isCredentialSecretLeaf(value: string): boolean {
+  // Auth JSON includes account labels and issuer URLs that are not secrets.
+  if (value.length < 16) return false;
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return false;
+  if (value.startsWith('http://') || value.startsWith('https://')) return false;
+  return true;
 }

@@ -399,7 +399,7 @@ smoke() {
   rpc_ready || \
     fail_with_fix 'The local chain is down.' "cd \"$ROOT_DIR\" && ./scripts/demo.sh up"
 
-  for harness in codex opencode; do
+  for harness in codex opencode claude; do
     logfile="$DEMO_DIR/smoke-$harness.log"
     if (
       cd "$ROOT_DIR"

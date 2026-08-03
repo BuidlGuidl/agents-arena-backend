@@ -247,3 +247,17 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 **Trade-off:** a base run cannot start without a human — which ADR-0005 already called correct behavior. the state-machine change bumps `arena-types.ts`, which the frontend re-copies; acceptable, since pablo and damu are building the waiting room against this contract anyway.
 
 **Consequence:** the `wallets` table is dropped, not trimmed — `entrants.address` is the single address source, the solve poller reads it, and startup DDL runs `DROP TABLE IF EXISTS wallets`, so plaintext keys on existing `arena.db` files are destroyed on upgrade. the funding timeout becomes per-profile where absent means wait-forever. the mock frontend ships the reference waiting room (sign button, address list, per-entrant funding status); blockies, etherscan links, and multisend stay in the real frontend. topping up an underfunded entrant mid-race needs no code — the watcher reads balances, so sending more ETH to the same address just works.
+
+---
+
+## ADR-0015 — claude code joins as the third harness, on a setup-token credential
+
+**Status:** accepted (2026-08-03) — supersedes ADR-0008; from #29 and the 2026-07-29 meeting
+
+**Decision:** claude code becomes the third harness, behind the same adapter seam. the credential is a long-lived OAuth token minted once on the host with `claude setup-token` against shiv's Max subscription (interim owner; swaps for an org credential without touching the adapter). the container gets it as `CLAUDE_CODE_OAUTH_TOKEN` env plus an empty writable `CLAUDE_CONFIG_DIR=/creds/claude` mount — opencode-shaped (env var in), not codex-shaped (auth-file copy). cost stays comparable across harnesses the way codex's already is: the parser reports token counts with no dollar figure, and `MODEL_RATES` prices them at API rates. presets therefore always pin an explicit model id, never `'default'` — `costForTokens` keys on `entrant.model` and a `'default'` row matches nothing. the run lineup gains `docker-arena` (one entrant per harness, claude on `claude-opus-5`), and real-vs-fake dispatch moves off the `preset === 'docker-duel'` string literal onto a `substrate` property the preset declares.
+
+**Why:** ADR-0008 parked claude on the risk of running a subscription headless in a container. `setup-token` is the sanctioned headless path — it exists for CI use — which is a better ToS posture than replaying login files, and better than what the codex adapter already does with the ChatGPT `auth.json`. copying `~/.claude` was rejected outright: on macOS the OAuth credential lives in the Keychain, not the directory, so the copy carries host state and no secret.
+
+**Trade-off:** every claude entrant in a run draws from one subscription's rate limits, so parallel opus entrants can throttle each other into `blocked` mid-race. `costUsd` is a notional API-rate figure, not billed dollars — same caveat codex rows already carry. pricing ignores provider cache-write premiums for every harness, so per-run dollars are comparable across entrants but understate the provider's own bill.
+
+**Consequence:** the entrant image ships `@anthropic-ai/claude-code` pinned like the other two CLIs, so `docker/build.sh` runs again. the same-harness-different-model lineup (#2) becomes preset data — nothing new may key on `harness`, identity stays `entrantId`. the `fake.ts` scripted-solve branch that picked flags by harness is fixed in the same change, since a third harness made its binary else-arm silently wrong.

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
-import type { ArenaEvent, HarnessId } from '../src/contract.js';
+import type { ArenaEvent } from '../src/contract.js';
+import { ClaudeDriver } from '../src/adapters/claude.js';
 import { CodexDriver } from '../src/adapters/codex.js';
 import { OpenCodeDriver } from '../src/adapters/opencode.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from '../src/adapters/types.js';
@@ -8,8 +9,8 @@ import { entrants, runs } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 
 const harness = process.argv[2];
-if (harness !== 'codex' && harness !== 'opencode') {
-  console.error('Usage: tsx scripts/demo-entrant.ts <codex|opencode>');
+if (harness !== 'codex' && harness !== 'opencode' && harness !== 'claude') {
+  console.error('Usage: tsx scripts/demo-entrant.ts <codex|opencode|claude>');
   process.exit(2);
 }
 
@@ -19,7 +20,9 @@ const entrantId = `${harness}-demo`;
 const now = new Date().toISOString();
 const model = harness === 'codex'
   ? 'default' // ChatGPT-account login: use the account default, don't pin an API-only model
-  : 'openrouter/z-ai/glm-5.2';
+  : harness === 'opencode'
+    ? 'openrouter/z-ai/glm-5.2'
+    : 'claude-opus-5';
 const run: RunRecord = {
   id: runId,
   state: 'running',
@@ -31,7 +34,7 @@ const run: RunRecord = {
 const entrant: EntrantRecord = {
   runId,
   id: entrantId,
-  harness: harness as HarnessId,
+  harness,
   model,
   address: null,
   status: 'idle',
@@ -46,7 +49,9 @@ journal.append(runId, 'run', 'run.state', { state: 'running' });
 
 const driver: EntrantDriver = harness === 'codex'
   ? new CodexDriver(journal)
-  : new OpenCodeDriver(journal);
+  : harness === 'opencode'
+    ? new OpenCodeDriver(journal)
+    : new ClaudeDriver(journal);
 let prepared = false;
 const unsubscribe = journal.subscribe(runId, (event) => {
   console.log(JSON.stringify(event));

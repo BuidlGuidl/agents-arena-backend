@@ -4,6 +4,7 @@ FROM node:22-bookworm
 ARG TARGETARCH
 ARG FOUNDRY_VERSION=v1.3.1
 ARG CODEX_VERSION=0.144.6
+ARG CLAUDE_CODE_VERSION=2.1.220
 ARG OPENCODE_VERSION=1.18.4
 ARG TSX_VERSION=4.20.6
 
@@ -21,6 +22,7 @@ RUN case "$TARGETARCH" in \
 
 RUN npm install --global \
       "@openai/codex@${CODEX_VERSION}" \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
       "opencode-ai@${OPENCODE_VERSION}" \
       "tsx@${TSX_VERSION}" \
     && npm cache clean --force

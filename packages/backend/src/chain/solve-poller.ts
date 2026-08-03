@@ -13,7 +13,7 @@ import type { EntrantRecord, RunRecord } from '../adapters/types.js';
 import type { ArenaDatabase } from '../db/index.js';
 import { entrants, scores } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
-import type { SolveWatch } from '../run-manager.js';
+import { presetSubstrate, type SolveWatch } from '../run-manager.js';
 import { flagMintedEvent, nftFlagsAbi } from './abi.js';
 import { activeChainProfile, getChainProfile, type ChainProfile } from './profile.js';
 import { ensureChainTables, recordSolve } from './storage.js';
@@ -375,7 +375,7 @@ export class SolvePoller {
 export function createSolveWatch(journal: EventJournal, profileName?: string): SolveWatch {
   const profile = profileName === undefined ? activeChainProfile : getChainProfile(profileName);
   return (run: RunRecord, _entrants: readonly EntrantRecord[], signal: AbortSignal) => {
-    if (run.preset !== 'docker-duel') {
+    if (presetSubstrate(run.preset) !== 'docker') {
       return;
     }
     // watch() reports its own poll failures through the journal and does not reject on

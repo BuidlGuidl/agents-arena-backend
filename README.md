@@ -105,13 +105,14 @@ Smoke one real agent, or the funding gate, without a full run:
 # one real turn in a container: forge --version, cast chain-id, summarize
 tsx packages/backend/scripts/demo-entrant.ts codex
 tsx packages/backend/scripts/demo-entrant.ts opencode
+tsx packages/backend/scripts/demo-entrant.ts claude
 
 # funding drill — two terminals
 tsx packages/backend/scripts/demo-funding.ts 0.05   # derives + watches burners
 packages/backend/scripts/fund-drill.sh              # funds them; gate passes
 ```
 
-Credentials come from the host: `codex` reads `~/.codex/auth.json`, `opencode` reads `OPENROUTER_API_KEY` (or its `auth.json`). Nothing is committed. For a ChatGPT-account `codex` login, leave the model as `default` — API-only model ids are rejected.
+Credentials come from the host: `codex` reads `~/.codex/auth.json`, `opencode` reads `OPENROUTER_API_KEY` (or its `auth.json`), and Claude reads `CLAUDE_CODE_OAUTH_TOKEN`. Nothing is committed. For a ChatGPT-account `codex` login, leave the model as `default` — API-only model ids are rejected.
 
 ## What happens on start
 

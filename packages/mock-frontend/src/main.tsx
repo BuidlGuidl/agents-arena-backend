@@ -41,7 +41,7 @@ import './styles.css';
 
 const queryClient = new QueryClient();
 
-const PRESETS = ['fake-duel', 'docker-duel'] as const;
+const PRESETS = ['fake-duel', 'docker-duel', 'docker-arena'] as const;
 type Preset = (typeof PRESETS)[number];
 
 const HARNESS_COLOR: Record<string, string> = {

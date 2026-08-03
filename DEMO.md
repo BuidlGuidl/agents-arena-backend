@@ -19,6 +19,7 @@ yourself to use your own; print the active one with `./scripts/demo.sh token`.
 - `test -f "$AI_CTF_REPO/package.json"`
 - `test -f ~/.codex/auth.json`
 - `test -n "$OPENROUTER_API_KEY"`
+- `test -n "$CLAUDE_CODE_OAUTH_TOKEN"`
 
 ## Two-minute fake demo
 

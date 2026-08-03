@@ -63,16 +63,45 @@ interface PresetEntrant {
   model: string;
 }
 
-const PRESETS: Readonly<Record<string, readonly PresetEntrant[]>> = {
-  'fake-duel': [
-    { id: 'codex-1', harness: 'codex', model: 'gpt-5-codex' },
-    { id: 'opencode-1', harness: 'opencode', model: 'opencode-fake-1' },
-  ],
-  'docker-duel': [
-    { id: 'codex-1', harness: 'codex', model: 'gpt-5.5' },
-    { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.2' },
-  ],
+export type PresetSubstrate = 'docker' | 'fake';
+
+interface Preset {
+  substrate: PresetSubstrate;
+  entrants: readonly PresetEntrant[];
+}
+
+const PRESETS: Readonly<Record<string, Preset>> = {
+  'fake-duel': {
+    substrate: 'fake',
+    entrants: [
+      { id: 'codex-1', harness: 'codex', model: 'gpt-5-codex' },
+      { id: 'opencode-1', harness: 'opencode', model: 'opencode-fake-1' },
+    ],
+  },
+  'docker-duel': {
+    substrate: 'docker',
+    entrants: [
+      { id: 'codex-1', harness: 'codex', model: 'gpt-5.5' },
+      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.2' },
+    ],
+  },
+  'docker-arena': {
+    substrate: 'docker',
+    entrants: [
+      { id: 'codex-1', harness: 'codex', model: 'gpt-5.5' },
+      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.2' },
+      { id: 'claude-1', harness: 'claude', model: 'claude-opus-5' },
+    ],
+  },
 };
+
+export function presetSubstrate(name: string): PresetSubstrate {
+  const preset = PRESETS[name];
+  if (preset === undefined) {
+    throw new UnknownPresetError(`Unknown preset: ${name}`);
+  }
+  return preset.substrate;
+}
 
 export type FundingGate = (
   run: RunRecord,
@@ -176,7 +205,7 @@ export class RunManager {
         idempotencyKey: input.idempotencyKey ?? null,
         createdAt: now,
       }).run();
-      transaction.insert(entrants).values(preset.map((entrant) => ({
+      transaction.insert(entrants).values(preset.entrants.map((entrant) => ({
           runId: id,
           id: entrant.id,
           harness: entrant.harness,
@@ -359,7 +388,7 @@ export class RunManager {
   async startForRequest(runId: string): Promise<RunSnapshot> {
     const run = this.requireRun(runId);
     const starting = this.start(runId);
-    if (run.preset !== 'docker-duel' || localAutoSignEnabled()) {
+    if (presetSubstrate(run.preset) !== 'docker' || localAutoSignEnabled()) {
       return starting;
     }
     void starting.catch(() => {});
@@ -371,7 +400,7 @@ export class RunManager {
     let runEntrants = this.entrants(runId);
     try {
       if (run.state === 'created') {
-        if (run.preset === 'docker-duel') {
+        if (presetSubstrate(run.preset) === 'docker') {
           const seedWaiter = createSeedWaiter();
           this.seedWaiters.set(runId, seedWaiter);
           run = this.transition(runId, 'awaiting_signature');
@@ -424,7 +453,7 @@ export class RunManager {
       const preset = PRESETS[run.preset];
       if (preset === undefined) throw new UnknownPresetError(`Unknown preset: ${run.preset}`);
       await Promise.all(runEntrants.map(async (entrant) => {
-        const entrantPreset = preset.find((candidate) => candidate.id === entrant.id);
+        const entrantPreset = preset.entrants.find((candidate) => candidate.id === entrant.id);
         if (entrantPreset === undefined) throw new Error(`Preset has no entrant ${entrant.id}`);
         await this.driver.start(run, entrant, this.promptBuilder(entrant));
       }));

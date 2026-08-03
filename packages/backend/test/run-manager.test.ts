@@ -11,8 +11,10 @@ import { EventJournal } from '../src/journal.js';
 import {
   InvalidTransitionError,
   LEGAL_TRANSITIONS,
+  presetSubstrate,
   RunManager,
   RunNotFoundError,
+  UnknownPresetError,
 } from '../src/run-manager.js';
 import type { RunState } from '../src/contract.js';
 
@@ -114,6 +116,33 @@ describe('RunManager state machine', () => {
       }
     },
   );
+});
+
+describe('run presets', () => {
+  it('looks up each preset substrate', () => {
+    expect(presetSubstrate('fake-duel')).toBe('fake');
+    expect(presetSubstrate('docker-duel')).toBe('docker');
+    expect(presetSubstrate('docker-arena')).toBe('docker');
+    expect(() => presetSubstrate('missing')).toThrow(UnknownPresetError);
+  });
+
+  it('creates the three-entrant docker arena lineup', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, noopDriver);
+    try {
+      const { run } = await manager.create({ preset: 'docker-arena' });
+      const lineup = run.entrants
+        .map(({ id, harness, model }) => ({ id, harness, model }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      expect(lineup).toEqual([
+        { id: 'claude-1', harness: 'claude', model: 'claude-opus-5' },
+        { id: 'codex-1', harness: 'codex', model: 'gpt-5.5' },
+        { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.2' },
+      ]);
+    } finally {
+      journal.close();
+    }
+  });
 });
 
 describe('RunManager snapshot solves', () => {
@@ -286,9 +315,15 @@ describe('RunManager solve watch', () => {
   it('starts one watch after funding and before the entrants start', async () => {
     const { journal, manager, order, signals } = watchedManager();
     try {
-      await manager.create({ preset: 'docker-duel', autoStart: true });
+      await manager.create({ preset: 'docker-arena', autoStart: true });
 
-      expect(order).toEqual(['funding', 'solve-watch', 'entrant-start', 'entrant-start']);
+      expect(order).toEqual([
+        'funding',
+        'solve-watch',
+        'entrant-start',
+        'entrant-start',
+        'entrant-start',
+      ]);
       expect(signals).toHaveLength(1);
       expect(signals[0]?.aborted).toBe(false);
     } finally {

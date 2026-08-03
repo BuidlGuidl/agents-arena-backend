@@ -1,16 +1,19 @@
 import type { EventJournal } from '../journal.js';
 import type { ChallengePackResolver } from '../ctf/resolve.js';
+import { ClaudeDriver, type ClaudeDriverOptions } from './claude.js';
 import { CodexDriver, type CodexDriverOptions } from './codex.js';
 import { OpenCodeDriver, type OpenCodeDriverOptions } from './opencode.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
 
 export interface DockerEntrantDriverOptions {
+  claude?: ClaudeDriverOptions;
   codex?: CodexDriverOptions;
   opencode?: OpenCodeDriverOptions;
   resolveChallengePack?: ChallengePackResolver;
 }
 
 export class DockerEntrantDriver implements EntrantDriver {
+  private readonly claude: ClaudeDriver;
   private readonly codex: CodexDriver;
   private readonly opencode: OpenCodeDriver;
 
@@ -20,6 +23,7 @@ export class DockerEntrantDriver implements EntrantDriver {
     const shared = options.resolveChallengePack === undefined
       ? {}
       : { resolveChallengePack: options.resolveChallengePack };
+    this.claude = new ClaudeDriver(journal, { ...shared, ...options.claude });
     this.codex = new CodexDriver(journal, { ...shared, ...options.codex });
     this.opencode = new OpenCodeDriver(journal, { ...shared, ...options.opencode });
   }
@@ -41,6 +45,7 @@ export class DockerEntrantDriver implements EntrantDriver {
   }
 
   private driver(entrant: EntrantRecord): EntrantDriver {
+    if (entrant.harness === 'claude') return this.claude;
     if (entrant.harness === 'codex') return this.codex;
     if (entrant.harness === 'opencode') return this.opencode;
     throw new Error(`Docker driver does not support harness ${entrant.harness}`);

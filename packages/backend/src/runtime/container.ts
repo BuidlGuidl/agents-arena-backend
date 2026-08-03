@@ -66,6 +66,7 @@ interface RunnerFileOkMessage {
 
 interface RunnerErrorMessage {
   ev: 'error';
+  id?: string;
   msg: string;
 }
 
@@ -374,9 +375,24 @@ export class DockerEntrantContainer implements EntrantContainer {
     }
     if (message.ev === 'error') {
       const error = new Error(message.msg);
+      if (message.id !== undefined) {
+        const pending = this.pendingFiles.get(message.id);
+        if (pending !== undefined) {
+          clearTimeout(pending.timer);
+          this.pendingFiles.delete(message.id);
+          pending.reject(error);
+          return;
+        }
+        if (this.pendingFiles.size > 0) {
+          console.warn(
+            `[arena runner] error for unknown transfer ${message.id}: ${message.msg}`,
+          );
+          return;
+        }
+      }
       // Injection is serialized inside create(), before any exec can start, so a
       // runner error while a transfer is pending can only belong to that transfer —
-      // even when the runner couldn't echo the id (old image, malformed command).
+      // even when the runner can't echo the id (old image, malformed command).
       if (this.pendingFiles.size > 0) {
         for (const [id, pending] of this.pendingFiles) {
           clearTimeout(pending.timer);

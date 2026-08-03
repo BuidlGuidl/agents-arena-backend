@@ -97,6 +97,7 @@ describe('in-container runner protocol', () => {
 
     expect(await nextMessage(lines)).toEqual({
       ev: 'error',
+      id: 'dir-error',
       msg: expect.stringContaining('dir-error'),
     });
     await stopRunner(child, reader);

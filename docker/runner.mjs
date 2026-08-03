@@ -50,7 +50,11 @@ async function createFile(message) {
     }
     send({ ev: 'file-ok', id: message.id });
   } catch (error) {
-    send({ ev: 'error', msg: `File ${message.id} failed: ${error.message}` });
+    send({
+      ev: 'error',
+      ...(typeof message.id === 'string' ? { id: message.id } : {}),
+      msg: `File ${message.id} failed: ${error.message}`,
+    });
   }
 }
 

@@ -253,7 +253,11 @@ describe('DockerEntrantContainer mounts', () => {
       (startedDocker) => startedDocker.send({ ev: 'ready' }),
       (startedDocker, command) => {
         if (command.cmd === 'file') {
-          startedDocker.send({ ev: 'error', msg: `File ${String(command.id)} failed: EACCES` });
+          startedDocker.send({
+            ev: 'error',
+            id: command.id,
+            msg: `File ${String(command.id)} failed: EACCES`,
+          });
         }
       },
     );
@@ -264,6 +268,36 @@ describe('DockerEntrantContainer mounts', () => {
 
     expect(docker.container.remove).toHaveBeenCalledWith({ force: true });
     expect(docker.network.remove).toHaveBeenCalledOnce();
+  });
+
+  it('ignores a runner file error for a different transfer id', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const docker = new FakeDocker(
+      (startedDocker) => startedDocker.send({ ev: 'ready' }),
+      (startedDocker, command) => {
+        if (command.cmd === 'file') {
+          startedDocker.send({
+            ev: 'error',
+            id: 'other-file',
+            msg: 'File other-file failed: EACCES',
+          });
+          startedDocker.send({ ev: 'file-ok', id: command.id });
+        }
+      },
+    );
+
+    try {
+      await expect(createContainer(docker, {
+        credentialFiles: [{ path: '/creds/test/auth.json', content: '{}' }],
+      })).resolves.toBeInstanceOf(DockerEntrantContainer);
+
+      expect(warn).toHaveBeenCalledWith(
+        '[arena runner] error for unknown transfer other-file: File other-file failed: EACCES',
+      );
+      expect(docker.container.remove).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('attributes a runner error without the transfer id to the pending file', async () => {
@@ -282,5 +316,26 @@ describe('DockerEntrantContainer mounts', () => {
     })).rejects.toThrow('Unknown command: file');
 
     expect(docker.container.remove).toHaveBeenCalledWith({ force: true });
+  });
+
+  it('tears down creation when credential injection is not acknowledged', async () => {
+    vi.useFakeTimers();
+    try {
+      const docker = new FakeDocker(
+        (startedDocker) => startedDocker.send({ ev: 'ready' }),
+        () => undefined,
+      );
+      const creation = createContainer(docker, {
+        credentialFiles: [{ path: '/creds/test/auth.json', content: '{}' }],
+      });
+      const rejection = expect(creation).rejects.toThrow(/Runner file timeout/);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      await rejection;
+      expect(docker.container.remove).toHaveBeenCalledWith({ force: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

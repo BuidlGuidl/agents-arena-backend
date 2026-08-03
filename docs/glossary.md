@@ -7,8 +7,9 @@ canonical vocabulary for the arena backend. terms only, no implementation. built
 - **arena backend** — the one authoritative server that owns a run: lifecycle, containers, credentials, the event journal, and score state. the mock frontend and damu/pablo's real frontend are clients, never a second source of truth.
 - **run** — one race instance. has a lifecycle state, a fixed set of entrants, one canonical start time, and a deadline. created from a preset.
 - **preset** — the server-side definition of a run: which harnesses, pinned models, prompt, tool policy, wallet fixtures, time limit. the frontend sends a preset name plus `autoStart`, never raw config.
+- **substrate** — what a preset's run actually executes on: `docker` (real containers, funding gate, on-chain scoring) or `fake` (scripted drivers for the dev loop). a property the preset declares; behavior keys on it, never on the preset's name.
 - **entrant** — one competitor in a run: a harness + pinned model + funded wallet + erc-8004 identity + private credential home, running in its own container. the compared unit is the harness together with its model, not the model alone.
-- **harness** — a coding-agent CLI: Claude Code, Codex, or OpenCode later. each is wrapped by an adapter.
+- **harness** — a coding-agent CLI: Codex, OpenCode, or Claude Code. each is wrapped by an adapter.
 - **entrant session** — the long-lived, steerable harness conversation for one entrant. NOT a one-shot process. the runner injects turns into it: the opening prompt, an auto-nudge, or an Austin steer. survives across nudges, keeping the agent's memory of what it already tried.
 - **turn injection** — feeding a user message into a live entrant session. three sources, one mechanism: opening prompt, auto-nudge, Austin steer.
 - **auto-nudge** — a turn the arena injects on its own when an entrant goes idle before the deadline while holding fewer than 12 flags. built from on-chain truth (flags the wallet actually minted), so a hallucinated "I'm done" gets corrected by reality.

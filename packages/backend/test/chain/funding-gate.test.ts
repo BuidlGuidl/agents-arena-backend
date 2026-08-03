@@ -14,7 +14,7 @@ const noopDriver: EntrantDriver = {
   async stop() {},
 };
 
-async function seedRun(preset: 'docker-duel' | 'fake-duel') {
+async function seedRun(preset: 'docker-arena' | 'fake-duel') {
   const journal = new EventJournal(':memory:');
   const manager = new RunManager(journal, noopDriver);
   const created = await manager.create({ preset });
@@ -31,7 +31,7 @@ async function seedRun(preset: 'docker-duel' | 'fake-duel') {
 }
 
 describe('funding gate', () => {
-  it('does nothing outside docker-duel', async () => {
+  it('does nothing for a fake substrate', async () => {
     const { journal, run, runEntrants } = await seedRun('fake-duel');
     try {
       await createFundingGate(journal)(run, runEntrants);
@@ -41,11 +41,11 @@ describe('funding gate', () => {
     }
   });
 
-  it('throws when a docker-duel entrant has no address', async () => {
-    const { journal, run, runEntrants } = await seedRun('docker-duel');
+  it('throws when a docker-substrate entrant has no address', async () => {
+    const { journal, run, runEntrants } = await seedRun('docker-arena');
     try {
       await expect(createFundingGate(journal)(run, runEntrants)).rejects.toThrow(
-        'Entrant codex-1 has no wallet address',
+        /Entrant .+ has no wallet address/,
       );
     } finally {
       journal.close();

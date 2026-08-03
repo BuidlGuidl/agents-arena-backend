@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 import { recordSolve } from '../chain/storage.js';
 import type { EntrantStatus } from '../contract.js';
@@ -10,6 +10,14 @@ import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
 export type Schedule = (task: () => void, delayMs: number) => unknown;
 
 const defaultSchedule: Schedule = (task, delayMs) => setTimeout(task, delayMs);
+const SCRIPTED_FLAG_SETS: readonly (readonly number[])[] = [
+  [3, 11],
+  [7, 2],
+  [5, 9],
+  [1, 10],
+  [4, 12],
+  [6, 8],
+];
 
 export class FakeDriver implements EntrantDriver {
   private readonly activeEntrants = new Set<string>();
@@ -25,6 +33,7 @@ export class FakeDriver implements EntrantDriver {
   async start(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {
     const key = this.key(run.id, entrant.id);
     const toolCallId = `fake-${++this.toolCallCount}`;
+    const scriptedFlags = this.scriptedFlags(run.id, entrant.id);
     this.activeEntrants.add(key);
     this.setStatus(run.id, entrant.id, 'working');
 
@@ -55,7 +64,7 @@ export class FakeDriver implements EntrantDriver {
       [5_500, () => this.emitUsage(run, entrant, 2_400, 320, 1_800)],
       // Scripted captures through the real dual-write path, so a fake duel
       // exercises the solves UI (event and snapshot alike) without a chain.
-      ...(entrant.harness === 'codex' ? [3, 11] : [7, 2]).map((challengeId, index) => [
+      ...scriptedFlags.map((challengeId, index) => [
         3_000 + index * 5_000,
         () => recordSolve(this.journal.database, this.journal, {
           runId: run.id,
@@ -117,5 +126,23 @@ export class FakeDriver implements EntrantDriver {
 
   private key(runId: string, entrantId: string): string {
     return `${runId}:${entrantId}`;
+  }
+
+  private scriptedFlags(runId: string, entrantId: string): readonly number[] {
+    const runEntrants = this.journal.database
+      .select({ id: entrants.id })
+      .from(entrants)
+      .where(eq(entrants.runId, runId))
+      .orderBy(sql`rowid`)
+      .all();
+    const entrantIndex = runEntrants.findIndex((candidate) => candidate.id === entrantId);
+    if (entrantIndex === -1) {
+      throw new Error(`Entrant ${entrantId} is not part of run ${runId}`);
+    }
+    const flags = SCRIPTED_FLAG_SETS[entrantIndex % SCRIPTED_FLAG_SETS.length];
+    if (flags === undefined) {
+      throw new Error('No scripted fake flag sets are configured');
+    }
+    return flags;
   }
 }

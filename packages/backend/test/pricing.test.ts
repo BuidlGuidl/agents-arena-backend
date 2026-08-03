@@ -18,6 +18,10 @@ describe('costForTokens', () => {
     expect(asIfAllFresh).toBe(0.18441);
   });
 
+  it('prices the captured Claude usage with fresh, cached, and output rates', () => {
+    expect(costForTokens('claude-opus-5', 63_196, 88, 46_817)).toBe(0.107504);
+  });
+
   it('clamps cached tokens reported outside the input count', () => {
     // Adapters normalize cache reads into inputTokens; if one ever slips out of
     // that convention the clamp prices zero fresh tokens, never a negative count.

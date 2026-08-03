@@ -1,13 +1,21 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { and, eq } from 'drizzle-orm';
 import { privateKeyToAccount } from 'viem/accounts';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { ClaudeDriver } from '../src/adapters/claude.js';
 import { CodexDriver } from '../src/adapters/codex.js';
+import {
+  credentialSecrets,
+  dropCredentialSecrets,
+} from '../src/adapters/credential-secrets.js';
+import { DockerEntrantDriver } from '../src/adapters/docker.js';
+import { FakeDriver } from '../src/adapters/fake.js';
 import { OpenCodeDriver, scrubOpenCodeEnvironment } from '../src/adapters/opencode.js';
+import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
 import {
   EntrantUnavailableError,
   type EntrantDriver,
@@ -16,7 +24,7 @@ import {
 } from '../src/adapters/types.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import { deriveEntrantKeys, getWallet, seedTypedData } from '../src/chain/wallet.js';
-import { entrants, runs } from '../src/db/schema.js';
+import { entrants, events as eventRows, runs } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import { RunManager } from '../src/run-manager.js';
 import type {
@@ -28,6 +36,13 @@ import type {
 } from '../src/runtime/container.js';
 
 const temporaryPaths: string[] = [];
+type TestHarness = 'claude' | 'codex' | 'opencode';
+const testCredentials = {
+  claude: 'test-oauth-token-claude-12345',
+  codex: 'test-codex-access-token-12345',
+  codexRefresh: 'test-codex-refresh-token-67890',
+  opencode: 'test-openrouter-key-12345',
+} as const;
 
 afterEach(async () => {
   await Promise.all(temporaryPaths.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -96,7 +111,9 @@ class ControlledContainer implements EntrantContainer {
     });
     this.active = execution;
 
-    const isTurn = argv[0] === 'codex' && argv[1] === 'exec' || argv[0] === 'opencode' && argv[1] === 'run';
+    const isTurn = argv[0] === 'codex' && argv[1] === 'exec'
+      || argv[0] === 'opencode' && argv[1] === 'run'
+      || argv[0] === 'claude' && argv[1] === '-p';
     if (isTurn) {
       this.turns.push(execution);
     } else {
@@ -113,7 +130,7 @@ class ControlledContainer implements EntrantContainer {
 }
 
 async function setup(
-  harness: 'codex' | 'opencode',
+  harness: TestHarness,
   watchdogMs = 10 * 60 * 1_000,
   withWallet = false,
   model?: string,
@@ -130,7 +147,7 @@ async function setup(
     async prepare() {}, async start() {}, async steer() {}, async stop() {},
   };
   const manager = new RunManager(journal, seedDriver);
-  const created = await manager.create({ preset: 'docker-duel' });
+  const created = await manager.create({ preset: harness === 'claude' ? 'docker-arena' : 'docker-duel' });
   const run = journal.database.select().from(runs).where(eq(runs.id, created.run.id)).get();
   let entrant = journal.database.select().from(entrants).where(and(
     eq(entrants.runId, created.run.id),
@@ -158,11 +175,25 @@ async function setup(
     const authDirectory = await mkdtemp(join(tmpdir(), 'arena-test-auth-'));
     temporaryPaths.push(authDirectory);
     const authPath = join(authDirectory, 'auth.json');
-    await writeFile(authPath, '{}');
+    await writeFile(authPath, JSON.stringify({
+      auth: {
+        access: testCredentials.codex,
+        account: 'codex-user@example-account.com',
+        issuer: 'https://auth.openai.example/realms/codex',
+        nested: { refresh: testCredentials.codexRefresh },
+      },
+      short: 'ignored',
+    }));
     driver = new CodexDriver(journal, { authPath, containerFactory });
-  } else {
+  } else if (harness === 'opencode') {
     driver = new OpenCodeDriver(journal, {
-      apiKey: 'test-key',
+      apiKey: testCredentials.opencode,
+      containerFactory,
+      turnWatchdogMs: watchdogMs,
+    });
+  } else {
+    driver = new ClaudeDriver(journal, {
+      oauthToken: testCredentials.claude,
       containerFactory,
       turnWatchdogMs: watchdogMs,
     });
@@ -182,28 +213,35 @@ async function waitFor(check: () => boolean): Promise<void> {
   throw new Error('Condition was not met');
 }
 
-function completeTurn(harness: 'codex' | 'opencode', execution: ControlledExecution, sessionId: string): void {
+function completeTurn(harness: TestHarness, execution: ControlledExecution, sessionId: string): void {
   if (harness === 'codex') {
     execution.push(JSON.stringify({ type: 'thread.started', thread_id: sessionId }));
     execution.push(JSON.stringify({
       type: 'turn.completed',
       usage: { input_tokens: 10, output_tokens: 2 },
     }));
-  } else {
+  } else if (harness === 'opencode') {
     execution.push(JSON.stringify({ type: 'step_start', sessionID: sessionId, part: {} }));
     execution.push(JSON.stringify({
       type: 'step_finish',
       sessionID: sessionId,
       part: { reason: 'stop', tokens: { input: 10, output: 2 } },
     }));
+  } else {
+    execution.push(JSON.stringify({ type: 'system', subtype: 'init', session_id: sessionId }));
+    execution.push(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      usage: { input_tokens: 10, output_tokens: 2 },
+    }));
   }
   execution.finish(0);
 }
 
-describe.each(['codex', 'opencode'] as const)('%s steer rejection', (harness) => {
+describe.each(['codex', 'opencode', 'claude'] as const)('%s steer rejection', (harness) => {
   it('rejects a steer sent before the opening turn without degrading the entrant', async () => {
     const context = await setup(harness);
-    const sessionId = harness === 'codex' ? 'thread-1' : 'session-1';
+    const sessionId = harness === 'codex' ? 'thread-1' : `${harness}-session-1`;
     try {
       await expect(context.driver.steer(context.run, context.entrant, 'too early'))
         .rejects.toBeInstanceOf(EntrantUnavailableError);
@@ -225,10 +263,10 @@ describe.each(['codex', 'opencode'] as const)('%s steer rejection', (harness) =>
   });
 });
 
-describe.each(['codex', 'opencode'] as const)('%s steer queue', (harness) => {
+describe.each(['codex', 'opencode', 'claude'] as const)('%s steer queue', (harness) => {
   it('queues during a turn and injects at once while idle', async () => {
     const context = await setup(harness);
-    const sessionId = harness === 'codex' ? 'thread-1' : 'session-1';
+    const sessionId = harness === 'codex' ? 'thread-1' : `${harness}-session-1`;
     try {
       await context.driver.start(context.run, context.entrant, 'opening');
       expect(context.container.turns).toHaveLength(1);
@@ -419,7 +457,64 @@ describe('usage cost', () => {
 });
 
 describe('adapter guardrails', () => {
-  it.each(['codex', 'opencode'] as const)('%s always injects ETH_RPC_URL into the container', async (harness) => {
+  it.each(['codex', 'opencode', 'claude'] as const)(
+    '%s credentials are scrubbed after prepare and exposed after teardown cleanup',
+    async (harness) => {
+      const context = await setup(harness);
+      const credential = testCredentials[harness];
+      const streamed: unknown[] = [];
+      context.journal.subscribe(context.run.id, (event) => streamed.push(event));
+      try {
+        const redacted = context.journal.append(context.run.id, context.entrant.id, 'tool.result', {
+          entrantId: context.entrant.id,
+          tool: 'shell',
+          toolCallId: 'credential-echo',
+          ok: true,
+          detail: `env credential=${credential}`,
+        });
+        const stored = context.journal.database
+          .select({ payloadJson: eventRows.payloadJson })
+          .from(eventRows)
+          .where(eq(eventRows.id, redacted.id))
+          .get();
+
+        expect(redacted.payload.detail).toBe('env credential=[redacted-key]');
+        expect(stored?.payloadJson).toBe(JSON.stringify(redacted.payload));
+        expect(streamed).toEqual([redacted]);
+
+        await context.driver.stop(context.run, context.entrant);
+        dropCredentialSecrets(context.run.id);
+        const exposed = context.journal.append(context.run.id, context.entrant.id, 'tool.result', {
+          entrantId: context.entrant.id,
+          tool: 'shell',
+          toolCallId: 'credential-after-drop',
+          ok: true,
+          detail: credential,
+        });
+        expect(exposed.payload.detail).toBe(credential);
+      } finally {
+        await context.driver.stop(context.run, context.entrant);
+        dropCredentialSecrets(context.run.id);
+        context.journal.close();
+      }
+    },
+  );
+
+  it('registers only long secret-shaped leaves from Codex auth JSON', async () => {
+    const context = await setup('codex');
+    try {
+      expect(credentialSecrets(context.run.id)).toEqual([
+        testCredentials.codex,
+        testCredentials.codexRefresh,
+      ]);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      dropCredentialSecrets(context.run.id);
+      context.journal.close();
+    }
+  });
+
+  it.each(['codex', 'opencode', 'claude'] as const)('%s always injects ETH_RPC_URL into the container', async (harness) => {
     const context = await setup(harness);
     try {
       expect(context.containerOptions.env).toEqual(expect.objectContaining({
@@ -433,7 +528,7 @@ describe('adapter guardrails', () => {
     }
   });
 
-  it.each(['codex', 'opencode'] as const)('%s injects wallet credentials when a wallet row exists', async (harness) => {
+  it.each(['codex', 'opencode', 'claude'] as const)('%s injects wallet credentials when a wallet row exists', async (harness) => {
     const context = await setup(harness, 10 * 60 * 1_000, true);
     try {
       const wallet = getWallet(context.run.id, context.entrant.id);
@@ -449,11 +544,11 @@ describe('adapter guardrails', () => {
     }
   });
 
-  it('blocks Codex when resume returns a different thread ID', async () => {
-    const context = await setup('codex');
+  it.each(['codex', 'claude'] as const)('blocks %s when resume returns a different session ID', async (harness) => {
+    const context = await setup(harness);
     try {
       await context.driver.start(context.run, context.entrant, 'opening');
-      completeTurn('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+      completeTurn(harness, context.container.turns[0] as ControlledExecution, 'session-1');
       await waitFor(() => {
         const statuses = context.journal.after(context.run.id, 0).filter((event) =>
           event.type === 'entrant.status');
@@ -462,14 +557,16 @@ describe('adapter guardrails', () => {
 
       await context.driver.steer(context.run, context.entrant, 'resume');
       const resume = context.container.turns[1] as ControlledExecution;
-      resume.push(JSON.stringify({ type: 'thread.started', thread_id: 'ghost-thread' }));
+      resume.push(JSON.stringify(harness === 'codex'
+        ? { type: 'thread.started', thread_id: 'ghost-thread' }
+        : { type: 'system', subtype: 'init', session_id: 'ghost-session' }));
       await waitFor(() => resume.killCalls.length === 1);
       await waitFor(() => context.journal.after(context.run.id, 0).some((event) =>
         event.type === 'entrant.status' && event.payload.status === 'blocked'));
 
       const events = context.journal.after(context.run.id, 0);
       expect(events.some((event) => event.type === 'entrant.error' &&
-        event.payload.message.includes('expected thread-1'))).toBe(true);
+        event.payload.message.includes('expected session-1'))).toBe(true);
       expect(events.some((event) => event.type === 'entrant.status' &&
         event.payload.status === 'blocked')).toBe(true);
     } finally {
@@ -506,5 +603,166 @@ describe('adapter guardrails', () => {
       OPENCODE_SERVER_PASSWORD: 'bad',
       OPENCODE_PORT: '4096',
     })).toEqual({ OPENROUTER_API_KEY: 'key' });
+  });
+
+  it('passes an OAuth token into an otherwise empty Claude credential home', async () => {
+    const context = await setup('claude');
+    try {
+      expect(context.containerOptions.credentialTarget).toBe('/creds/claude');
+      expect(context.containerOptions.credentialDir).toContain('arena-claude-');
+      expect(await readdir(context.containerOptions.credentialDir as string)).toEqual([]);
+      expect(context.containerOptions.env).toEqual({
+        CLAUDE_CONFIG_DIR: '/creds/claude',
+        CLAUDE_CODE_OAUTH_TOKEN: testCredentials.claude,
+        ETH_RPC_URL: 'http://host.docker.internal:8545',
+      });
+      expect(context.containerOptions.env).not.toHaveProperty('ANTHROPIC_API_KEY');
+      expect(context.containerOptions.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+      expect(context.containerOptions.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('uses the exact Claude start and resume argument order', async () => {
+    const context = await setup('claude');
+    try {
+      expect(context.container.calls[2]?.argv).toEqual(['claude', '--version']);
+      await context.driver.start(context.run, context.entrant, 'opening prompt');
+      expect(context.container.calls[3]?.argv).toEqual([
+        'claude',
+        '-p',
+        'opening prompt',
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        '--dangerously-skip-permissions',
+        '--model',
+        'claude-opus-5',
+      ]);
+      completeTurn('claude', context.container.turns[0] as ControlledExecution, 'session-1');
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.status')
+        .at(-1)?.payload.status === 'idle');
+
+      await context.driver.steer(context.run, context.entrant, 'steer text');
+      expect(context.container.calls[4]?.argv).toEqual([
+        'claude',
+        '-p',
+        '--resume',
+        'session-1',
+        'steer text',
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        '--dangerously-skip-permissions',
+        '--model',
+        'claude-opus-5',
+      ]);
+      completeTurn('claude', context.container.turns[1] as ControlledExecution, 'session-1');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+});
+
+describe('adapter construction errors', () => {
+  it('routes an unknown legacy preset to Docker during teardown', async () => {
+    const journal = new EventJournal(':memory:');
+    const dockerStop = vi.spyOn(DockerEntrantDriver.prototype, 'stop').mockResolvedValue();
+    const fakeStop = vi.spyOn(FakeDriver.prototype, 'stop').mockResolvedValue();
+    const driver = new RegisteredEntrantDriver(journal);
+    const run: RunRecord = {
+      id: 'legacy-run',
+      state: 'stopping',
+      preset: 'legacy-gone',
+      startedAt: null,
+      deadlineAt: null,
+      idempotencyKey: null,
+    };
+    const entrant: EntrantRecord = {
+      runId: run.id,
+      id: 'codex-1',
+      harness: 'codex',
+      model: 'gpt-5.5',
+      address: null,
+      status: 'working',
+    };
+
+    try {
+      await expect(driver.stop(run, entrant)).resolves.toBeUndefined();
+      expect(dockerStop).toHaveBeenCalledWith(run, entrant);
+      expect(fakeStop).not.toHaveBeenCalled();
+    } finally {
+      dockerStop.mockRestore();
+      fakeStop.mockRestore();
+      journal.close();
+    }
+  });
+
+  it.each(['opencode', 'claude'] as const)('%s rejects a missing environment credential', async (harness) => {
+    const journal = new EventJournal(':memory:');
+    const run: RunRecord = {
+      id: 'missing-credential-run',
+      state: 'created',
+      preset: 'docker-arena',
+      startedAt: null,
+      deadlineAt: null,
+      idempotencyKey: null,
+    };
+    const entrant: EntrantRecord = {
+      runId: run.id,
+      id: `${harness}-1`,
+      harness,
+      model: harness === 'claude' ? 'claude-opus-5' : 'openrouter/z-ai/glm-5.2',
+      address: null,
+      status: 'idle',
+    };
+    const driver: EntrantDriver = harness === 'claude'
+      ? new ClaudeDriver(journal, { oauthToken: '' })
+      : new OpenCodeDriver(journal, { apiKey: '', authPath: '/missing/opencode-auth.json' });
+
+    try {
+      await expect(driver.prepare(run, entrant)).rejects.toThrow(
+        harness === 'claude'
+          ? 'Claude OAuth token not found in CLAUDE_CODE_OAUTH_TOKEN'
+          : 'OpenRouter API key not found',
+      );
+    } finally {
+      journal.close();
+    }
+  });
+
+  it.each(['codex', 'opencode', 'claude'] as const)('%s rejects an entrant for another harness', async (harness) => {
+    const journal = new EventJournal(':memory:');
+    const run: RunRecord = {
+      id: 'wrong-harness-run',
+      state: 'created',
+      preset: 'docker-arena',
+      startedAt: null,
+      deadlineAt: null,
+      idempotencyKey: null,
+    };
+    const entrant: EntrantRecord = {
+      runId: run.id,
+      id: 'wrong-1',
+      harness: harness === 'codex' ? 'opencode' : 'codex',
+      model: 'test-model',
+      address: null,
+      status: 'idle',
+    };
+    const driver: EntrantDriver = harness === 'codex'
+      ? new CodexDriver(journal)
+      : harness === 'opencode'
+        ? new OpenCodeDriver(journal)
+        : new ClaudeDriver(journal);
+
+    try {
+      await expect(driver.prepare(run, entrant)).rejects.toThrow('cannot run harness');
+    } finally {
+      journal.close();
+    }
   });
 });

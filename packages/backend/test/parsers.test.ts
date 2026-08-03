@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { ClaudeEventParser } from '../src/adapters/claude-parser.js';
 import { CodexEventParser } from '../src/adapters/codex-parser.js';
 import { OpenCodeEventParser } from '../src/adapters/opencode-parser.js';
 
@@ -374,5 +375,251 @@ describe('OpenCodeEventParser', () => {
     expect(parsed.turnEnded).toBe(true);
     expect(parser.unknownEvents).toBe(0);
     expect(logger.info).not.toHaveBeenCalled();
+  });
+});
+
+describe('ClaudeEventParser', () => {
+  it('maps the captured start fixture to paired events and per-invocation usage', async () => {
+    const parser = new ClaudeEventParser('claude-1');
+    const parsed = (await fixture('claude-events.jsonl')).map((line) => parser.parse(line));
+    const events = parsed.flatMap((result) => result.events);
+
+    expect(events).toEqual([
+      {
+        type: 'tool.call',
+        payload: {
+          entrantId: 'claude-1',
+          tool: 'Bash',
+          toolCallId: 'toolu_014hxUxk5yfTxYBZ5yBXzk2R',
+          detail: '{"command":"echo arena-fixture-test","description":"Echo test string"}',
+        },
+      },
+      {
+        type: 'tool.result',
+        payload: {
+          entrantId: 'claude-1',
+          tool: 'Bash',
+          toolCallId: 'toolu_014hxUxk5yfTxYBZ5yBXzk2R',
+          ok: true,
+          detail: 'arena-fixture-test',
+        },
+      },
+      {
+        type: 'agent.message',
+        payload: { entrantId: 'claude-1', text: 'fixture start done' },
+      },
+      {
+        type: 'usage',
+        payload: {
+          entrantId: 'claude-1',
+          inputTokens: 63_196,
+          outputTokens: 88,
+          cachedInputTokens: 46_817,
+          costUsd: null,
+        },
+      },
+    ]);
+    const toolEvents = events.filter((event) => event.type === 'tool.call' || event.type === 'tool.result');
+    expect(toolEvents[0]?.payload.toolCallId).toBe(toolEvents[1]?.payload.toolCallId);
+    expect(parsed[0]?.sessionId).toBe('7a89c9bf-ce69-4b8e-bde5-28c99b318d58');
+    expect(parsed[2]).toEqual({ events: [] });
+    expect(parsed.at(-1)?.turnEnded).toBe(true);
+  });
+
+  it('extracts the same session and reports resumed usage without a cumulative delta', async () => {
+    const parser = new ClaudeEventParser('claude-1');
+    const parsed = (await fixture('claude-resume-turns.jsonl')).map((line) => parser.parse(line));
+    const usage = parsed.flatMap((result) => result.events).find((event) => event.type === 'usage');
+
+    expect(parsed[0]?.sessionId).toBe('7a89c9bf-ce69-4b8e-bde5-28c99b318d58');
+    expect(usage?.payload).toEqual({
+      entrantId: 'claude-1',
+      inputTokens: 31_924,
+      outputTokens: 8,
+      cachedInputTokens: 15_268,
+      costUsd: null,
+    });
+    expect(parsed.at(-1)?.turnEnded).toBe(true);
+  });
+
+  it('logs rate limits and unknown event shapes while ignoring empty text blocks', () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const parser = new ClaudeEventParser('claude-1', logger);
+
+    expect(parser.parse(JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'allowed', overageStatus: 'rejected' },
+    }))).toEqual({ events: [] });
+    expect(parser.parse(JSON.stringify({ type: 'system', subtype: 'future' }))).toEqual({ events: [] });
+    expect(parser.parse(JSON.stringify({ type: 'future_event' }))).toEqual({ events: [] });
+    expect(parser.parse(JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: '' }, { type: 'thinking', thinking: '' }] },
+    }))).toEqual({ events: [] });
+    expect(parser.unknownEvents).toBe(1);
+    expect(logger.info).toHaveBeenCalledWith(
+      '[claude parser] rate limit status=allowed overageStatus=rejected',
+    );
+    expect(logger.info).toHaveBeenCalledWith('[claude parser] ignored unknown event future_event');
+  });
+
+  it('emits an entrant error when a rate limit is not allowed', () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const parser = new ClaudeEventParser('claude-1', logger);
+    const parsed = parser.parse(JSON.stringify({
+      type: 'rate_limit_event',
+      rate_limit_info: {
+        status: 'rejected',
+        overageStatus: 'not_available',
+        resetsAt: 1_786_000_000,
+      },
+    }));
+
+    expect(parsed.events).toEqual([{
+      type: 'entrant.error',
+      payload: {
+        entrantId: 'claude-1',
+        message: 'Claude rate limit status=rejected: '
+          + '{"status":"rejected","overageStatus":"not_available","resetsAt":1786000000}',
+      },
+    }]);
+    expect(logger.info).toHaveBeenCalledWith(
+      '[claude parser] rate limit status=rejected overageStatus=not_available',
+    );
+  });
+
+  it('ignores assistant traffic from Task subagents', async () => {
+    const parser = new ClaudeEventParser('claude-1');
+    const assistant = JSON.parse((await fixture('claude-events.jsonl'))[1] as string) as Record<string, unknown>;
+    assistant.parent_tool_use_id = 'toolu_x';
+
+    expect(parser.parse(JSON.stringify(assistant))).toEqual({ events: [] });
+  });
+
+  it('extracts text blocks from array-shaped tool results', () => {
+    const parser = new ClaudeEventParser('claude-1');
+    parser.parse(JSON.stringify({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'tool_use', id: 'toolu_array', name: 'Read' }] },
+    }));
+    const parsed = parser.parse(JSON.stringify({
+      type: 'user',
+      parent_tool_use_id: null,
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_array',
+          content: [
+            { type: 'text', text: 'first line' },
+            { type: 'text', text: 'second line' },
+            { type: 'image', source: 'preview' },
+          ],
+        }],
+      },
+    }));
+
+    expect(parsed.events).toEqual([{
+      type: 'tool.result',
+      payload: {
+        entrantId: 'claude-1',
+        tool: 'Read',
+        toolCallId: 'toolu_array',
+        ok: true,
+        detail: 'first line\nsecond line\n{"type":"image","source":"preview"}',
+      },
+    }]);
+  });
+
+  it('emits reasoning and reports result errors while keeping usage', () => {
+    const parser = new ClaudeEventParser('claude-1');
+    const reasoning = parser.parse(JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: 'Check the balance.' }] },
+    }));
+    const failed = parser.parse(JSON.stringify({
+      type: 'result',
+      is_error: true,
+      result: 'Credit balance is too low',
+      total_cost_usd: 0,
+      usage: { input_tokens: 3, output_tokens: 1 },
+    }));
+
+    expect(reasoning.events).toEqual([{
+      type: 'agent.reasoning',
+      payload: { entrantId: 'claude-1', text: 'Check the balance.' },
+    }]);
+    expect(failed).toEqual({
+      events: [
+        {
+          type: 'entrant.error',
+          payload: { entrantId: 'claude-1', message: 'Credit balance is too low' },
+        },
+        {
+          type: 'usage',
+          payload: {
+            entrantId: 'claude-1',
+            inputTokens: 3,
+            outputTokens: 1,
+            cachedInputTokens: 0,
+            costUsd: null,
+          },
+        },
+      ],
+      turnEnded: true,
+    });
+  });
+
+  it('uses the errors array when an error result has no result string', () => {
+    const parser = new ClaudeEventParser('claude-1');
+    const parsed = parser.parse(JSON.stringify({
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      errors: ['Credit balance is too low'],
+      usage: { input_tokens: 3, output_tokens: 1 },
+    }));
+
+    expect(parsed.events).toContainEqual({
+      type: 'entrant.error',
+      payload: {
+        entrantId: 'claude-1',
+        message: 'Credit balance is too low',
+      },
+    });
+  });
+
+  it('forgets unmatched tool names when a result ends the turn', () => {
+    const parser = new ClaudeEventParser('claude-1');
+    parser.parse(JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'toolu_stale', name: 'Bash' }] },
+    }));
+    parser.parse(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }));
+    const lateResult = parser.parse(JSON.stringify({
+      type: 'user',
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_stale',
+          content: 'late',
+        }],
+      },
+    }));
+
+    expect(lateResult.events).toEqual([{
+      type: 'tool.result',
+      payload: {
+        entrantId: 'claude-1',
+        tool: 'tool',
+        toolCallId: 'toolu_stale',
+        ok: true,
+        detail: 'late',
+      },
+    }]);
   });
 });

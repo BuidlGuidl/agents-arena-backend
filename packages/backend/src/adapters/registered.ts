@@ -1,6 +1,7 @@
 import { activeChainProfile } from '../chain/profile.js';
 import { createChallengePackResolver } from '../ctf/resolve.js';
 import type { EventJournal } from '../journal.js';
+import { presetSubstrate, UnknownPresetError } from '../run-manager.js';
 import { DockerEntrantDriver } from './docker.js';
 import { FakeDriver, type Schedule } from './fake.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
@@ -37,6 +38,12 @@ export class RegisteredEntrantDriver implements EntrantDriver {
   }
 
   private driver(run: RunRecord): EntrantDriver {
-    return run.preset === 'docker-duel' ? this.docker : this.fake;
+    try {
+      return presetSubstrate(run.preset) === 'docker' ? this.docker : this.fake;
+    } catch (error) {
+      if (!(error instanceof UnknownPresetError)) throw error;
+      // Unknown legacy presets use Docker so real containers get torn down; its harness drivers no-op if the entrant was never started.
+      return this.docker;
+    }
   }
 }

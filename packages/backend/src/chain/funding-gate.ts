@@ -11,7 +11,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 
 import type { EntrantRecord, RunRecord } from '../adapters/types.js';
 import type { EventJournal } from '../journal.js';
-import type { FundingGate } from '../run-manager.js';
+import { presetSubstrate, type FundingGate } from '../run-manager.js';
 import { awaitFunding, type FundingEntry } from './funding-watcher.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from './local-dev.js';
 import { activeChainProfile, getChainProfile, type ChainProfile } from './profile.js';
@@ -23,7 +23,7 @@ export function createFundingGate(
   profileName?: string,
 ): FundingGate {
   return async (run, runEntrants, signal) => {
-    if (run.preset !== 'docker-duel') {
+    if (presetSubstrate(run.preset) !== 'docker') {
       return;
     }
 
@@ -46,7 +46,7 @@ export async function runLocalDevFaucet(
   signal?: AbortSignal,
   profile: ChainProfile = activeChainProfile,
 ): Promise<void> {
-  if (run.preset !== 'docker-duel') {
+  if (presetSubstrate(run.preset) !== 'docker') {
     return;
   }
   if (profile.name !== 'local' || profile.chainId !== 31337) {

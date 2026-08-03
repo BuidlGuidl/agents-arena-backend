@@ -80,6 +80,8 @@ export class ClaudeEventParser {
             detail: detailValue(block.input),
           },
         });
+      } else {
+        this.recordUnknown(`assistant-block:${blockType}`);
       }
     }
     return events;

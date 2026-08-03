@@ -1,5 +1,7 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
+import { HARNESS_IDS } from '../contract.js';
+
 const runStates = [
   'created',
   'awaiting_signature',
@@ -12,7 +14,6 @@ const runStates = [
   'failed',
 ] as const;
 
-const harnessIds = ['codex', 'opencode', 'claude'] as const;
 const entrantStatuses = ['working', 'idle', 'blocked', 'done'] as const;
 export const eventTypes = [
   'run.state',
@@ -46,7 +47,7 @@ export const runs = sqliteTable('runs', {
 export const entrants = sqliteTable('entrants', {
   runId: text('run_id').notNull().references(() => runs.id),
   id: text('id').notNull(),
-  harness: text('harness', { enum: harnessIds }).notNull(),
+  harness: text('harness', { enum: HARNESS_IDS }).notNull(),
   model: text('model').notNull(),
   address: text('address'),
   status: text('status', { enum: entrantStatuses }).notNull(),

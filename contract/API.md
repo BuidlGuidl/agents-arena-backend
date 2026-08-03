@@ -80,11 +80,26 @@ A session lasts 12 hours. Sessions and nonces live in the backend process, so a 
 
 ### `POST /runs`
 
-Creates a run from the `fake-duel` preset. The preset creates `codex-1` and `opencode-1`. Set `autoStart` to `true` to begin the start flow.
+Creates a run from a required preset. The preset selects the fake or Docker substrate. It supplies entrants when `roster` is absent. Set `autoStart` to `true` to begin the start flow.
 
 ```json
 {"preset":"fake-duel","autoStart":true,"idempotencyKey":"demo-1"}
 ```
+
+An optional `roster` replaces the preset entrants. It accepts 1–10 entries:
+
+```json
+{
+  "preset":"fake-duel",
+  "autoStart":true,
+  "roster":[
+    {"id":"claude-a","harness":"claude","model":"claude-opus-5"},
+    {"id":"claude-b","harness":"claude","model":"claude-sonnet-5"}
+  ]
+}
+```
+
+Each `id` must match `^[a-z][a-z0-9-]*$`, contain at most 20 characters, and be unique within the roster. Docker names allow 63 characters; `arena-`, the 36-character run UUID, and their separator leave 20 characters for the entrant ID. The ID `run` is reserved for run-level feed events. `harness` must be `codex`, `opencode`, or `claude`. `model` must be a non-empty explicit model ID with no leading or trailing whitespace. Any case variant of `default` is invalid. Unknown model IDs are accepted. They report `costUsd: null` when the harness does not supply a price.
 
 The response has status `201` for a new run and status `200` for an existing idempotent run.
 The chainless `fake-duel` preset skips wallet seeding. The `docker-duel` preset uses the seed and funding gates.
@@ -93,7 +108,7 @@ The chainless `fake-duel` preset skips wallet seeding. The `docker-duel` preset 
 {"run":{"id":"...","state":"running","preset":"fake-duel","entrants":[],"startedAt":"...","deadlineAt":null,"lastEventId":4}}
 ```
 
-The service supports one preset in this slice. An unknown preset returns status `400`.
+An unknown preset or invalid roster returns status `400`.
 
 ### `GET /runs/:id`
 

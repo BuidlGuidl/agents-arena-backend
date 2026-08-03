@@ -2,7 +2,12 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Hex } from 'viem';
 import { z } from 'zod';
 
-import type { ArenaEvent, BroadcastResponse, CreateRunRequest } from './contract.js';
+import {
+  HARNESS_IDS,
+  type ArenaEvent,
+  type BroadcastResponse,
+  type CreateRunRequest,
+} from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import {
   isSecureRequest,
@@ -29,10 +34,28 @@ import {
   UnknownPresetError,
 } from './run-manager.js';
 
+const rosterEntrySchema = z.object({
+  id: z.string()
+    .max(20)
+    .regex(/^[a-z][a-z0-9-]*$/)
+    .refine((id) => id !== 'run'),
+  harness: z.enum(HARNESS_IDS),
+  model: z.string().refine((model) => (
+    model.trim().length > 0
+    && model.trim() === model
+    && model.toLowerCase() !== 'default'
+  )),
+}).strict();
+
 const createRunSchema = z.object({
   preset: z.string().min(1),
   autoStart: z.boolean().optional(),
   idempotencyKey: z.string().min(1).optional(),
+  roster: z.array(rosterEntrySchema)
+    .min(1)
+    .max(10)
+    .refine((roster) => new Set(roster.map((entrant) => entrant.id)).size === roster.length)
+    .optional(),
 }).strict();
 
 // Steer and broadcast carry the same body; only the fan-out differs.
@@ -186,6 +209,7 @@ export function createServer(options: ServerOptions): ArenaServer {
       preset: body.preset,
       ...(body.autoStart === undefined ? {} : { autoStart: body.autoStart }),
       ...(body.idempotencyKey === undefined ? {} : { idempotencyKey: body.idempotencyKey }),
+      ...(body.roster === undefined ? {} : { roster: body.roster }),
     };
     const result = await manager.create(input);
     return reply.status(result.created ? 201 : 200).send({ run: result.run });

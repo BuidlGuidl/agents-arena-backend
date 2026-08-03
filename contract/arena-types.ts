@@ -11,7 +11,8 @@ export type RunState =
 
 export type EntrantStatus = 'working' | 'idle' | 'blocked' | 'done';
 
-export type HarnessId = 'codex' | 'opencode' | 'claude';
+export const HARNESS_IDS = ['codex', 'opencode', 'claude'] as const;
+export type HarnessId = (typeof HARNESS_IDS)[number];
 
 export interface EntrantSolve {
   challengeId: number;
@@ -94,10 +95,17 @@ export interface HistoryPage {
   lastEventId?: number;
 }
 
+export interface RosterEntry {
+  id: string;
+  harness: HarnessId;
+  model: string;
+}
+
 export interface CreateRunRequest {
   preset: string;
   autoStart?: boolean;
   idempotencyKey?: string;
+  roster?: RosterEntry[];
 }
 
 export interface CreateRunResponse {

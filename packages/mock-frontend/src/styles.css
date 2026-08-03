@@ -341,9 +341,14 @@ input.steer:focus-visible {
 
 .scoreboard {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.scoreboard.two-entrant {
   grid-template-columns: 1fr auto 1fr;
   gap: 0;
-  align-items: stretch;
 }
 
 .rail {
@@ -405,10 +410,6 @@ input.steer:focus-visible {
   height: 3px;
   background: var(--lane);
   opacity: 0.85;
-}
-
-.lane.right {
-  text-align: left;
 }
 
 .lane-head {
@@ -993,7 +994,8 @@ input.steer::placeholder {
 /* ---- responsive ---- */
 
 @media (max-width: 820px) {
-  .scoreboard {
+  .scoreboard,
+  .scoreboard.two-entrant {
     grid-template-columns: 1fr;
   }
   .rail {
@@ -1008,9 +1010,6 @@ input.steer::placeholder {
   }
   .rail-line {
     display: none;
-  }
-  .lane.right {
-    margin-top: 0;
   }
 }
 

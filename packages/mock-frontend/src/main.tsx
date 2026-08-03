@@ -44,11 +44,18 @@ const queryClient = new QueryClient();
 const PRESETS = ['fake-duel', 'docker-duel', 'docker-arena'] as const;
 type Preset = (typeof PRESETS)[number];
 
-const HARNESS_COLOR: Record<string, string> = {
-  codex: 'var(--codex)',
-  opencode: 'var(--opencode)',
-  claude: 'var(--claude)',
-};
+const LANE_COLORS = [
+  '#f4b860',
+  '#5cc8f2',
+  '#b79cf0',
+  '#5fd39a',
+  '#f26a82',
+  '#efe45c',
+  '#2f9e8f',
+  '#d88ad3',
+  '#91c46c',
+  '#ef8f62',
+] as const;
 
 function App() {
   const cache = useQueryClient();
@@ -99,7 +106,7 @@ function App() {
 
   const runLog = useMemo(() => entriesForSource(feed.entries, RUN_SOURCE), [feed.entries]);
   const phase = runPhase(run?.state);
-  const entrants = run?.entrants ?? [];
+  const entrants = [...(run?.entrants ?? [])].sort((a, b) => a.id.localeCompare(b.id));
   const connClass = connection === 'connected'
     ? 'connected'
     : connection === 'disconnected'
@@ -113,7 +120,7 @@ function App() {
           <h1 className="wordmark">
             agents<span className="spark">·</span>arena
           </h1>
-          <p className="tagline">two coding agents race an on-chain ctf. one operator, live.</p>
+          <p className="tagline">coding agents race an on-chain ctf. one operator, live.</p>
         </div>
         <div className="link-status">
           <OperatorLogin />
@@ -174,17 +181,29 @@ function App() {
       {run === null ? (
         <div className="empty-board">
           <b>no run yet</b>
-          pick a preset and start a race to watch both agents stream live.
+          pick a preset and start a race to watch the agents stream live.
         </div>
       ) : (
-        <section className="scoreboard">
-          <EntrantLane runId={run.id} entrant={entrants[0]} feed={feed} runState={run.state} startedAt={run.startedAt} side="left" />
-          <div className="rail">
-            <span className="vs">vs</span>
-            <span className="lead">{leadLabel(entrants)}</span>
-            <span className="rail-line" />
-          </div>
-          <EntrantLane runId={run.id} entrant={entrants[1]} feed={feed} runState={run.state} startedAt={run.startedAt} side="right" />
+        <section className={`scoreboard${entrants.length === 2 ? ' two-entrant' : ''}`}>
+          {entrants.map((entrant, index) => (
+            <React.Fragment key={entrant.id}>
+              {index === 1 && entrants.length === 2 ? (
+                <div className="rail">
+                  <span className="vs">vs</span>
+                  <span className="lead">{leadLabel(entrants)}</span>
+                  <span className="rail-line" />
+                </div>
+              ) : null}
+              <EntrantLane
+                runId={run.id}
+                entrant={entrant}
+                feed={feed}
+                runState={run.state}
+                startedAt={run.startedAt}
+                laneColor={LANE_COLORS[index] ?? 'var(--muted)'}
+              />
+            </React.Fragment>
+          ))}
         </section>
       )}
 
@@ -468,13 +487,13 @@ function formatElapsed(startedAt: string, ts: string): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-function EntrantLane({ runId, entrant, feed, runState, startedAt, side }: {
+function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
   runId: string;
-  entrant: EntrantSummary | undefined;
+  entrant: EntrantSummary;
   feed: FeedState;
   runState: RunState;
   startedAt: string | null;
-  side: 'left' | 'right';
+  laneColor: string;
 }) {
   const [text, setText] = useState('');
   const steer = useMutation({
@@ -502,12 +521,9 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, side }: {
     [laneEvents, entrant?.address, runState],
   );
 
-  if (!entrant) return <div className="lane" />;
-  const laneColor = HARNESS_COLOR[entrant.harness] ?? 'var(--muted)';
-
   return (
     <article
-      className={`lane ${side}`}
+      className="lane"
       style={{ ['--lane' as string]: laneColor }}
     >
       <div className="lane-head">

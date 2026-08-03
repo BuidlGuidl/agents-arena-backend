@@ -44,7 +44,9 @@ async function balancesAtConfirmedBlock(
   profile: ChainProfile,
   entries: readonly FundingEntry[],
 ): Promise<readonly bigint[] | null> {
-  const client = createPublicClient({ transport: http(profile.rpcUrl) });
+  const client = createPublicClient({
+    transport: http(profile.rpcUrl, { batch: { batchSize: 10 } }),
+  });
   const head = await client.getBlockNumber();
   const depth = BigInt(profile.confirmations);
   if (head < depth) {
@@ -79,7 +81,9 @@ export async function awaitFunding({
     return;
   }
 
-  const client = createPublicClient({ transport: http(profile.rpcUrl) });
+  const client = createPublicClient({
+    transport: http(profile.rpcUrl, { batch: { batchSize: 10 } }),
+  });
   const observed = new Map<string, bigint>();
 
   while (true) {

@@ -694,6 +694,146 @@ describe('seed endpoint', () => {
   });
 });
 
+describe('run rosters', () => {
+  it('creates a run with the roster entrants instead of the preset entrants', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        roster: [
+          { id: 'claude-opus', harness: 'claude', model: 'claude-opus-5' },
+          { id: 'codex-main', harness: 'codex', model: 'gpt-5.5' },
+          { id: 'opencode-main', harness: 'opencode', model: 'openrouter/z-ai/glm-5.2' },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const { run } = response.json() as { run: RunSnapshot };
+    expect(run.entrants.map((entrant) => entrant.id)).toEqual([
+      'claude-opus',
+      'codex-main',
+      'opencode-main',
+    ]);
+  });
+
+  it.each([
+    {
+      caseName: 'more than ten entrants',
+      roster: Array.from({ length: 11 }, (_, index) => ({
+        id: `entrant-${index}`,
+        harness: 'codex',
+        model: 'gpt-5.5',
+      })),
+    },
+    {
+      caseName: 'duplicate entrant ids',
+      roster: [
+        { id: 'same-id', harness: 'codex', model: 'gpt-5.5' },
+        { id: 'same-id', harness: 'claude', model: 'claude-opus-5' },
+      ],
+    },
+    {
+      caseName: 'invalid entrant id characters',
+      roster: [{ id: 'Bad_id', harness: 'codex', model: 'gpt-5.5' }],
+    },
+    {
+      caseName: 'an entrant id longer than 20 characters',
+      roster: [{ id: 'abcdefghijklmnopqrstu', harness: 'codex', model: 'gpt-5.5' }],
+    },
+    {
+      caseName: 'the reserved run entrant id',
+      roster: [{ id: 'run', harness: 'codex', model: 'gpt-5.5' }],
+    },
+    {
+      caseName: 'the default model',
+      roster: [{ id: 'codex-main', harness: 'codex', model: 'default' }],
+    },
+    {
+      caseName: 'a case-insensitive default model',
+      roster: [{ id: 'codex-main', harness: 'codex', model: 'Default' }],
+    },
+    {
+      caseName: 'a model with leading whitespace',
+      roster: [{ id: 'codex-main', harness: 'codex', model: ' gpt-5.5' }],
+    },
+    {
+      caseName: 'a model with trailing whitespace',
+      roster: [{ id: 'codex-main', harness: 'codex', model: 'gpt-5.5 ' }],
+    },
+    {
+      caseName: 'an empty roster',
+      roster: [],
+    },
+  ])('rejects $caseName', async ({ roster }) => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: { preset: 'fake-duel', roster },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('streams and prices same-harness entrants by entrant id and model', async () => {
+    const server = createServer({
+      dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
+      schedule: (task) => {
+        task();
+        return undefined;
+      },
+    });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel',
+        autoStart: true,
+        roster: [
+          { id: 'claude-a', harness: 'claude', model: 'claude-opus-5' },
+          { id: 'claude-b', harness: 'claude', model: 'claude-sonnet-5' },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const { run } = response.json() as { run: RunSnapshot };
+    const entrantEvents = server.journal.after(run.id, 0)
+      .filter((event) => event.source === 'claude-a' || event.source === 'claude-b');
+    for (const entrantId of ['claude-a', 'claude-b']) {
+      const events = entrantEvents.filter((event) => event.source === entrantId);
+      expect(events.some((event) => event.type === 'agent.message')).toBe(true);
+      expect(events.filter((event) => event.type === 'usage')).toHaveLength(2);
+      expect(events.every((event) =>
+        !('entrantId' in event.payload) || event.payload.entrantId === entrantId,
+      )).toBe(true);
+    }
+    const toolCallIds = entrantEvents
+      .filter((event) => event.type === 'tool.call')
+      .map((event) => event.payload.toolCallId);
+    expect(new Set(toolCallIds).size).toBe(2);
+
+    const snapshot = server.manager.snapshot(run.id);
+    expect(snapshot.entrants).toMatchObject([
+      { id: 'claude-a', harness: 'claude', model: 'claude-opus-5', costUsd: 0.0224 },
+      { id: 'claude-b', harness: 'claude', model: 'claude-sonnet-5', costUsd: 0.01344 },
+    ]);
+  });
+});
+
 describe('fake run vertical slice', () => {
   it('creates, streams scripted events, steers, and finishes a run', async () => {
     const server = createServer({

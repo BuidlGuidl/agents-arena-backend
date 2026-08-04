@@ -95,7 +95,7 @@ export class ClaudeDriver extends HarnessEntrantDriver {
   }
 
   protected createParser(entrant: EntrantRecord): ClaudeEventParser {
-    return new ClaudeEventParser(entrant.id, this.logger);
+    return new ClaudeEventParser(entrant.id, entrant.model, this.logger);
   }
 
   protected watchdogMs(): number {

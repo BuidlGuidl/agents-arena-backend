@@ -1,3 +1,4 @@
+import { costForModelUsage, type ModelTokenUsage } from '../pricing.js';
 import type { ParsedArenaEvent, ParsedHarnessLine, ParserLogger } from './parser-types.js';
 
 type JsonObject = Record<string, unknown>;
@@ -6,8 +7,11 @@ export class ClaudeEventParser {
   unknownEvents = 0;
   private readonly toolNames = new Map<string, string>();
 
+  // The entrant model is the fallback rate for a subagent model the table has no
+  // row for, so pricing needs it here rather than only in the driver.
   constructor(
     private readonly entrantId: string,
+    private readonly entrantModel: string,
     private readonly logger: ParserLogger = console,
   ) {}
 
@@ -153,8 +157,12 @@ export class ClaudeEventParser {
           + numberValue(usage?.cache_creation_input_tokens),
         outputTokens: numberValue(usage?.output_tokens),
         cachedInputTokens,
-        // Ignore Anthropic's cache-write premiums because comparable MODEL_RATES costs matter more than exact provider billing.
-        costUsd: null,
+        // Priced off modelUsage, not the line's own total_cost_usd: comparable
+        // MODEL_RATES costs matter more than exact provider billing, which is
+        // also why Anthropic's cache-write premiums stay ignored. Null when the
+        // line carries no breakdown (an errored turn does not) leaves the driver
+        // to price the aggregate at the entrant model, as before.
+        costUsd: costForModelUsage(modelUsageRows(value.modelUsage), this.entrantModel),
       },
     });
     return { events, turnEnded: true };
@@ -178,6 +186,35 @@ function parseObject(line: string, logger: ParserLogger): JsonObject | undefined
   }
   logger.warn('[claude parser] skipped malformed line');
   return undefined;
+}
+
+// The result line's aggregate usage says nothing about which model spent what, so
+// a turn that delegates to a subagent would price every token at the entrant's
+// model. modelUsage carries one row per model the turn actually used, keyed by
+// model id, each counting its fresh, cached, and cache-creation prompt tokens
+// separately — the same split the aggregate gets normalized from. The row's
+// `canonicalModel` names the model without a release date, which is the form
+// MODEL_RATES and the roster key on; the object key is the fallback for a row
+// that omits it.
+function modelUsageRows(value: unknown): ModelTokenUsage[] {
+  const modelUsage = objectValue(value);
+  if (modelUsage === undefined) return [];
+
+  const rows: ModelTokenUsage[] = [];
+  for (const [key, rawRow] of Object.entries(modelUsage)) {
+    const row = objectValue(rawRow);
+    if (row === undefined) continue;
+    const cachedInputTokens = numberValue(row.cacheReadInputTokens);
+    rows.push({
+      model: stringValue(row.canonicalModel) ?? key,
+      inputTokens: numberValue(row.inputTokens)
+        + cachedInputTokens
+        + numberValue(row.cacheCreationInputTokens),
+      outputTokens: numberValue(row.outputTokens),
+      cachedInputTokens,
+    });
+  }
+  return rows;
 }
 
 function objectValue(value: unknown): JsonObject | undefined {

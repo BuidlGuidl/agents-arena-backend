@@ -262,6 +262,8 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 
 **Consequence:** the entrant image ships `@anthropic-ai/claude-code` pinned like the other two CLIs, so `docker/build.sh` runs again. the same-harness-different-model lineup (#2) becomes preset data — nothing new may key on `harness`, identity stays `entrantId`. the `fake.ts` scripted-solve branch that picked flags by harness is fixed in the same change, since a third harness made its binary else-arm silently wrong.
 
+**Amendment (2026-08-04, from #38):** the claude parser prices a turn off the result line's `modelUsage` breakdown, one `MODEL_RATES` row per model the turn touched, instead of letting the driver price the aggregate at `entrant.model`. delegating to a subagent no longer bills sonnet tokens at the opus rate. a row is keyed on its `canonicalModel` (the id without a release date, the form the table and the roster use), falling back to the `modelUsage` key; a model with no table row falls back to the entrant's rate, and a line without the breakdown at all — an errored turn — still reaches the driver's aggregate path. tokens on the `usage` event stay aggregate; only cost is split. `costUsd` remains the notional API-rate figure this ADR describes.
+
 ---
 
 ## ADR-0016 — entrant rosters override preset entrants

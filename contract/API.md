@@ -132,6 +132,8 @@ Each entrant carries its confirmed solves in journal order, and `flags` equals `
 
 A derived cost prices the `usage` event's `cachedInputTokens` at the model's cached rate, roughly a tenth of fresh input. Most of a codex turn is repeated context, so skipping that would overstate a turn about threefold.
 
+A claude turn that delegates to a subagent spends tokens on more than one model, so its cost is derived per model rather than from the entrant's model alone — a model the rate table does not list falls back to the entrant's rate. The tokens on the event stay aggregate; only the cost is split.
+
 Each `usage` event counts only the work it covers, never a running total, and `inputTokens` is the whole prompt with `cachedInputTokens` counted inside it. Events are not turns: codex emits one per turn, opencode one per step, so a turn that calls tools produces several. The harnesses also disagree upstream — codex reports a running session total that `exec resume` keeps growing, opencode reports its input net of cache reads — so the adapters normalize both to this shape before journalling.
 
 ### `POST /runs/:id/start`

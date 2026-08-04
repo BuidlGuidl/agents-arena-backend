@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ClaudeEventParser } from '../src/adapters/claude-parser.js';
 import { CodexEventParser } from '../src/adapters/codex-parser.js';
 import { OpenCodeEventParser } from '../src/adapters/opencode-parser.js';
+import { costForTokens } from '../src/pricing.js';
 
 async function fixture(name: string): Promise<string[]> {
   const contents = await readFile(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
@@ -380,7 +381,7 @@ describe('OpenCodeEventParser', () => {
 
 describe('ClaudeEventParser', () => {
   it('maps the captured start fixture to paired events and per-invocation usage', async () => {
-    const parser = new ClaudeEventParser('claude-1');
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5');
     const parsed = (await fixture('claude-events.jsonl')).map((line) => parser.parse(line));
     const events = parsed.flatMap((result) => result.events);
 
@@ -415,7 +416,8 @@ describe('ClaudeEventParser', () => {
           inputTokens: 63_196,
           outputTokens: 88,
           cachedInputTokens: 46_817,
-          costUsd: null,
+          // Single-model turn: the modelUsage row prices exactly like the aggregate.
+          costUsd: 0.107504,
         },
       },
     ]);
@@ -427,7 +429,7 @@ describe('ClaudeEventParser', () => {
   });
 
   it('extracts the same session and reports resumed usage without a cumulative delta', async () => {
-    const parser = new ClaudeEventParser('claude-1');
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5');
     const parsed = (await fixture('claude-resume-turns.jsonl')).map((line) => parser.parse(line));
     const usage = parsed.flatMap((result) => result.events).find((event) => event.type === 'usage');
 
@@ -437,14 +439,102 @@ describe('ClaudeEventParser', () => {
       inputTokens: 31_924,
       outputTokens: 8,
       cachedInputTokens: 15_268,
-      costUsd: null,
+      costUsd: 0.091114,
     });
     expect(parsed.at(-1)?.turnEnded).toBe(true);
   });
 
+  it('prices a delegating turn per model instead of at the entrant rate', () => {
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5');
+    const parsed = parser.parse(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      usage: {
+        input_tokens: 10,
+        cache_creation_input_tokens: 1_000,
+        cache_read_input_tokens: 9_000,
+        output_tokens: 3_000,
+      },
+      modelUsage: {
+        'claude-opus-5': {
+          inputTokens: 10,
+          outputTokens: 1_000,
+          cacheReadInputTokens: 4_000,
+          cacheCreationInputTokens: 1_000,
+        },
+        'claude-sonnet-5': {
+          inputTokens: 0,
+          outputTokens: 2_000,
+          cacheReadInputTokens: 5_000,
+          cacheCreationInputTokens: 0,
+        },
+      },
+    }));
+    const usage = parsed.events.find((event) => event.type === 'usage');
+
+    // opus: 1,010 fresh + 4,000 cached + 1,000 out. sonnet: 5,000 cached + 2,000 out.
+    expect(usage?.payload.costUsd).toBe(0.06355);
+    // Aggregate tokens still come from `usage`, which counts the whole turn.
+    expect(usage?.payload).toMatchObject({ inputTokens: 10_010, outputTokens: 3_000, cachedInputTokens: 9_000 });
+    // The old aggregate-only pricing charged every sonnet token at the opus rate.
+    expect(costForTokens('claude-opus-5', 10_010, 3_000, 9_000)).toBe(0.08455);
+  });
+
+  it('prices a subagent model the rate table does not list at the entrant rate', () => {
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5');
+    const parsed = parser.parse(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      usage: { input_tokens: 2_000, output_tokens: 200 },
+      modelUsage: {
+        'claude-opus-5': { inputTokens: 1_000, outputTokens: 100 },
+        'claude-haiku-9-9': { inputTokens: 1_000, outputTokens: 100 },
+      },
+    }));
+    const usage = parsed.events.find((event) => event.type === 'usage');
+
+    expect(usage?.payload.costUsd).toBe(costForTokens('claude-opus-5', 2_000, 200));
+  });
+
+  // Captured shape: a Task subagent's row is keyed by dated id, and only its
+  // `canonicalModel` matches the rate table.
+  it('prices a dated modelUsage key off its canonical model', () => {
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5');
+    const parsed = parser.parse(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      usage: { input_tokens: 1_000, output_tokens: 100 },
+      modelUsage: {
+        'claude-haiku-4-5-20251001': {
+          inputTokens: 1_000,
+          outputTokens: 100,
+          canonicalModel: 'claude-haiku-4-5',
+        },
+      },
+    }));
+    const usage = parsed.events.find((event) => event.type === 'usage');
+
+    // Keyed on the dated id alone, the row would miss the table and fall back to opus.
+    expect(usage?.payload.costUsd).toBe(costForTokens('claude-haiku-4-5', 1_000, 100));
+    expect(usage?.payload.costUsd).not.toBe(costForTokens('claude-opus-5', 1_000, 100));
+  });
+
+  it('leaves cost null when an unlisted entrant model prices nothing', () => {
+    const parser = new ClaudeEventParser('claude-1', 'claude-mystery-9');
+    const parsed = parser.parse(JSON.stringify({
+      type: 'result',
+      is_error: false,
+      usage: { input_tokens: 1_000, output_tokens: 100 },
+      modelUsage: { 'claude-mystery-9': { inputTokens: 1_000, outputTokens: 100 } },
+    }));
+    const usage = parsed.events.find((event) => event.type === 'usage');
+
+    expect(usage?.payload.costUsd).toBeNull();
+  });
+
   it('logs rate limits and unknown event shapes while ignoring empty text blocks', () => {
     const logger = { info: vi.fn(), warn: vi.fn() };
-    const parser = new ClaudeEventParser('claude-1', logger);
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5', logger);
 
     expect(parser.parse(JSON.stringify({
       type: 'rate_limit_event',
@@ -465,7 +555,7 @@ describe('ClaudeEventParser', () => {
 
   it('emits an entrant error when a rate limit is not allowed', () => {
     const logger = { info: vi.fn(), warn: vi.fn() };
-    const parser = new ClaudeEventParser('claude-1', logger);
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5', logger);
     const parsed = parser.parse(JSON.stringify({
       type: 'rate_limit_event',
       rate_limit_info: {
@@ -489,7 +579,7 @@ describe('ClaudeEventParser', () => {
   });
 
   it('tags Task subagent tool work with the call that spawned it', async () => {
-    const parser = new ClaudeEventParser('claude-1');
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5');
     const assistant = JSON.parse((await fixture('claude-events.jsonl'))[1] as string) as Record<string, unknown>;
     assistant.parent_tool_use_id = 'toolu_task';
     const call = parser.parse(JSON.stringify(assistant));
@@ -530,7 +620,7 @@ describe('ClaudeEventParser', () => {
 
   it('drops subagent prose so the lane keeps only the entrant own voice', () => {
     const logger = { info: vi.fn(), warn: vi.fn() };
-    const parser = new ClaudeEventParser('claude-1', logger);
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5', logger);
 
     expect(parser.parse(JSON.stringify({
       type: 'assistant',
@@ -548,7 +638,7 @@ describe('ClaudeEventParser', () => {
 
   it('logs unhandled assistant block types without emitting events', () => {
     const logger = { info: vi.fn(), warn: vi.fn() };
-    const parser = new ClaudeEventParser('claude-1', logger);
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5', logger);
 
     expect(parser.parse(JSON.stringify({
       type: 'assistant',
@@ -561,7 +651,7 @@ describe('ClaudeEventParser', () => {
   });
 
   it('extracts text blocks from array-shaped tool results', () => {
-    const parser = new ClaudeEventParser('claude-1');
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5');
     parser.parse(JSON.stringify({
       type: 'assistant',
       parent_tool_use_id: null,
@@ -596,7 +686,7 @@ describe('ClaudeEventParser', () => {
   });
 
   it('emits reasoning and reports result errors while keeping usage', () => {
-    const parser = new ClaudeEventParser('claude-1');
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5');
     const reasoning = parser.parse(JSON.stringify({
       type: 'assistant',
       message: { content: [{ type: 'thinking', thinking: 'Check the balance.' }] },
@@ -635,7 +725,7 @@ describe('ClaudeEventParser', () => {
   });
 
   it('uses the errors array when an error result has no result string', () => {
-    const parser = new ClaudeEventParser('claude-1');
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5');
     const parsed = parser.parse(JSON.stringify({
       type: 'result',
       subtype: 'error_during_execution',
@@ -654,7 +744,7 @@ describe('ClaudeEventParser', () => {
   });
 
   it('forgets unmatched tool names when a result ends the turn', () => {
-    const parser = new ClaudeEventParser('claude-1');
+    const parser = new ClaudeEventParser('claude-1', 'claude-opus-5');
     parser.parse(JSON.stringify({
       type: 'assistant',
       message: { content: [{ type: 'tool_use', id: 'toolu_stale', name: 'Bash' }] },

@@ -73,8 +73,12 @@ export type ArenaEvent =
   | (ArenaEventBase & { type: 'entrant.status'; payload: { entrantId: string; status: EntrantStatus } })
   | (ArenaEventBase & { type: 'agent.message'; payload: { entrantId: string; text: string } })
   | (ArenaEventBase & { type: 'agent.reasoning'; payload: { entrantId: string; text: string } })
-  | (ArenaEventBase & { type: 'tool.call'; payload: { entrantId: string; tool: string; toolCallId: string; detail: string } })
-  | (ArenaEventBase & { type: 'tool.result'; payload: { entrantId: string; tool: string; toolCallId: string; ok: boolean; detail: string } })
+  // `parentToolCallId` is set when the call came from a subagent the entrant
+  // delegated to: it holds the `toolCallId` of the outer call that spawned it
+  // (claude's Task). Absent on the entrant's own calls. Nested calls arrive in
+  // the same lane, in order — a client may badge or nest them, or ignore it (#37).
+  | (ArenaEventBase & { type: 'tool.call'; payload: { entrantId: string; tool: string; toolCallId: string; detail: string; parentToolCallId?: string } })
+  | (ArenaEventBase & { type: 'tool.result'; payload: { entrantId: string; tool: string; toolCallId: string; ok: boolean; detail: string; parentToolCallId?: string } })
   | (ArenaEventBase & { type: 'entrant.steered'; payload: { entrantId: string; text: string } })
   | (ArenaEventBase & { type: 'entrant.prompt'; payload: { entrantId: string; text: string } })
   | (ArenaEventBase & { type: 'entrant.nudged'; payload: { entrantId: string; text: string; flags: number } })

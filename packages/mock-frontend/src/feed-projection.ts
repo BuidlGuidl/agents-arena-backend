@@ -193,9 +193,9 @@ export function describeEvent(event: ArenaEvent): string {
     case 'agent.reasoning':
       return `thinks: ${event.payload.text}`;
     case 'tool.call':
-      return `${event.payload.tool} → running: ${event.payload.detail}`;
+      return `${subagentMarker(event.payload)}${event.payload.tool} → running: ${event.payload.detail}`;
     case 'tool.result':
-      return `${event.payload.tool} → ${event.payload.ok ? 'ok' : 'fail'}: ${event.payload.detail}`;
+      return `${subagentMarker(event.payload)}${event.payload.tool} → ${event.payload.ok ? 'ok' : 'fail'}: ${event.payload.detail}`;
     case 'entrant.steered':
       return `steered: ${event.payload.text}`;
     case 'entrant.prompt':
@@ -226,8 +226,9 @@ export function describeEvent(event: ArenaEvent): string {
 
 export function describeEntry(entry: FeedEntry): string {
   if (entry.event.type !== 'tool.call') return describeEvent(entry.event);
+  const marker = subagentMarker(entry.event.payload);
   if (entry.result === undefined) {
-    return `${entry.event.payload.tool} → running: ${entry.event.payload.detail}`;
+    return `${marker}${entry.event.payload.tool} → running: ${entry.event.payload.detail}`;
   }
 
   const callDetail = entry.event.payload.detail;
@@ -235,7 +236,14 @@ export function describeEntry(entry: FeedEntry): string {
   const resultSuffix = resultDetail.length > 0 && resultDetail !== callDetail
     ? ` ⇒ ${resultDetail}`
     : '';
-  return `${entry.event.payload.tool} → ${entry.result.payload.ok ? 'ok' : 'fail'}: ${callDetail}${resultSuffix}`;
+  return `${marker}${entry.event.payload.tool} → ${entry.result.payload.ok ? 'ok' : 'fail'}: ${callDetail}${resultSuffix}`;
+}
+
+// Work a subagent did on the entrant's behalf renders flat, in arrival order,
+// behind a marker — v1 of #37. The parent call id is on the payload for a client
+// that would rather nest the rows under the Task call that spawned them.
+function subagentMarker(payload: { parentToolCallId?: string }): string {
+  return payload.parentToolCallId === undefined ? '' : '↳ subagent ';
 }
 
 function rawFallback(event: ArenaEvent): string {

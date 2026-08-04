@@ -21,13 +21,12 @@ export class ClaudeEventParser {
       const sessionId = stringValue(value.session_id);
       return sessionId === undefined ? { events: [] } : { events: [], sessionId };
     }
-    if ((type === 'assistant' || type === 'user')
-        && value.parent_tool_use_id !== undefined
-        && value.parent_tool_use_id !== null) {
-      return { events: [] };
-    }
-    if (type === 'assistant') return { events: this.assistantEvents(value) };
-    if (type === 'user') return { events: this.userEvents(value) };
+    // A line carrying parent_tool_use_id comes from a subagent the entrant
+    // delegated to; the id is the outer Task call, and it rides along on the
+    // tool events so a lane can nest or badge the nested work (#37).
+    const parentToolCallId = stringValue(value.parent_tool_use_id);
+    if (type === 'assistant') return { events: this.assistantEvents(value, parentToolCallId) };
+    if (type === 'user') return { events: this.userEvents(value, parentToolCallId) };
     if (type === 'result') return this.result(value);
     if (type === 'rate_limit_event') {
       const info = objectValue(value.rate_limit_info);
@@ -52,7 +51,7 @@ export class ClaudeEventParser {
     return { events: [] };
   }
 
-  private assistantEvents(value: JsonObject): ParsedArenaEvent[] {
+  private assistantEvents(value: JsonObject, parentToolCallId?: string): ParsedArenaEvent[] {
     const content = objectValue(value.message)?.content;
     if (!Array.isArray(content)) return [];
 
@@ -61,6 +60,10 @@ export class ClaudeEventParser {
       const block = objectValue(rawBlock);
       const blockType = stringValue(block?.type);
       if (block === undefined || blockType === undefined) continue;
+      // A subagent's prose is its own, not the entrant's, and the contract has
+      // nowhere to say so — only its tool work reaches the board. Claude sends
+      // it at all only under --forward-subagent-text, which the driver omits.
+      if (parentToolCallId !== undefined && blockType !== 'tool_use') continue;
       if (blockType === 'text') {
         const text = stringValue(block.text) ?? '';
         if (text.length > 0) {
@@ -89,6 +92,7 @@ export class ClaudeEventParser {
             tool,
             toolCallId,
             detail: detailValue(block.input),
+            ...(parentToolCallId === undefined ? {} : { parentToolCallId }),
           },
         });
       } else {
@@ -98,7 +102,7 @@ export class ClaudeEventParser {
     return events;
   }
 
-  private userEvents(value: JsonObject): ParsedArenaEvent[] {
+  private userEvents(value: JsonObject, parentToolCallId?: string): ParsedArenaEvent[] {
     const content = objectValue(value.message)?.content;
     if (!Array.isArray(content)) return [];
 
@@ -118,6 +122,7 @@ export class ClaudeEventParser {
           toolCallId,
           ok: block.is_error !== true,
           detail: detailValue(block.content),
+          ...(parentToolCallId === undefined ? {} : { parentToolCallId }),
         },
       });
     }

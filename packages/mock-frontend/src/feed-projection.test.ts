@@ -171,6 +171,54 @@ describe('ingestEvent — tool call pairing', () => {
     expect(styleForEntry(feed.entries[0]!)).toEqual({ tone: 'tool', tag: 'ok' });
   });
 
+  it('marks a subagent call and pairs it with its own result', () => {
+    const feed = feedFrom([
+      evt({
+        id: 25,
+        source: 'claude-1',
+        seq: 1,
+        type: 'tool.call',
+        payload: {
+          entrantId: 'claude-1',
+          tool: 'Task',
+          toolCallId: 'task-1',
+          detail: 'audit the challenge',
+        },
+      }),
+      evt({
+        id: 26,
+        source: 'claude-1',
+        seq: 2,
+        type: 'tool.call',
+        payload: {
+          entrantId: 'claude-1',
+          tool: 'Bash',
+          toolCallId: 'nested-1',
+          detail: 'cast call',
+          parentToolCallId: 'task-1',
+        },
+      }),
+      evt({
+        id: 27,
+        source: 'claude-1',
+        seq: 3,
+        type: 'tool.result',
+        payload: {
+          entrantId: 'claude-1',
+          tool: 'Bash',
+          toolCallId: 'nested-1',
+          ok: true,
+          detail: '0x01',
+          parentToolCallId: 'task-1',
+        },
+      }),
+    ]);
+
+    expect(feed.entries).toHaveLength(2);
+    expect(describeEntry(feed.entries[0]!)).toBe('Task → running: audit the challenge');
+    expect(describeEntry(feed.entries[1]!)).toBe('↳ subagent Bash → ok: cast call ⇒ 0x01');
+  });
+
   it('pairs a reused id with the latest unresolved call', () => {
     const feed = feedFrom([
       evt({

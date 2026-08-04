@@ -488,12 +488,62 @@ describe('ClaudeEventParser', () => {
     );
   });
 
-  it('ignores assistant traffic from Task subagents', async () => {
+  it('tags Task subagent tool work with the call that spawned it', async () => {
     const parser = new ClaudeEventParser('claude-1');
     const assistant = JSON.parse((await fixture('claude-events.jsonl'))[1] as string) as Record<string, unknown>;
-    assistant.parent_tool_use_id = 'toolu_x';
+    assistant.parent_tool_use_id = 'toolu_task';
+    const call = parser.parse(JSON.stringify(assistant));
+    const result = parser.parse(JSON.stringify({
+      type: 'user',
+      parent_tool_use_id: 'toolu_task',
+      message: {
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_014hxUxk5yfTxYBZ5yBXzk2R',
+          content: 'arena-fixture-test',
+        }],
+      },
+    }));
 
-    expect(parser.parse(JSON.stringify(assistant))).toEqual({ events: [] });
+    expect(call.events).toEqual([{
+      type: 'tool.call',
+      payload: {
+        entrantId: 'claude-1',
+        tool: 'Bash',
+        toolCallId: 'toolu_014hxUxk5yfTxYBZ5yBXzk2R',
+        detail: '{"command":"echo arena-fixture-test","description":"Echo test string"}',
+        parentToolCallId: 'toolu_task',
+      },
+    }]);
+    expect(result.events).toEqual([{
+      type: 'tool.result',
+      payload: {
+        entrantId: 'claude-1',
+        tool: 'Bash',
+        toolCallId: 'toolu_014hxUxk5yfTxYBZ5yBXzk2R',
+        ok: true,
+        detail: 'arena-fixture-test',
+        parentToolCallId: 'toolu_task',
+      },
+    }]);
+  });
+
+  it('drops subagent prose so the lane keeps only the entrant own voice', () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const parser = new ClaudeEventParser('claude-1', logger);
+
+    expect(parser.parse(JSON.stringify({
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_task',
+      message: {
+        content: [
+          { type: 'text', text: 'subagent chatter' },
+          { type: 'thinking', thinking: 'subagent thoughts' },
+        ],
+      },
+    }))).toEqual({ events: [] });
+    expect(parser.unknownEvents).toBe(0);
+    expect(logger.info).not.toHaveBeenCalled();
   });
 
   it('logs unhandled assistant block types without emitting events', () => {

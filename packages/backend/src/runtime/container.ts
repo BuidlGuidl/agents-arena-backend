@@ -589,7 +589,10 @@ export const createDockerContainer: ContainerFactory = (options) => DockerEntran
 // request headers when it has data, so omitting the body entirely leaves the
 // headers buffered and the attach never completes. An empty Buffer gives us
 // Content-Length: 0 and a flush, and openStdin keeps the request unfinished so
-// the hijacked socket stays writable.
+// the hijacked socket stays writable. Content-Type matches what the official
+// Docker client sends on hijacked requests — docker-modem would otherwise
+// default a Buffer body to application/tar. Dial contract verified against
+// docker-modem 5.0.7.
 async function attachWithoutRequestBody(container: Docker.Container): Promise<NodeJS.ReadWriteStream> {
   return new Promise<NodeJS.ReadWriteStream>((resolveAttachment, rejectAttachment) => {
     container.modem.dial(
@@ -600,7 +603,8 @@ async function attachWithoutRequestBody(container: Docker.Container): Promise<No
         hijack: true,
         openStdin: true,
         statusCodes: { 200: true, 404: 'no such container', 500: 'server error' },
-        options: { _query: { stream: true, stdin: true, stdout: true, stderr: true }, _body: {} },
+        options: { _query: { stream: true, stdin: true, stdout: true, stderr: true } },
+        headers: { 'Content-Type': 'text/plain' },
         file: Buffer.alloc(0),
       },
       (error: unknown, attachment: NodeJS.ReadWriteStream) => {

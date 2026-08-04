@@ -18,8 +18,9 @@ interface FakeDialOptions {
   method: string;
   hijack?: boolean;
   openStdin?: boolean;
+  headers?: Record<string, string>;
   file?: Buffer;
-  options?: { _query?: Record<string, unknown>; _body?: Record<string, unknown> };
+  options?: { _query?: Record<string, unknown> };
 }
 
 class FakeDocker {
@@ -160,12 +161,9 @@ describe('DockerEntrantContainer attach', () => {
     // docker-modem would otherwise POST the options object, and the daemon can
     // hand those bytes to the container as its first stdin read.
     expect(dialed.file).toEqual(Buffer.alloc(0));
-    expect(dialed.options?._body).toEqual({});
-    expect(dialed.options?._query).toEqual({
-      stream: true,
-      stdin: true,
-      stdout: true,
-      stderr: true,
+    expect(dialed.headers).toEqual({ 'Content-Type': 'text/plain' });
+    expect(dialed.options).toEqual({
+      _query: { stream: true, stdin: true, stdout: true, stderr: true },
     });
   });
 

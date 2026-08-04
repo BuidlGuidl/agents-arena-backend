@@ -275,13 +275,7 @@ export class DockerEntrantContainer implements EntrantContainer {
         },
       });
 
-      const attachment = await container.attach({
-        stream: true,
-        stdin: true,
-        stdout: true,
-        stderr: true,
-        hijack: true,
-      });
+      const attachment = await attachWithoutRequestBody(container);
       const runnerOutput = new PassThrough();
       const runnerError = new PassThrough();
       const runtime = new DockerEntrantContainer(
@@ -583,6 +577,39 @@ export class DockerEntrantContainer implements EntrantContainer {
 }
 
 export const createDockerContainer: ContainerFactory = (options) => DockerEntrantContainer.create(options);
+
+// dockerode's container.attach() sends its own options object as the POST body.
+// The daemon hijacks the connection for attach without always consuming that
+// body first, so those bytes can resurface as the first thing the container
+// reads on stdin, glued to our first command — the runner then rejects one
+// malformed line. Dial the endpoint ourselves with no body; every attach
+// parameter belongs in the query string anyway.
+//
+// The empty Buffer is the body: docker-modem only writes and flushes the
+// request headers when it has data, so omitting the body entirely leaves the
+// headers buffered and the attach never completes. An empty Buffer gives us
+// Content-Length: 0 and a flush, and openStdin keeps the request unfinished so
+// the hijacked socket stays writable.
+async function attachWithoutRequestBody(container: Docker.Container): Promise<NodeJS.ReadWriteStream> {
+  return new Promise<NodeJS.ReadWriteStream>((resolveAttachment, rejectAttachment) => {
+    container.modem.dial(
+      {
+        path: `/containers/${container.id}/attach?`,
+        method: 'POST',
+        isStream: true,
+        hijack: true,
+        openStdin: true,
+        statusCodes: { 200: true, 404: 'no such container', 500: 'server error' },
+        options: { _query: { stream: true, stdin: true, stdout: true, stderr: true }, _body: {} },
+        file: Buffer.alloc(0),
+      },
+      (error: unknown, attachment: NodeJS.ReadWriteStream) => {
+        if (error !== null && error !== undefined) rejectAttachment(asError(error));
+        else resolveAttachment(attachment);
+      },
+    );
+  });
+}
 
 async function removeStaleResources(docker: Docker, runId: string, entrantId: string): Promise<void> {
   const labels = [`arena.runId=${runId}`, `arena.entrantId=${entrantId}`];

@@ -47,8 +47,9 @@ export interface EntrantSummary {
   // USD across the turns that carried a cost; null when none did. Display only —
   // harnesses on a subscription login report tokens without a price.
   costUsd: number | null;
-  // A guess, not a report: the last challenge the entrant's commands touched
-  // (see entrant.challenge). Null until a command names one.
+  // The latest of the agent's own announcement (POST /agent/progress) and the
+  // backend's guess from its commands — see entrant.challenge. Null until
+  // either source names one.
   currentChallengeId: number | null;
 }
 
@@ -100,7 +101,9 @@ export type ArenaEvent =
   // address. Both fire only when the value changes, and `evidence` says where
   // it came from (the matched token, or "announced"), so a guess reads as a
   // guess. Append-only by design — the UI takes the latest one per entrant (#4).
-  | (ArenaEventBase & { type: 'entrant.challenge'; payload: { entrantId: string; challengeId: number; via: 'self' | 'command'; evidence: string } })
+  // Optional because rows journalled before the guesser existed carry neither;
+  // every one of those was an announcement, so readers treat absence as 'self'.
+  | (ArenaEventBase & { type: 'entrant.challenge'; payload: { entrantId: string; challengeId: number; via?: 'self' | 'command'; evidence?: string } })
   | (ArenaEventBase & { type: 'entrant.error'; payload: { entrantId: string; message: string } })
   | (ArenaEventBase & { type: 'run.error'; payload: { message: string } })
   // Tokens count only what this event covers — codex emits one per turn, opencode

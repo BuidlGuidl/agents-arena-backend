@@ -11,7 +11,13 @@ import type {
 } from '../runtime/container.js';
 import { createDockerContainer } from '../runtime/container.js';
 import { revokeAgentToken } from '../agent-auth.js';
-import { ChallengeTracker, challengeAddressIndex } from '../ctf/challenge-tracker.js';
+import {
+  challengeAddressIndex,
+  currentChallenge,
+  dropCurrentChallenge,
+  matchChallenge,
+  recordCurrentChallenge,
+} from '../ctf/challenge-tracker.js';
 import type { ChallengePackAccess, ChallengePackResolver } from '../ctf/resolve.js';
 import { EntrantUnavailableError, type EntrantDriver, type EntrantRecord, type RunRecord } from './types.js';
 import type { HarnessLineParser, ParsedArenaEvent, ParserLogger } from './parser-types.js';
@@ -44,7 +50,7 @@ interface EntrantRuntimeState {
   active: RuntimeExecution | undefined;
   turnTask: Promise<void> | undefined;
   // Lazy: built on the first tool.call, when the pack addresses already exist.
-  tracker?: ChallengeTracker;
+  addressIndex?: ReadonlyMap<string, number>;
 }
 
 export abstract class HarnessEntrantDriver implements EntrantDriver {
@@ -93,6 +99,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     } catch (error) {
       // createContainer issues the agent token before the factory can fail.
       revokeAgentToken(run.id, entrant.id);
+      dropCurrentChallenge(run.id, entrant.id);
       throw error;
     }
     const state: EntrantRuntimeState = {
@@ -116,6 +123,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     } catch (error) {
       this.states.delete(key);
       revokeAgentToken(run.id, entrant.id);
+      dropCurrentChallenge(run.id, entrant.id);
       await container.teardown();
       throw error;
     }
@@ -166,6 +174,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       // A throwing teardown must not leave the token resolving for a dead
       // entrant that could still journal announcements into a finished run.
       revokeAgentToken(run.id, entrant.id);
+      dropCurrentChallenge(run.id, entrant.id);
     }
     this.states.delete(key);
     this.parsers.delete(key);
@@ -382,17 +391,21 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   // The heuristic behind entrant.challenge: a command that references exactly one
   // challenge moves the entrant's current-challenge guess (see contract notes).
   private trackProgress(state: EntrantRuntimeState, detail: string): void {
-    state.tracker ??= new ChallengeTracker(
-      challengeAddressIndex(this.challengeAddresses?.(state.run.id) ?? {}),
-    );
-    const guess = state.tracker.observe(detail);
+    state.addressIndex ??= challengeAddressIndex(this.challengeAddresses?.(state.run.id) ?? {});
+    const guess = matchChallenge(detail, state.addressIndex);
     if (guess === undefined) return;
-    this.journal.append(state.run.id, state.entrant.id, 'entrant.challenge', {
-      entrantId: state.entrant.id,
+    const runId = state.run.id;
+    const entrantId = state.entrant.id;
+    // Deduped against the shared current, not a tracker-private last, so an
+    // announcement moving the value lets the next command move it back.
+    if (currentChallenge(runId, entrantId) === guess.challengeId) return;
+    this.journal.append(runId, entrantId, 'entrant.challenge', {
+      entrantId,
       challengeId: guess.challengeId,
       via: 'command',
       evidence: guess.evidence,
     });
+    recordCurrentChallenge(runId, entrantId, guess.challengeId);
   }
 
   private appendError(state: EntrantRuntimeState, message: string): void {

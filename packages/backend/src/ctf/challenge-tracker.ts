@@ -47,18 +47,26 @@ export function matchChallenge(
   return { challengeId, evidence };
 }
 
-// One per run and entrant. Folds command-level guesses into a current challenge
-// and reports only the changes, so the journal stays quiet while an entrant
-// keeps working on the same puzzle.
-export class ChallengeTracker {
-  private current: number | undefined;
+// The one current-challenge value both sources dedupe against, per run and
+// entrant. Two source-private lasts would disagree: the heuristic said 5, the
+// agent announced 6, commands touch 5 again — a tracker-private last is still
+// 5, so nothing fires and the snapshot stays stuck on 6.
+const currentByEntrant = new Map<string, number>();
 
-  constructor(private readonly addressIndex: ReadonlyMap<string, number>) {}
+function entrantKey(runId: string, entrantId: string): string {
+  return `${runId}:${entrantId}`;
+}
 
-  observe(detail: string): ChallengeGuess | undefined {
-    const guess = matchChallenge(detail, this.addressIndex);
-    if (guess === undefined || guess.challengeId === this.current) return undefined;
-    this.current = guess.challengeId;
-    return guess;
-  }
+export function currentChallenge(runId: string, entrantId: string): number | undefined {
+  return currentByEntrant.get(entrantKey(runId, entrantId));
+}
+
+// Callers journal first and record after, so an append that throws leaves the
+// retry journalling instead of deduping into silence.
+export function recordCurrentChallenge(runId: string, entrantId: string, challengeId: number): void {
+  currentByEntrant.set(entrantKey(runId, entrantId), challengeId);
+}
+
+export function dropCurrentChallenge(runId: string, entrantId: string): void {
+  currentByEntrant.delete(entrantKey(runId, entrantId));
 }

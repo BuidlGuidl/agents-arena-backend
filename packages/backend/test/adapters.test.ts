@@ -13,6 +13,7 @@ import {
   dropCredentialSecrets,
 } from '../src/adapters/credential-secrets.js';
 import { DockerEntrantDriver } from '../src/adapters/docker.js';
+import { recordCurrentChallenge } from '../src/ctf/challenge-tracker.js';
 import type { HarnessDriverOptions } from '../src/adapters/harness-driver.js';
 import { FakeDriver } from '../src/adapters/fake.js';
 import { OpenCodeDriver, scrubOpenCodeEnvironment } from '../src/adapters/opencode.js';
@@ -510,6 +511,36 @@ describe('current challenge heuristic', () => {
         { entrantId: context.entrant.id, challengeId: 3, via: 'command', evidence: 'Challenge3' },
         { entrantId: context.entrant.id, challengeId: 5, via: 'command', evidence: challenge5 },
       ]);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('lets a command move the value back after an announcement moved it away', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.push(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
+      turn.push(commandLine('item_1', 'cat /challenges/contracts/Challenge3.sol'));
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.challenge').length === 1);
+
+      // The agent announces 6 through the route; the shared current moves along.
+      recordCurrentChallenge(context.run.id, context.entrant.id, 6);
+
+      // The same challenge as before — a tracker-private last would still be 3
+      // and stay silent, leaving the snapshot stuck on the announcement.
+      turn.push(commandLine('item_2', 'cat /challenges/contracts/Challenge3.sol'));
+      turn.finish(0);
+
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.challenge').length === 2);
+      const latest = context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.challenge')
+        .at(-1);
+      expect(latest?.payload).toMatchObject({ challengeId: 3, via: 'command' });
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

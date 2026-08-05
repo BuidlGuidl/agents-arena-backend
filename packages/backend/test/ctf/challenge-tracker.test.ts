@@ -2,9 +2,11 @@ import { getAddress } from 'viem';
 import { describe, expect, it } from 'vitest';
 
 import {
-  ChallengeTracker,
   challengeAddressIndex,
+  currentChallenge,
+  dropCurrentChallenge,
   matchChallenge,
+  recordCurrentChallenge,
 } from '../../src/ctf/challenge-tracker.js';
 
 const challenge5 = getAddress('0x5FbDB2315678afecb367f032d93F642f64180aa3');
@@ -65,12 +67,26 @@ describe('matchChallenge', () => {
   });
 });
 
-describe('ChallengeTracker', () => {
-  it('reports a change once and stays quiet while the challenge holds', () => {
-    const tracker = new ChallengeTracker(index);
-    expect(tracker.observe('cat Challenge5.sol')?.challengeId).toBe(5);
-    expect(tracker.observe(`cast call ${challenge5} "locked()"`)).toBeUndefined();
-    expect(tracker.observe('ls')).toBeUndefined();
-    expect(tracker.observe('cat Challenge12.sol')?.challengeId).toBe(12);
+describe('current challenge store', () => {
+  it('holds one value per run and entrant, shared by both sources', () => {
+    try {
+      expect(currentChallenge('run-a', 'codex-1')).toBeUndefined();
+      recordCurrentChallenge('run-a', 'codex-1', 5);
+      expect(currentChallenge('run-a', 'codex-1')).toBe(5);
+      // Another entrant and another run each track their own value.
+      expect(currentChallenge('run-a', 'opencode-1')).toBeUndefined();
+      expect(currentChallenge('run-b', 'codex-1')).toBeUndefined();
+      // Either source moving the value is what the other dedupes against.
+      recordCurrentChallenge('run-a', 'codex-1', 6);
+      expect(currentChallenge('run-a', 'codex-1')).toBe(6);
+    } finally {
+      dropCurrentChallenge('run-a', 'codex-1');
+    }
+  });
+
+  it('forgets a dropped entrant', () => {
+    recordCurrentChallenge('run-c', 'codex-1', 3);
+    dropCurrentChallenge('run-c', 'codex-1');
+    expect(currentChallenge('run-c', 'codex-1')).toBeUndefined();
   });
 });

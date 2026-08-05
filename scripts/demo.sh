@@ -279,8 +279,10 @@ ensure_backend() {
       "lsof -nP -iTCP:$BACKEND_PORT -sTCP:LISTEN"
   fi
 
+  # The mock frontend has no funding controls, so the demo funds entrants itself.
   start_background backend "$ROOT_DIR" "$BACKEND_LOG" "$BACKEND_PID" \
     env ARENA_DB=:memory: PORT="$BACKEND_PORT" ARENA_OPERATOR_TOKEN="$(operator_token)" \
+    ARENA_LOCAL_FAUCET=true \
     fnm exec --using="$NODE_VERSION" pnpm --filter backend start
   wait_for_http "$BACKEND_PORT" "$BACKEND_PID" || \
     fail_with_fix 'The backend did not become ready. Read .demo/backend.log.' \

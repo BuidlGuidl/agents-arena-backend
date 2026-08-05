@@ -1,6 +1,11 @@
 node_modules/
 dist/
 coverage/
+
+# operator token and harness credentials — see .env.example
+.env
+.env.local
+
 *.db
 *.db-shm
 *.db-wal

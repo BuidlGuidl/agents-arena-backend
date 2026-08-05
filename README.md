@@ -55,9 +55,21 @@ Build the entrant image and run the backend:
 
 ```bash
 docker/build.sh                                # -> arena-entrant:dev
-export ARENA_OPERATOR_TOKEN=$(openssl rand -hex 24)   # required; controls are operator-only
-ARENA_DB=:memory: pnpm --filter backend dev    # Fastify on :4177
+cp .env.example .env                           # then fill in AI_CTF_REPO and the harness keys
+pnpm --filter backend dev                      # Fastify on :4177
 ```
+
+`.env` at the repo root is loaded by `dev` and `start` through Node's own `--env-file`, so
+the operator token and the harness credentials live in one gitignored file instead of a
+shell prompt. A variable already exported in the shell wins over the file, which keeps
+one-off overrides working:
+
+```bash
+ARENA_DB=:memory: pnpm --filter backend dev
+```
+
+Every variable is documented in `.env.example`. Node 22.9 or newer is required — that is
+where `--env-file-if-exists` landed.
 
 Create a run and watch the feed:
 

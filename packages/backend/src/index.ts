@@ -15,6 +15,11 @@ if (operatorToken.length === 0) {
   process.exit(1);
 }
 
+// The faucet tops entrants up the moment they exist, so the funding phase ends
+// before an operator can reach the fund button. An unattended run needs it; a
+// demo driven from the arena UI funds by hand.
+const localFaucetEnabled = process.env.ARENA_LOCAL_FAUCET === 'true';
+
 // Wallet login is optional: with no allowlist the arena stays token-only.
 const siwe = {
   operatorAddresses: parseCsvList(process.env.ARENA_OPERATOR_ADDRESSES),
@@ -29,7 +34,7 @@ const { app } = ((): ReturnType<typeof createServer> => {
       logger: true,
       fundingGateFactory: (journal) => {
         const fundingGate = createFundingGate(journal);
-        if (activeChainProfile.name !== 'local') {
+        if (activeChainProfile.name !== 'local' || !localFaucetEnabled) {
           return fundingGate;
         }
         const localFundingFlow: FundingGate = async (run, entrants, signal) => {

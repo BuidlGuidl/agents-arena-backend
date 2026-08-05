@@ -8,6 +8,7 @@ import {
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { issueAgentToken, revokeAgentToken } from '../src/agent-auth.js';
 import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
 import { isSecureRequest, MissingOperatorTokenError } from '../src/auth.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
@@ -34,6 +35,112 @@ const noopDriver: EntrantDriver = {
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(async ({ app }) => app.close()));
+});
+
+describe('agent self-announce', () => {
+  async function announceSetup() {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    const { run } = await server.manager.create({ preset: 'fake-duel' });
+    const token = issueAgentToken(run.id, 'codex-1');
+    return { server, runId: run.id, token };
+  }
+
+  function progressEvents(server: ArenaServer, runId: string) {
+    return server.journal.after(runId, 0).filter((event) => event.type === 'entrant.challenge');
+  }
+
+  it('journals an announcement and rejects everything unauthorized', async () => {
+    const { server, runId, token } = await announceSetup();
+    try {
+      const accepted = await server.app.inject({
+        method: 'POST',
+        url: '/agent/progress',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { challengeId: 5 },
+      });
+      expect(accepted.statusCode).toBe(200);
+      expect(accepted.json()).toEqual({ ok: true, changed: true });
+      expect(progressEvents(server, runId).map((event) => event.payload)).toEqual([
+        { entrantId: 'codex-1', challengeId: 5 },
+      ]);
+      expect(server.manager.snapshot(runId).entrants.find((entrant) => entrant.id === 'codex-1')
+        ?.currentChallengeId).toBe(5);
+
+      // No token, a wrong token, and the operator token all bounce: the route
+      // only trusts the per-entrant credential.
+      for (const headers of [
+        {},
+        { authorization: 'Bearer not-a-real-token' },
+        { authorization: `Bearer ${OPERATOR_TOKEN}` },
+      ]) {
+        const rejected = await server.app.inject({
+          method: 'POST', url: '/agent/progress', headers, payload: { challengeId: 5 },
+        });
+        expect(rejected.statusCode).toBe(401);
+      }
+    } finally {
+      revokeAgentToken(runId, 'codex-1');
+    }
+  });
+
+  it('validates the challenge id', async () => {
+    const { server, runId, token } = await announceSetup();
+    try {
+      for (const challengeId of [0, 13, 1.5, '5', undefined]) {
+        const response = await server.app.inject({
+          method: 'POST',
+          url: '/agent/progress',
+          headers: { authorization: `Bearer ${token}` },
+          payload: { challengeId },
+        });
+        expect(response.statusCode).toBe(400);
+      }
+      expect(progressEvents(server, runId)).toEqual([]);
+    } finally {
+      revokeAgentToken(runId, 'codex-1');
+    }
+  });
+
+  it('dedupes repeats and rate limits switches', async () => {
+    const { server, runId, token } = await announceSetup();
+    try {
+      const headers = { authorization: `Bearer ${token}` };
+      const first = await server.app.inject({
+        method: 'POST', url: '/agent/progress', headers, payload: { challengeId: 5 },
+      });
+      expect(first.json()).toEqual({ ok: true, changed: true });
+
+      // The same value repeats cheaply without a journal row or a 429.
+      const repeat = await server.app.inject({
+        method: 'POST', url: '/agent/progress', headers, payload: { challengeId: 5 },
+      });
+      expect(repeat.statusCode).toBe(200);
+      expect(repeat.json()).toEqual({ ok: true, changed: false });
+
+      // An immediate switch hits the announce interval instead of the journal.
+      const tooFast = await server.app.inject({
+        method: 'POST', url: '/agent/progress', headers, payload: { challengeId: 6 },
+      });
+      expect(tooFast.statusCode).toBe(429);
+      expect(progressEvents(server, runId)).toHaveLength(1);
+    } finally {
+      revokeAgentToken(runId, 'codex-1');
+    }
+  });
+
+  it('stops resolving a revoked token', async () => {
+    const { server, runId, token } = await announceSetup();
+    revokeAgentToken(runId, 'codex-1');
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/agent/progress',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { challengeId: 5 },
+    });
+    expect(response.statusCode).toBe(401);
+    expect(progressEvents(server, runId)).toEqual([]);
+  });
 });
 
 describe('event history', () => {
@@ -961,7 +1068,7 @@ describe('fake run vertical slice', () => {
       expect(entrantEvents.map((event) => event.type))
         .toEqual([
           'entrant.status', 'agent.message', 'tool.call', 'tool.result',
-          'usage', 'entrant.status', 'usage',
+          'usage', 'entrant.status', 'usage', 'entrant.challenge', 'entrant.challenge',
         ]);
       const toolEvents = entrantEvents.filter((event) =>
         event.type === 'tool.call' || event.type === 'tool.result',

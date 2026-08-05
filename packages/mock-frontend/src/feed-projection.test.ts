@@ -482,6 +482,7 @@ describe('deriveWaitingRoom', () => {
       inputTokens: 0,
       outputTokens: 0,
       costUsd: null,
+      currentChallengeId: null,
     };
   }
 

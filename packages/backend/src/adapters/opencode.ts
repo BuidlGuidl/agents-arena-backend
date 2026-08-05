@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { issueAgentToken } from '../agent-auth.js';
 import type { EventJournal } from '../journal.js';
 import type { EntrantContainer } from '../runtime/container.js';
 import { getWallet } from '../chain/wallet.js';
@@ -54,6 +55,8 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
       env: scrubOpenCodeEnvironment({
         OPENROUTER_API_KEY: apiKey,
         ETH_RPC_URL: this.rpcUrl,
+        ARENA_API_URL: this.agentApiUrl,
+        ARENA_AGENT_TOKEN: issueAgentToken(run.id, entrant.id),
         ...(wallet === null
           ? {}
           : {

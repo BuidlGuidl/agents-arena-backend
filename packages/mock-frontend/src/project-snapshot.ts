@@ -33,6 +33,15 @@ export function projectSnapshot(current: RunSnapshot | undefined, event: ArenaEv
         : entrant),
     };
   }
+  if (event.type === 'entrant.challenge') {
+    return {
+      ...current,
+      lastEventId: event.id,
+      entrants: current.entrants.map((entrant) => entrant.id === event.payload.entrantId
+        ? { ...entrant, currentChallengeId: event.payload.challengeId }
+        : entrant),
+    };
+  }
   if (event.type === 'usage') {
     const { entrantId, inputTokens, outputTokens, costUsd } = event.payload;
     return {

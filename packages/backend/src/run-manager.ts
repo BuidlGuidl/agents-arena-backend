@@ -228,6 +228,7 @@ export class RunManager {
       const run = this.requireRun(runId);
       const solvesByEntrant = this.solvesByEntrant(runId);
       const usageByEntrant = this.usageByEntrant(runId);
+      const challengeByEntrant = this.challengeByEntrant(runId);
       const entrantSummaries = this.entrants(runId).map<EntrantSummary>((entrant) => {
         const solves = solvesByEntrant.get(entrant.id) ?? [];
         const usage = usageByEntrant.get(entrant.id) ?? EMPTY_USAGE;
@@ -243,6 +244,7 @@ export class RunManager {
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
           costUsd: usage.costUsd,
+          currentChallengeId: challengeByEntrant.get(entrant.id) ?? null,
         };
       });
       const lastEvent = this.journal.database
@@ -696,6 +698,23 @@ export class RunManager {
       outputTokens: row.outputTokens,
       costUsd: row.costUsd === null ? null : roundUsd(row.costUsd),
     }]));
+  }
+
+  // The latest entrant.challenge guess per entrant — the same rows the live feed
+  // ships, so a reload lands where the client already was.
+  private challengeByEntrant(runId: string): Map<string, number> {
+    const entrantId = sql<string>`json_extract(${events.payloadJson}, '$.entrantId')`;
+    const rows = this.journal.database
+      .select({
+        entrantId,
+        challengeId: sql<number>`json_extract(${events.payloadJson}, '$.challengeId')`,
+      })
+      .from(events)
+      .where(and(eq(events.runId, runId), eq(events.type, 'entrant.challenge')))
+      .orderBy(asc(events.id))
+      .all();
+
+    return new Map(rows.map((row) => [row.entrantId, row.challengeId]));
   }
 
   private entrants(runId: string): EntrantRecord[] {

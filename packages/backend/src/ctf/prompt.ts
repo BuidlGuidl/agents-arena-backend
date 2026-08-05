@@ -56,6 +56,9 @@ export function buildOpeningPrompt(entrant: EntrantRecord, profile: ChainProfile
     'How to play:',
     '- Work on your own and start right away. Do not ask for clarification. Explore the chain yourself and make progress.',
     '- Each turn, take a concrete step: inspect a contract, call a function, or check your progress. Prefer doing over explaining.',
+    // The self-announce channel (#4). $-references keep the token out of this
+    // prompt, which is journalled verbatim as entrant.prompt.
+    '- When you start working on a challenge, and again whenever you switch, announce it to the arena: curl -fsS -X POST "$ARENA_API_URL/agent/progress" -H "authorization: Bearer $ARENA_AGENT_TOKEN" -H "content-type: application/json" -d \'{"challengeId": N}\' with N replaced by the challenge number.',
     '',
     'Begin now.',
   ].join('\n');

@@ -764,6 +764,15 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
         <span className="stat" data-testid={`lane-cost-${entrant.id}`}>
           cost <b>{formatCost(entrant.costUsd)}</b>
         </span>
+        {entrant.currentChallengeId !== null ? (
+          <span
+            className="stat"
+            data-testid={`lane-current-${entrant.id}`}
+            title="announced by the agent, or guessed from its commands"
+          >
+            now <b>#{entrant.currentChallengeId}</b>
+          </span>
+        ) : null}
       </div>
 
       {entrant.solves.length > 0 ? (

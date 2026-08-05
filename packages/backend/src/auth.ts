@@ -7,8 +7,9 @@ import { SESSION_COOKIE, type SiweLogin } from './siwe.js';
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 // The login pair cannot require a credential: one mints the session, the other
-// destroys it. Everything else that mutates goes through the gate.
-const OPEN_ROUTES = new Set(['/auth/verify', '/auth/logout']);
+// destroys it. The agent route carries its own per-entrant bearer, checked in
+// the handler. Everything else that mutates goes through the gate.
+const OPEN_ROUTES = new Set(['/auth/verify', '/auth/logout', '/agent/progress']);
 
 export class MissingOperatorTokenError extends Error {}
 
@@ -108,7 +109,7 @@ function routePath(request: FastifyRequest): string {
   return path ?? request.url;
 }
 
-function bearerToken(header: string | undefined): string | undefined {
+export function bearerToken(header: string | undefined): string | undefined {
   if (header === undefined) return undefined;
   const match = /^Bearer[ ]+(.+)$/i.exec(header.trim());
   return match?.[1];

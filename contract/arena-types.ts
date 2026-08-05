@@ -47,6 +47,9 @@ export interface EntrantSummary {
   // USD across the turns that carried a cost; null when none did. Display only —
   // harnesses on a subscription login report tokens without a price.
   costUsd: number | null;
+  // A guess, not a report: the last challenge the entrant's commands touched
+  // (see entrant.challenge). Null until a command names one.
+  currentChallengeId: number | null;
 }
 
 export interface RunSnapshot {
@@ -82,6 +85,10 @@ export type ArenaEvent =
   | (ArenaEventBase & { type: 'wallet.assigned'; payload: { entrantId: string; address: string } })
   | (ArenaEventBase & { type: 'funding.balance'; payload: { entrantId: string; address: string; wei: string; funded: boolean } })
   | (ArenaEventBase & { type: 'score.flag'; payload: { entrantId: string; challengeId: number; txHash: string; tokenId: string } })
+  // The agent's own announcement of the challenge it works on, through
+  // POST /agent/progress. Fires only when the value changes, and is append-only:
+  // the UI takes the latest one per entrant (#4).
+  | (ArenaEventBase & { type: 'entrant.challenge'; payload: { entrantId: string; challengeId: number } })
   | (ArenaEventBase & { type: 'entrant.error'; payload: { entrantId: string; message: string } })
   | (ArenaEventBase & { type: 'run.error'; payload: { message: string } })
   // Tokens count only what this event covers — codex emits one per turn, opencode

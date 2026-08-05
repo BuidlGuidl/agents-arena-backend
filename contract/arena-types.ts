@@ -53,8 +53,13 @@ export interface RunSnapshot {
   id: string;
   state: RunState;
   preset: string;
+  // Chain the run's wallets and flag mints live on. Clients must read it from
+  // here — not hardcode 31337 — for the seed signature and explorer links.
+  chainId: number;
   entrants: EntrantSummary[];
   startedAt: string | null;
+  // Display only. The backend never stops a run at the deadline; the operator
+  // stops the race. Set from durationMs when the run enters `running`.
   deadlineAt: string | null;
   lastEventId: number;
 }
@@ -121,11 +126,18 @@ export interface CreateRunRequest {
   autoStart?: boolean;
   idempotencyKey?: string;
   roster?: RosterEntry[];
+  // Race length; resolves to RunSnapshot.deadlineAt when the run enters
+  // `running`. Display only — see the note there.
+  durationMs?: number;
 }
 
-export interface CreateRunResponse {
+// Every run endpoint — create, get, start, seed, stop — wraps the snapshot in
+// this same envelope.
+export interface RunResponse {
   run: RunSnapshot;
 }
+
+export type CreateRunResponse = RunResponse;
 
 export interface SteerRequest {
   text: string;

@@ -1,3 +1,4 @@
+import fastifyCors from '@fastify/cors';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Hex } from 'viem';
 import { z } from 'zod';
@@ -69,6 +70,7 @@ const createRunSchema = z.object({
   preset: z.string().min(1),
   autoStart: z.boolean().optional(),
   idempotencyKey: z.string().min(1).optional(),
+  durationMs: z.number().int().min(60_000).max(86_400_000).optional(),
   roster: z.array(rosterEntrySchema)
     .min(1)
     .max(10)
@@ -109,6 +111,7 @@ export interface ServerOptions {
   driverFactory?: (journal: EventJournal) => EntrantDriver;
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
   solveWatchFactory?: (journal: EventJournal) => SolveWatch;
+  corsOrigins?: readonly string[];
   logger?: boolean;
 }
 
@@ -120,6 +123,14 @@ export interface ArenaServer {
 
 export function createServer(options: ServerOptions): ArenaServer {
   const app = Fastify({ logger: options.logger ?? false });
+  if (options.corsOrigins !== undefined && options.corsOrigins.length > 0) {
+    void app.register(fastifyCors, {
+      origin: [...options.corsOrigins],
+      credentials: true,
+      methods: ['GET', 'POST', 'HEAD', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+    });
+  }
   const login = new SiweLogin(options.siwe ?? { operatorAddresses: [] });
   app.addHook('onRequest', operatorAuth({ token: options.operatorToken, login }));
   const journal = new EventJournal(options.dbPath);
@@ -229,6 +240,7 @@ export function createServer(options: ServerOptions): ArenaServer {
       preset: body.preset,
       ...(body.autoStart === undefined ? {} : { autoStart: body.autoStart }),
       ...(body.idempotencyKey === undefined ? {} : { idempotencyKey: body.idempotencyKey }),
+      ...(body.durationMs === undefined ? {} : { durationMs: body.durationMs }),
       ...(body.roster === undefined ? {} : {
         roster: body.roster.map((entry): RosterEntry => ({
           id: entry.id,
@@ -427,6 +439,11 @@ function openEventStream(
   afterId: number,
 ): void {
   reply.hijack();
+  // hijack() bypasses Fastify's send pipeline, so headers staged by hooks —
+  // the CORS headers in particular — must be copied onto the raw response.
+  for (const [name, value] of Object.entries(reply.getHeaders())) {
+    if (value !== undefined) reply.raw.setHeader(name, value);
+  }
   reply.raw.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',

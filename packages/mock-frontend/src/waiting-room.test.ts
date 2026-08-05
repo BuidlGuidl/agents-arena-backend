@@ -6,7 +6,6 @@ import {
   isWaitingRoomState,
   looksLikeSignature,
   requestSeedSignature,
-  SEED_CHAIN_ID,
   seedErrorMessage,
   seedTypedData,
   walletErrorMessage,
@@ -14,6 +13,7 @@ import {
 } from './waiting-room';
 
 const SIGNATURE = `0x${'ab'.repeat(65)}`;
+const TEST_CHAIN_ID = 31337;
 
 // Records every RPC the component makes, so the test can assert the order the
 // wallet is driven in as well as the result.
@@ -42,13 +42,13 @@ function fakeWallet(overrides: Partial<Record<string, unknown>> = {}): {
 
 describe('seedTypedData', () => {
   it('matches the backend builder byte for byte as JSON', () => {
-    expect(JSON.stringify(seedTypedData('run-1', SEED_CHAIN_ID)))
+    expect(JSON.stringify(seedTypedData('run-1', TEST_CHAIN_ID)))
       .toBe(JSON.stringify(backendSeedTypedData('run-1', 31337)));
   });
 
   it('varies per run, because every run needs virgin wallets', () => {
-    expect(JSON.stringify(seedTypedData('run-1', SEED_CHAIN_ID)))
-      .not.toBe(JSON.stringify(seedTypedData('run-2', SEED_CHAIN_ID)));
+    expect(JSON.stringify(seedTypedData('run-1', TEST_CHAIN_ID)))
+      .not.toBe(JSON.stringify(seedTypedData('run-2', TEST_CHAIN_ID)));
   });
 });
 
@@ -105,7 +105,7 @@ describe('seedErrorMessage', () => {
 describe('requestSeedSignature', () => {
   it('sends the account first and exact typed-data JSON second for v4', async () => {
     const { provider, calls } = fakeWallet();
-    const typedData = seedTypedData('1', SEED_CHAIN_ID);
+    const typedData = seedTypedData('1', TEST_CHAIN_ID);
     const signature = await requestSeedSignature(provider, typedData);
     expect(signature).toBe(SIGNATURE);
     expect(calls.map((call) => call.method))
@@ -118,7 +118,7 @@ describe('requestSeedSignature', () => {
 
   it('keeps the typed-data JSON available when no wallet exists', () => {
     expect(injectedProvider()).toBeUndefined();
-    expect(JSON.stringify(seedTypedData('1', SEED_CHAIN_ID))).toBe(
+    expect(JSON.stringify(seedTypedData('1', TEST_CHAIN_ID))).toBe(
       '{"domain":{"name":"agents-arena","version":"1","chainId":31337},'
       + '"types":{"EIP712Domain":[{"name":"name","type":"string"},'
       + '{"name":"version","type":"string"},{"name":"chainId","type":"uint256"}],'
@@ -129,14 +129,14 @@ describe('requestSeedSignature', () => {
 
   it('throws when the wallet unlocks no account', async () => {
     const { provider } = fakeWallet({ eth_requestAccounts: [] });
-    await expect(requestSeedSignature(provider, seedTypedData('1', SEED_CHAIN_ID)))
+    await expect(requestSeedSignature(provider, seedTypedData('1', TEST_CHAIN_ID)))
       .rejects.toThrow('no account');
   });
 
   it('surfaces the wallet error rather than posting nothing', async () => {
     const rejection = Object.assign(new Error('User rejected the request.'), { code: 4001 });
     const { provider, calls } = fakeWallet({ eth_signTypedData_v4: rejection });
-    await expect(requestSeedSignature(provider, seedTypedData('1', SEED_CHAIN_ID)))
+    await expect(requestSeedSignature(provider, seedTypedData('1', TEST_CHAIN_ID)))
       .rejects.toThrow('User rejected');
     expect(calls.map((call) => call.method))
       .toEqual(['eth_requestAccounts', 'eth_signTypedData_v4']);

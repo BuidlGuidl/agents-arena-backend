@@ -7,6 +7,7 @@ import { InvalidOperatorAddressError, MissingSiweDomainError, parseCsvList } fro
 
 const port = Number(process.env.PORT ?? 4177);
 const operatorToken = (process.env.ARENA_OPERATOR_TOKEN ?? '').trim();
+const corsOrigins = parseCsvList(process.env.ARENA_CORS_ORIGINS);
 
 // Fail closed: a deploy that forgets the token would leave the run controls open.
 // Whitespace counts as forgotten — a blank token can never match a request.
@@ -26,6 +27,7 @@ const { app } = ((): ReturnType<typeof createServer> => {
     return createServer({
       operatorToken,
       siwe,
+      corsOrigins,
       logger: true,
       fundingGateFactory: (journal) => {
         const fundingGate = createFundingGate(journal);

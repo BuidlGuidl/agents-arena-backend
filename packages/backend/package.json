@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fastify/cors": "^11.3.0",
     "better-sqlite3": "^11.7.0",
     "dockerode": "^4.0.2",
     "drizzle-orm": "^0.38.3",

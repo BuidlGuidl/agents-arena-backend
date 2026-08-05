@@ -29,6 +29,7 @@ const run: RunRecord = {
   preset: `demo-${harness}`,
   startedAt: now,
   deadlineAt: null,
+  durationMs: null,
   idempotencyKey: null,
 };
 const entrant: EntrantRecord = {

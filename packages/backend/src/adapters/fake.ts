@@ -66,11 +66,11 @@ export class FakeDriver implements EntrantDriver {
       [100, () => this.setStatus(run.id, entrant.id, 'idle')],
       // The second turn repeats the first turn's context, so most of it is cached.
       [5_500, () => this.emitUsage(run, entrant, 2_400, 320, 1_800)],
-      // Scripted self-announcements ahead of each solve, so a fake duel exercises
-      // the entrant.challenge rendering without a live agent.
+      // Scripted guesses ahead of each solve — alternating sources, so a fake
+      // duel exercises both the heuristic and the self-announce renderings.
       ...scriptedFlags.map((challengeId, index) => [
         60 + index * 5_000,
-        () => this.emitChallenge(run, entrant, challengeId),
+        () => this.emitChallenge(run, entrant, challengeId, index % 2 === 0 ? 'command' : 'self'),
       ] as const),
       // Scripted captures through the real dual-write path, so a fake duel
       // exercises the solves UI (event and snapshot alike) without a chain.
@@ -113,10 +113,13 @@ export class FakeDriver implements EntrantDriver {
     run: RunRecord,
     entrant: EntrantRecord,
     challengeId: number,
+    via: 'self' | 'command',
   ): void {
     this.journal.append(run.id, entrant.id, 'entrant.challenge', {
       entrantId: entrant.id,
       challengeId,
+      via,
+      evidence: via === 'self' ? 'announced' : `Challenge${challengeId}`,
     });
   }
 

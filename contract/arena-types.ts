@@ -94,10 +94,13 @@ export type ArenaEvent =
   | (ArenaEventBase & { type: 'wallet.assigned'; payload: { entrantId: string; address: string } })
   | (ArenaEventBase & { type: 'funding.balance'; payload: { entrantId: string; address: string; wei: string; funded: boolean } })
   | (ArenaEventBase & { type: 'score.flag'; payload: { entrantId: string; challengeId: number; txHash: string; tokenId: string } })
-  // The agent's own announcement of the challenge it works on, through
-  // POST /agent/progress. Fires only when the value changes, and is append-only:
-  // the UI takes the latest one per entrant (#4).
-  | (ArenaEventBase & { type: 'entrant.challenge'; payload: { entrantId: string; challengeId: number } })
+  // Two sources, latest wins. `via: 'self'` is the agent's own announcement
+  // through POST /agent/progress. `via: 'command'` is a heuristic: emitted when
+  // a tool command references exactly one challenge by name or deployed
+  // address. Both fire only when the value changes, and `evidence` says where
+  // it came from (the matched token, or "announced"), so a guess reads as a
+  // guess. Append-only by design — the UI takes the latest one per entrant (#4).
+  | (ArenaEventBase & { type: 'entrant.challenge'; payload: { entrantId: string; challengeId: number; via: 'self' | 'command'; evidence: string } })
   | (ArenaEventBase & { type: 'entrant.error'; payload: { entrantId: string; message: string } })
   | (ArenaEventBase & { type: 'run.error'; payload: { message: string } })
   // Tokens count only what this event covers — codex emits one per turn, opencode

@@ -113,13 +113,13 @@ describe('projectSnapshot', () => {
       seq: 2,
       ts: '2026-07-22T00:00:03.000Z',
       type: 'entrant.challenge',
-      payload: { entrantId: 'codex-1', challengeId: 3 },
+      payload: { entrantId: 'codex-1', challengeId: 3, via: 'command', evidence: 'Challenge3' },
     };
     const next: ArenaEvent = {
       ...event,
       id: 6,
       seq: 3,
-      payload: { entrantId: 'codex-1', challengeId: 11 },
+      payload: { entrantId: 'codex-1', challengeId: 11, via: 'self', evidence: 'announced' },
     };
 
     const once = projectSnapshot(snapshot, event);

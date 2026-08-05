@@ -11,7 +11,8 @@ import type {
 } from '../runtime/container.js';
 import { createDockerContainer } from '../runtime/container.js';
 import { revokeAgentToken } from '../agent-auth.js';
-import type { ChallengePackResolver } from '../ctf/resolve.js';
+import { ChallengeTracker, challengeAddressIndex } from '../ctf/challenge-tracker.js';
+import type { ChallengePackAccess, ChallengePackResolver } from '../ctf/resolve.js';
 import { EntrantUnavailableError, type EntrantDriver, type EntrantRecord, type RunRecord } from './types.js';
 import type { HarnessLineParser, ParsedArenaEvent, ParserLogger } from './parser-types.js';
 
@@ -23,6 +24,9 @@ export interface HarnessDriverOptions {
   // into every entrant container. Throwing here fails prepare, which is how a
   // missing ai-ctf checkout surfaces (ADR-0009).
   resolveChallengePack?: ChallengePackResolver;
+  // The pack's deployed addresses, for the current-challenge heuristic. Absent
+  // on briefing-URL profiles, where only name matching applies.
+  challengeAddresses?: ChallengePackAccess['addressesFor'];
   // The backend base URL as seen from inside an entrant container, for the
   // agent-facing routes (POST /agent/progress).
   agentApiUrl?: string;
@@ -39,6 +43,8 @@ interface EntrantRuntimeState {
   sessionId?: string;
   active: RuntimeExecution | undefined;
   turnTask: Promise<void> | undefined;
+  // Lazy: built on the first tool.call, when the pack addresses already exist.
+  tracker?: ChallengeTracker;
 }
 
 export abstract class HarnessEntrantDriver implements EntrantDriver {
@@ -46,6 +52,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   protected readonly rpcUrl: string;
   protected readonly agentApiUrl: string;
   protected readonly logger: ParserLogger;
+  private readonly challengeAddresses: ChallengePackAccess['addressesFor'] | undefined;
   private readonly states = new Map<string, EntrantRuntimeState>();
   // Keyed like states — by run and entrant, not by entrant alone. Entrant ids are
   // preset literals, so two runs in flight would otherwise share one parser and
@@ -72,6 +79,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       ?? process.env.ARENA_AGENT_API_URL
       ?? `http://host.docker.internal:${process.env.PORT ?? 4177}`;
     this.logger = options.logger ?? console;
+    this.challengeAddresses = options.challengeAddresses;
   }
 
   async prepare(run: RunRecord, entrant: EntrantRecord): Promise<void> {
@@ -351,7 +359,10 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     switch (event.type) {
       case 'agent.message': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'agent.reasoning': this.journal.append(runId, entrantId, event.type, event.payload); break;
-      case 'tool.call': this.journal.append(runId, entrantId, event.type, event.payload); break;
+      case 'tool.call':
+        this.journal.append(runId, entrantId, event.type, event.payload);
+        this.trackProgress(state, event.payload.detail);
+        break;
       case 'tool.result': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'entrant.error': this.journal.append(runId, entrantId, event.type, event.payload); break;
       // A harness that prices its own turns wins; otherwise the rate table fills in.
@@ -366,6 +377,22 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       }); break;
       default: this.logger.warn(`[${this.harnessName()}] parser returned unsupported event ${event.type}`);
     }
+  }
+
+  // The heuristic behind entrant.challenge: a command that references exactly one
+  // challenge moves the entrant's current-challenge guess (see contract notes).
+  private trackProgress(state: EntrantRuntimeState, detail: string): void {
+    state.tracker ??= new ChallengeTracker(
+      challengeAddressIndex(this.challengeAddresses?.(state.run.id) ?? {}),
+    );
+    const guess = state.tracker.observe(detail);
+    if (guess === undefined) return;
+    this.journal.append(state.run.id, state.entrant.id, 'entrant.challenge', {
+      entrantId: state.entrant.id,
+      challengeId: guess.challengeId,
+      via: 'command',
+      evidence: guess.evidence,
+    });
   }
 
   private appendError(state: EntrantRuntimeState, message: string): void {

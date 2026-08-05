@@ -9,6 +9,13 @@ import { assembleChallengePack, type ChallengePack } from './pack.js';
 
 export type ChallengePackResolver = (runId: string) => string;
 
+// The pack directory feeds the container mount; the addresses feed the
+// current-challenge heuristic. Both come from the same assembly.
+export interface ChallengePackAccess {
+  resolve: ChallengePackResolver;
+  addressesFor(runId: string): Readonly<Record<string, Address>> | undefined;
+}
+
 const PACK_ROOT = 'arena-challenge-pack';
 
 // Packs are kept per run so a second entrant preparing does not rebuild the
@@ -49,17 +56,17 @@ export function assertPackMatchesProfile(pack: ChallengePack, profile: ChainProf
 // no pack (ADR-0009).
 export function createChallengePackResolver(
   profile: ChainProfile,
-): ChallengePackResolver | undefined {
+): ChallengePackAccess | undefined {
   if (profile.briefingUrl !== undefined) {
     return undefined;
   }
 
-  const built = new Map<string, string>();
+  const built = new Map<string, ChallengePack>();
 
-  return (runId) => {
+  const resolve: ChallengePackResolver = (runId) => {
     const existing = built.get(runId);
     if (existing !== undefined) {
-      return existing;
+      return existing.dir;
     }
 
     const aiCtfRepo = process.env.AI_CTF_REPO;
@@ -71,17 +78,22 @@ export function createChallengePackResolver(
 
     const pack = assembleChallengePack({ aiCtfRepo, outDir: join(tmpdir(), PACK_ROOT, runId) });
     assertPackMatchesProfile(pack, profile);
-    built.set(runId, pack.dir);
+    built.set(runId, pack);
 
     // A Map iterates in insertion order, so the first entry is the oldest run.
     while (built.size > MAX_RETAINED_PACKS) {
       const oldest = built.entries().next();
       if (oldest.done === true) break;
-      const [oldestRunId, oldestDir] = oldest.value;
+      const [oldestRunId, oldestPack] = oldest.value;
       built.delete(oldestRunId);
-      rmSync(oldestDir, { recursive: true, force: true });
+      rmSync(oldestPack.dir, { recursive: true, force: true });
     }
 
     return pack.dir;
+  };
+
+  return {
+    resolve,
+    addressesFor: (runId) => built.get(runId)?.addresses,
   };
 }

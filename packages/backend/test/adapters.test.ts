@@ -13,6 +13,7 @@ import {
   dropCredentialSecrets,
 } from '../src/adapters/credential-secrets.js';
 import { DockerEntrantDriver } from '../src/adapters/docker.js';
+import type { HarnessDriverOptions } from '../src/adapters/harness-driver.js';
 import { FakeDriver } from '../src/adapters/fake.js';
 import { OpenCodeDriver, scrubOpenCodeEnvironment } from '../src/adapters/opencode.js';
 import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
@@ -153,6 +154,7 @@ async function setup(
   withWallet = false,
   model?: string,
   effort?: EntrantRecord['effort'],
+  challengeAddresses?: HarnessDriverOptions['challengeAddresses'],
 ): Promise<{
   journal: EventJournal;
   driver: EntrantDriver;
@@ -191,24 +193,27 @@ async function setup(
     return container;
   };
   let driver: EntrantDriver;
+  const addressOptions = challengeAddresses === undefined ? {} : { challengeAddresses };
   let authPath: string | undefined;
   if (harness === 'codex') {
     const authDirectory = await mkdtemp(join(tmpdir(), 'arena-test-auth-'));
     temporaryPaths.push(authDirectory);
     authPath = join(authDirectory, 'auth.json');
     await writeFile(authPath, testCodexAuth);
-    driver = new CodexDriver(journal, { authPath, containerFactory });
+    driver = new CodexDriver(journal, { authPath, containerFactory, ...addressOptions });
   } else if (harness === 'opencode') {
     driver = new OpenCodeDriver(journal, {
       apiKey: testCredentials.opencode,
       containerFactory,
       turnWatchdogMs: watchdogMs,
+      ...addressOptions,
     });
   } else {
     driver = new ClaudeDriver(journal, {
       oauthToken: testCredentials.claude,
       containerFactory,
       turnWatchdogMs: watchdogMs,
+      ...addressOptions,
     });
   }
   await driver.prepare(run, entrant);
@@ -464,6 +469,67 @@ describe('usage cost', () => {
       await waitFor(() => context.journal.after(context.run.id, 0).some((event) => event.type === 'usage'));
       const usage = context.journal.after(context.run.id, 0).find((event) => event.type === 'usage');
       expect(usage?.payload).toMatchObject({ inputTokens: 109, outputTokens: 3, costUsd: 0.0042 });
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+});
+
+describe('current challenge heuristic', () => {
+  const challenge5 = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
+
+  function commandLine(id: string, command: string): string {
+    return JSON.stringify({
+      type: 'item.started',
+      item: { id, type: 'command_execution', command },
+    });
+  }
+
+  it('journals a progress guess per challenge the commands touch', async () => {
+    const context = await setup('codex', undefined, false, undefined, undefined, () => ({
+      Challenge5: challenge5,
+    }));
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.push(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
+      turn.push(commandLine('item_1', 'cat /challenges/BRIEFING.md'));
+      turn.push(commandLine('item_2', 'cat /challenges/contracts/Challenge3.sol'));
+      // The same challenge again: the guess holds, no new event.
+      turn.push(commandLine('item_3', 'cat /challenges/contracts/Challenge3.sol'));
+      turn.push(commandLine('item_4', `cast call ${challenge5} "locked()"`));
+      turn.finish(0);
+
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.challenge').length === 2);
+      const guesses = context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.challenge')
+        .map((event) => event.payload);
+      expect(guesses).toEqual([
+        { entrantId: context.entrant.id, challengeId: 3, via: 'command', evidence: 'Challenge3' },
+        { entrantId: context.entrant.id, challengeId: 5, via: 'command', evidence: challenge5 },
+      ]);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('guesses by name alone when the profile has no pack addresses', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.push(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
+      turn.push(commandLine('item_1', 'forge script solve-challenge7.s.sol'));
+      turn.finish(0);
+
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .some((event) => event.type === 'entrant.challenge'));
+      const guess = context.journal.after(context.run.id, 0)
+        .find((event) => event.type === 'entrant.challenge');
+      expect(guess?.payload).toMatchObject({ challengeId: 7 });
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

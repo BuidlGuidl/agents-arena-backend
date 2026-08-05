@@ -62,7 +62,7 @@ describe('agent self-announce', () => {
       expect(accepted.statusCode).toBe(200);
       expect(accepted.json()).toEqual({ ok: true, changed: true });
       expect(progressEvents(server, runId).map((event) => event.payload)).toEqual([
-        { entrantId: 'codex-1', challengeId: 5 },
+        { entrantId: 'codex-1', challengeId: 5, via: 'self', evidence: 'announced' },
       ]);
       expect(server.manager.snapshot(runId).entrants.find((entrant) => entrant.id === 'codex-1')
         ?.currentChallengeId).toBe(5);

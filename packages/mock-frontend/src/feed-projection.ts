@@ -211,7 +211,9 @@ export function describeEvent(event: ArenaEvent): string {
     case 'score.flag':
       return `flag challenge ${event.payload.challengeId} token ${event.payload.tokenId} (${event.payload.txHash})`;
     case 'entrant.challenge':
-      return `now on challenge ${event.payload.challengeId}`;
+      return event.payload.via === 'self'
+        ? `now on challenge ${event.payload.challengeId} (announced)`
+        : `now on challenge ${event.payload.challengeId} (guessed from ${event.payload.evidence})`;
     case 'entrant.error':
       return `error: ${event.payload.message}`;
     case 'run.error':

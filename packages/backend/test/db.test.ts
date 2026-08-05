@@ -14,6 +14,39 @@ afterEach(async () => {
 });
 
 describe('openArenaDatabase', () => {
+  it('adds duration_ms to an existing runs table', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'arena-db-test-'));
+    temporaryPaths.push(directory);
+    const path = join(directory, 'arena.db');
+
+    const legacy = new Database(path);
+    legacy.exec(`
+      CREATE TABLE runs (
+        id TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        preset TEXT NOT NULL,
+        started_at TEXT,
+        deadline_at TEXT,
+        idempotency_key TEXT UNIQUE,
+        created_at TEXT NOT NULL
+      );
+    `);
+    legacy.close();
+
+    const { sqlite } = openArenaDatabase(path);
+    try {
+      sqlite.prepare(
+        'INSERT INTO runs (id, state, preset, duration_ms, created_at) VALUES (?, ?, ?, ?, ?)',
+      ).run('run-1', 'created', 'fake-duel', 60_000, new Date().toISOString());
+      const row = sqlite.prepare('SELECT duration_ms FROM runs WHERE id = ?').get('run-1') as {
+        duration_ms: number;
+      };
+      expect(row.duration_ms).toBe(60_000);
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it('adds the effort column to a database created before rosters', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'arena-db-test-'));
     temporaryPaths.push(directory);

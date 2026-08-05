@@ -40,6 +40,7 @@ export const runs = sqliteTable('runs', {
   preset: text('preset').notNull(),
   startedAt: text('started_at'),
   deadlineAt: text('deadline_at'),
+  durationMs: integer('duration_ms'),
   idempotencyKey: text('idempotency_key').unique(),
   createdAt: text('created_at').notNull(),
 });

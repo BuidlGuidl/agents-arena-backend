@@ -36,14 +36,55 @@ Transport is each CLI's line-JSON stdout (`codex --json`, `opencode --format jso
 
 TypeScript on Node, one pnpm workspace, `tsx` (no build step), vitest. Fastify (HTTP + SSE), drizzle-orm + better-sqlite3 (the journal), viem (chain reads, signatures, and the local dev faucet), dockerode (containers). Mock frontend: Vite + React + TanStack Query + native EventSource. One pinned Docker image carries Foundry, the `codex`, `opencode`, and `claude` CLIs, and the in-container runner.
 
-## Run it
+## Setup
+
+### Before you start
+
+| You need | Why |
+| -------- | --- |
+| **Node 22** | Node 24 does not work. pnpm refuses to switch to the pinned 9.14.2, and `better-sqlite3` fails to load. Install it with `fnm install 22` or `nvm install 22`. |
+| **pnpm 9.14.2** | Pinned in `packageManager`. `corepack enable && corepack prepare pnpm@9.14.2 --activate` under Node 22. |
+| **Docker, running** | Every entrant gets its own container. Check with `docker info`. |
+| **A checkout of [ai.ctf.buidlguidl.com](https://github.com/BuidlGuidl/ai.ctf.buidlguidl.com)** | It holds the chain, the contracts, and the challenge text. The backend assembles the challenge pack from it and reads the deployed addresses. |
+
+Each harness reads one credential from the host. Nothing is committed. One missing
+credential fails the whole run, not only the entrant that needed it:
+
+| Harness | Credential |
+| ------- | ---------- |
+| `codex` | `~/.codex/auth.json`. No variable. Leave the model as `default` for a ChatGPT-account login, because API-only model ids are rejected. |
+| `opencode` | `OPENROUTER_API_KEY`, or its own `auth.json`. |
+| `claude` | `CLAUDE_CODE_OAUTH_TOKEN`, from `claude setup-token`. |
+
+Claude Code reads `ANTHROPIC_API_KEY` first. Unset it, or it overrides the token above and
+you never find out why.
+
+Four ports are in play:
+
+| Port | Service |
+| ---- | ------- |
+| 8545 | Hardhat chain, from the ai-ctf repo |
+| 4177 | This backend |
+| 5173 | The mock frontend in this repo |
+| 3000 | The real arena UI, in the ai-ctf repo |
+
+### Steps
+
+Install and check the tree is healthy:
 
 ```bash
 pnpm install
 pnpm -r typecheck && pnpm -r test
 ```
 
-Start the dev chain — the ai-ctf repo's own local Scaffold-ETH node:
+Build the entrant image. This takes a few minutes the first time, and it bakes Foundry and
+all three agent CLIs into one image:
+
+```bash
+docker/build.sh        # -> arena-entrant:dev
+```
+
+Start the chain and deploy the contracts, in the ai-ctf repo:
 
 ```bash
 # in the ai-ctf repo
@@ -51,13 +92,52 @@ yarn chain        # hardhat node on :8545
 yarn deploy       # 12 challenges + NFTFlags + registry
 ```
 
-Build the entrant image and run the backend:
+Leave `yarn chain` running. Redeploy whenever you restart it, because the backend
+cross-checks the deployed addresses against the chain profile and refuses to prepare a run
+when they disagree.
+
+Configure the backend:
 
 ```bash
-docker/build.sh                                # -> arena-entrant:dev
-export ARENA_OPERATOR_TOKEN=$(openssl rand -hex 24)   # required; controls are operator-only
-ARENA_DB=:memory: pnpm --filter backend dev    # Fastify on :4177
+cp .env.example .env
 ```
+
+Set `AI_CTF_REPO` to the absolute path of your ai-ctf checkout, then fill in the harness
+credentials. Every variable is documented in that file. `ARENA_OPERATOR_TOKEN` is required
+and the server exits without it; any non-empty string works locally.
+
+`.env` at the repo root is loaded by `dev` and `start` through Node's own `--env-file`, so
+the operator token and the credentials live in one gitignored file instead of a shell
+prompt. A variable already exported in the shell wins over the file, which keeps one-off
+overrides working:
+
+```bash
+ARENA_DB=:memory: pnpm --filter backend dev
+```
+
+Start it, on Node 22:
+
+```bash
+fnm use 22                     # or: nvm use 22
+pnpm --filter backend dev      # Fastify on :4177
+```
+
+### Driving a run
+
+There are two frontends, and they are not interchangeable.
+
+**The mock frontend, in this repo.** It exists so the backend team can exercise the whole
+slice without the real UI. It renders one lane per entrant and a run log. It has no funding
+controls, so pass `ARENA_LOCAL_FAUCET=true` to the backend and the run funds itself and
+starts on its own.
+
+**The arena UI, in the ai-ctf repo** at `/arena` on port 3000. This is what runs at an
+event. Its setup lives in that repo's README.
+
+`scripts/demo.sh` starts the chain, the backend, and the mock frontend in one command, and
+`./scripts/demo.sh down` stops them. See [DEMO.md](DEMO.md). Run `down` before a demo even
+if nothing looks broken: an abandoned run holds ten containers and ten Docker networks, and
+Docker only has about thirty networks to give out.
 
 Create a run and watch the feed:
 
@@ -79,9 +159,10 @@ export ARENA_OPERATOR_TOKEN=<the same token>
 pnpm --filter mock-frontend dev
 ```
 
-`scripts/demo.sh` does all of this for you (see [DEMO.md](DEMO.md)).
+### Signing in with a wallet
 
-To try the wallet login instead, list your address before starting the backend:
+The shared token is enough to get running. Use the wallet path when you want the flow an
+operator actually takes at an event. List your address before starting the backend:
 
 ```bash
 export ARENA_OPERATOR_ADDRESSES=0xYourAddress
@@ -98,6 +179,8 @@ when the host you are on is missing.
 in the dev proxy stops adding the token, so the buttons run on the session cookie and
 you are exercising the real path rather than a masked one. Without an allowlist the
 `/auth` routes answer `503` and the arena stays token-only.
+
+### Smoke tests
 
 Smoke one real agent, or the funding gate, without a full run:
 
@@ -121,7 +204,7 @@ Credentials come from the host: `codex` reads `~/.codex/auth.json`, `opencode` r
 1. Move to `awaiting_signature`. The funder signs the run's EIP-712 `Seed {runId}` typed data under the active profile's chain ID and submits it to `POST /runs/:id/seed`. Local signs automatically unless `ARENA_AUTO_SIGN=false`.
 2. Verify that the EIP-712 signature recovers to the profile's `funderAddress`. Derive each entrant key in memory and store only its address.
 3. Prepare each entrant — build a fresh container, inject its in-memory key and RPC URL, seed its harness credentials, mount the challenge pack read-only at `/ctf` on a local chain (Base mounts nothing), and run preflight.
-4. Move to `awaiting_funding`. The gate only watches balances; a local dev helper funds from anvil account 0, while a Base operator funds the displayed addresses.
+4. Move to `awaiting_funding`. The gate only watches balances; the operator funds the displayed addresses. On a local chain, `ARENA_LOCAL_FAUCET=true` funds them from anvil account 0 instead.
 5. Hold at the ready barrier until all entrants report ready. Record one start time and release them with their opening prompt.
 6. Parse each agent's stdout into `ArenaEvent`s, append them to the journal, and stream them to the browser.
 

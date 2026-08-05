@@ -722,6 +722,7 @@ describe('adapter construction errors', () => {
       preset: 'docker-duel',
       startedAt: null,
       deadlineAt: null,
+      durationMs: null,
       idempotencyKey: null,
     };
     const entrant: EntrantRecord = {
@@ -757,6 +758,7 @@ describe('adapter construction errors', () => {
       preset: 'legacy-gone',
       startedAt: null,
       deadlineAt: null,
+      durationMs: null,
       idempotencyKey: null,
     };
     const entrant: EntrantRecord = {
@@ -788,6 +790,7 @@ describe('adapter construction errors', () => {
       preset: 'docker-arena',
       startedAt: null,
       deadlineAt: null,
+      durationMs: null,
       idempotencyKey: null,
     };
     const entrant: EntrantRecord = {
@@ -822,6 +825,7 @@ describe('adapter construction errors', () => {
       preset: 'docker-arena',
       startedAt: null,
       deadlineAt: null,
+      durationMs: null,
       idempotencyKey: null,
     };
     const entrant: EntrantRecord = {

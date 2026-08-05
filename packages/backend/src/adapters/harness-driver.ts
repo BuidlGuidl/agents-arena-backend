@@ -152,10 +152,15 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       }
     }
     await state.turnTask;
-    await state.container.teardown();
+    try {
+      await state.container.teardown();
+    } finally {
+      // A throwing teardown must not leave the token resolving for a dead
+      // entrant that could still journal announcements into a finished run.
+      revokeAgentToken(run.id, entrant.id);
+    }
     this.states.delete(key);
     this.parsers.delete(key);
-    revokeAgentToken(run.id, entrant.id);
     this.setStatus(run.id, entrant.id, 'done');
   }
 

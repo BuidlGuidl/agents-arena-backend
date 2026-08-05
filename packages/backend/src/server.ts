@@ -318,12 +318,14 @@ export function createServer(options: ServerOptions): ArenaServer {
     ) {
       return reply.status(429).send({ error: 'Announcing too fast; try again in a second' });
     }
-    identity.lastChallengeId = challengeId;
-    identity.lastAnnouncedAtMs = now;
+    // State moves only after the journal accepts the event: an append that
+    // throws must leave the retry journalling, not deduping into silence.
     journal.append(identity.runId, identity.entrantId, 'entrant.challenge', {
       entrantId: identity.entrantId,
       challengeId,
     });
+    identity.lastChallengeId = challengeId;
+    identity.lastAnnouncedAtMs = now;
     return { ok: true, changed: true };
   });
 

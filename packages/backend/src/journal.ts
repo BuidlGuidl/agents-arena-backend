@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt, inArray, lt, max } from 'drizzle-orm';
 
 import { credentialSecrets } from './adapters/credential-secrets.js';
+import { agentTokenSecrets } from './agent-auth.js';
 import { runKeySecrets } from './chain/wallet.js';
 import type { ArenaEvent, HistoryPage } from './contract.js';
 import { openArenaDatabase, type ArenaDatabase } from './db/index.js';
@@ -45,10 +46,12 @@ export class EventJournal {
     payload: EventPayload<T>,
   ): EventOfType<T> {
     const serializedPayload = JSON.stringify(payload);
-    // Entrant output can echo wallet and harness credentials, so scrub live values before storage and delivery.
+    // Entrant output can echo wallet, harness, and arena credentials, so scrub
+    // live values before storage and delivery.
     const payloadJson = redactExactSecrets(serializedPayload, [
       ...runKeySecrets(runId),
       ...credentialSecrets(runId),
+      ...agentTokenSecrets(runId),
     ]);
     const journalPayload = payloadJson === serializedPayload
       ? payload
@@ -84,6 +87,32 @@ export class EventJournal {
       pending.push(event);
     }
     return event;
+  }
+
+  // A secret learned late — a token rotated inside a container — can already sit
+  // in stored rows from before it was registered. Rewriting them keeps history
+  // reads clean; events delivered live before the rewrite are the residual window.
+  scrubStoredSecrets(runId: string): void {
+    const secrets = [
+      ...runKeySecrets(runId),
+      ...credentialSecrets(runId),
+      ...agentTokenSecrets(runId),
+    ];
+    if (secrets.length === 0) return;
+    const rows = this.database
+      .select({ id: events.id, payloadJson: events.payloadJson })
+      .from(events)
+      .where(eq(events.runId, runId))
+      .all();
+    for (const row of rows) {
+      const scrubbed = redactExactSecrets(row.payloadJson, secrets);
+      if (scrubbed === row.payloadJson) continue;
+      this.database
+        .update(events)
+        .set({ payloadJson: scrubbed })
+        .where(eq(events.id, row.id))
+        .run();
+    }
   }
 
   transaction<T>(action: () => T): T {

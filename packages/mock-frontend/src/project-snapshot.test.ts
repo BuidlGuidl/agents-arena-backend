@@ -20,6 +20,7 @@ const snapshot: RunSnapshot = {
       inputTokens: 0,
       outputTokens: 0,
       costUsd: null,
+      currentChallengeId: null,
     },
   ],
   startedAt: null,
@@ -102,6 +103,29 @@ describe('projectSnapshot', () => {
     };
 
     expect(projectSnapshot(snapshot, event)?.entrants[0]).toMatchObject({ inputTokens: 100, costUsd: null });
+  });
+
+  it('moves the current challenge with entrant.challenge events', () => {
+    const event: ArenaEvent = {
+      id: 5,
+      runId: 'run-1',
+      source: 'codex-1',
+      seq: 2,
+      ts: '2026-07-22T00:00:03.000Z',
+      type: 'entrant.challenge',
+      payload: { entrantId: 'codex-1', challengeId: 3 },
+    };
+    const next: ArenaEvent = {
+      ...event,
+      id: 6,
+      seq: 3,
+      payload: { entrantId: 'codex-1', challengeId: 11 },
+    };
+
+    const once = projectSnapshot(snapshot, event);
+    expect(once?.entrants[0]?.currentChallengeId).toBe(3);
+    // Latest guess wins: the value overwrites, it never accumulates.
+    expect(projectSnapshot(once, next)?.entrants[0]?.currentChallengeId).toBe(11);
   });
 
   it('projects score.flag events into flags and solves', () => {

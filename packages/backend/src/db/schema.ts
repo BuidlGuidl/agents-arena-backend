@@ -29,6 +29,7 @@ export const eventTypes = [
   'wallet.assigned',
   'funding.balance',
   'score.flag',
+  'entrant.challenge',
   'entrant.error',
   'run.error',
   'usage',

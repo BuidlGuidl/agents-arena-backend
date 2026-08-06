@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { privateKeyToAccount } from 'viem/accounts';
 
+import { issueAgentToken, revokeAgentToken } from '../src/agent-auth.js';
+import { dropCredentialSecrets, registerCredentialSecrets } from '../src/adapters/credential-secrets.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import {
   deriveEntrantKeys,
@@ -32,6 +34,49 @@ describe('EventJournal', () => {
       expect([first.id, second.id, third.id]).toEqual([1, 2, 3]);
       expect([first.seq, second.seq, third.seq]).toEqual([1, 1, 2]);
     } finally {
+      journal.close();
+    }
+  });
+
+  it('redacts a live agent token the same way it redacts wallet keys', () => {
+    const runId = 'journal-redaction-agent-token';
+    const journal = new EventJournal(':memory:');
+    const token = issueAgentToken(runId, 'codex-1');
+    try {
+      const appended = journal.append(runId, 'codex-1', 'tool.result', {
+        entrantId: 'codex-1',
+        tool: 'shell',
+        toolCallId: 'token-echo',
+        ok: true,
+        detail: `curl -H "authorization: Bearer ${token}" $ARENA_API_URL/agent/progress`,
+      });
+
+      expect(appended.payload.detail)
+        .toBe('curl -H "authorization: Bearer [redacted-key]" $ARENA_API_URL/agent/progress');
+    } finally {
+      revokeAgentToken(runId, 'codex-1');
+      journal.close();
+    }
+  });
+
+  it('rewrites stored rows when a secret is registered late', () => {
+    const runId = 'journal-late-secret';
+    const journal = new EventJournal(':memory:');
+    const rotated = 'late-registered-rotated-token-xyz';
+    try {
+      journal.append(runId, 'codex-1', 'entrant.error', {
+        entrantId: 'codex-1',
+        message: `auth.json says ${rotated}`,
+      });
+      registerCredentialSecrets(runId, [rotated]);
+      journal.scrubStoredSecrets(runId);
+
+      const stored = journal.after(runId, 0)
+        .find((event) => event.type === 'entrant.error');
+      expect(JSON.stringify(stored?.payload)).not.toContain(rotated);
+      expect(JSON.stringify(stored?.payload)).toContain('[redacted-key]');
+    } finally {
+      dropCredentialSecrets(runId);
       journal.close();
     }
   });

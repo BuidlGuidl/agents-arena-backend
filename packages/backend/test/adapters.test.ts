@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -109,6 +109,7 @@ class ControlledExecution implements RuntimeExecution {
 class ControlledContainer implements EntrantContainer {
   readonly calls: Array<{ argv: string[]; env?: Record<string, string> }> = [];
   readonly turns: ControlledExecution[] = [];
+  authFileContent: string | undefined;
   tornDown = false;
   private active: ControlledExecution | undefined;
 
@@ -125,6 +126,14 @@ class ControlledContainer implements EntrantContainer {
       || argv[0] === 'claude' && argv[1] === '-p';
     if (isTurn) {
       this.turns.push(execution);
+    } else if (argv[0] === 'cat' && argv[1] === '/creds/codex/auth.json') {
+      // The auth sync-back reads the container's file this way on teardown.
+      if (this.authFileContent === undefined) {
+        execution.finish(1);
+      } else {
+        for (const line of this.authFileContent.split('\n')) execution.push(line);
+        execution.finish(0);
+      }
     } else {
       execution.push(`${argv[0] ?? 'command'} ok`);
       execution.finish(0);
@@ -151,6 +160,7 @@ async function setup(
   entrant: EntrantRecord;
   container: ControlledContainer;
   containerOptions: ContainerOptions;
+  authPath?: string;
 }> {
   const journal = new EventJournal(':memory:');
   const seedDriver: EntrantDriver = {
@@ -181,10 +191,11 @@ async function setup(
     return container;
   };
   let driver: EntrantDriver;
+  let authPath: string | undefined;
   if (harness === 'codex') {
     const authDirectory = await mkdtemp(join(tmpdir(), 'arena-test-auth-'));
     temporaryPaths.push(authDirectory);
-    const authPath = join(authDirectory, 'auth.json');
+    authPath = join(authDirectory, 'auth.json');
     await writeFile(authPath, testCodexAuth);
     driver = new CodexDriver(journal, { authPath, containerFactory });
   } else if (harness === 'opencode') {
@@ -204,7 +215,10 @@ async function setup(
   if (containerOptions === undefined) {
     throw new Error('Container factory was not called');
   }
-  return { journal, driver, run, entrant, container, containerOptions };
+  return {
+    journal, driver, run, entrant, container, containerOptions,
+    ...(authPath === undefined ? {} : { authPath }),
+  };
 }
 
 async function waitFor(check: () => boolean): Promise<void> {
@@ -457,6 +471,107 @@ describe('usage cost', () => {
   });
 });
 
+describe('codex auth rotation', () => {
+  // Codex rotates its refresh token inside the container; losing the rotated
+  // auth.json with the container leaves the host copy consumed and the next
+  // run dies with refresh_token_reused.
+  it('syncs a rotated auth.json back to the host on stop', async () => {
+    const context = await setup('codex');
+    // A real rotation rewrites tokens in place; the file keeps its other keys.
+    const rotated = JSON.stringify({ auth: { access: 'rotated-access-token-98765' }, short: 'ignored' });
+    try {
+      context.container.authFileContent = rotated;
+      await context.driver.stop(context.run, context.entrant);
+      await expect(readFile(context.authPath as string, 'utf8')).resolves.toBe(rotated);
+    } finally {
+      context.journal.close();
+    }
+  });
+
+  it('keeps the host auth.json when the operator re-logged-in mid-run', async () => {
+    const context = await setup('codex');
+    const relogged = JSON.stringify({ auth: { access: 'relogged-access-token-13579' } });
+    try {
+      context.container.authFileContent = JSON.stringify({ auth: { access: 'rotated-access-token-98765' } });
+      await writeFile(context.authPath as string, relogged);
+      await context.driver.stop(context.run, context.entrant);
+      await expect(readFile(context.authPath as string, 'utf8')).resolves.toBe(relogged);
+    } finally {
+      context.journal.close();
+    }
+  });
+
+  it('does not touch the host when the container never rotated', async () => {
+    const context = await setup('codex');
+    try {
+      context.container.authFileContent = testCodexAuth;
+      await context.driver.stop(context.run, context.entrant);
+      await expect(readFile(context.authPath as string, 'utf8')).resolves.toBe(testCodexAuth);
+    } finally {
+      context.journal.close();
+    }
+  });
+
+  it('scrubs the rotated token, not just the seeded one', async () => {
+    const context = await setup('codex');
+    const rotatedAccess = 'rotated-codex-access-token-abcdef';
+    const rotatedRefresh = 'rotated-codex-refresh-token-abcdef';
+    try {
+      // Seeded credentials are scrubbed at prepare; the rotated ones only once
+      // the teardown read pulls them out of the container.
+      expect(credentialSecrets(context.run.id)).not.toContain(rotatedRefresh);
+      context.container.authFileContent = JSON.stringify({
+        auth: { access: rotatedAccess, nested: { refresh: rotatedRefresh } },
+      });
+      await context.driver.stop(context.run, context.entrant);
+      expect(credentialSecrets(context.run.id)).toEqual(
+        expect.arrayContaining([rotatedAccess, rotatedRefresh]),
+      );
+    } finally {
+      dropCredentialSecrets(context.run.id);
+      context.journal.close();
+    }
+  });
+
+  // The container copy is agent-writable; a rotation keeps the seeded shape,
+  // junk does not, and junk must never replace the operator's login.
+  it('refuses to overwrite the host login with agent-written junk', async () => {
+    const context = await setup('codex');
+    try {
+      context.container.authFileContent = '{}';
+      await context.driver.stop(context.run, context.entrant);
+      await expect(readFile(context.authPath as string, 'utf8')).resolves.toBe(testCodexAuth);
+    } finally {
+      context.journal.close();
+    }
+  });
+
+  it('learns rotated secrets at the turn boundary and scrubs rows already stored', async () => {
+    const context = await setup('codex');
+    const rotatedAccess = 'turn-rotated-access-token-abcdef';
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      // The agent echoes the rotated token mid-turn, before anything registered it.
+      context.journal.append(context.run.id, context.entrant.id, 'entrant.error', {
+        entrantId: context.entrant.id,
+        message: `saw ${rotatedAccess} in auth.json`,
+      });
+      context.container.authFileContent = JSON.stringify({ auth: { access: rotatedAccess } });
+      completeTurn('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+      await waitFor(() => credentialSecrets(context.run.id).includes(rotatedAccess));
+
+      const stored = context.journal.after(context.run.id, 0)
+        .find((event) => event.type === 'entrant.error');
+      expect(JSON.stringify(stored?.payload)).not.toContain(rotatedAccess);
+      expect(JSON.stringify(stored?.payload)).toContain('[redacted-key]');
+    } finally {
+      dropCredentialSecrets(context.run.id);
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+});
+
 describe('adapter guardrails', () => {
   it('writes Codex model reasoning effort to config.toml when set', async () => {
     const context = await setup('codex', undefined, false, undefined, 'high');
@@ -555,6 +670,8 @@ describe('adapter guardrails', () => {
     try {
       expect(context.containerOptions.env).toEqual(expect.objectContaining({
         ETH_RPC_URL: 'http://host.docker.internal:8545',
+        ARENA_API_URL: expect.stringContaining('http://host.docker.internal:') as string,
+        ARENA_AGENT_TOKEN: expect.stringMatching(/^[0-9a-f]{48}$/) as string,
       }));
       expect(context.containerOptions.env).not.toHaveProperty('WALLET_ADDRESS');
       expect(context.containerOptions.env).not.toHaveProperty('WALLET_PRIVATE_KEY');
@@ -649,6 +766,8 @@ describe('adapter guardrails', () => {
         CLAUDE_CONFIG_DIR: '/creds/claude',
         CLAUDE_CODE_OAUTH_TOKEN: testCredentials.claude,
         ETH_RPC_URL: 'http://host.docker.internal:8545',
+        ARENA_API_URL: expect.stringContaining('http://host.docker.internal:') as string,
+        ARENA_AGENT_TOKEN: expect.stringMatching(/^[0-9a-f]{48}$/) as string,
       });
       expect(context.containerOptions.env).not.toHaveProperty('ANTHROPIC_API_KEY');
       expect(context.containerOptions.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');

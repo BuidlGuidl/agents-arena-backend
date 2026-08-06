@@ -48,6 +48,8 @@ export function styleForEvent(event: ArenaEvent): EventStyle {
       return { tone: 'chain', tag: 'chain' };
     case 'score.flag':
       return { tone: 'score', tag: 'flag' };
+    case 'entrant.challenge':
+      return { tone: 'system', tag: 'now' };
     case 'usage':
       return { tone: 'usage', tag: 'tok' };
     case 'entrant.error':

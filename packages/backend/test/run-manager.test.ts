@@ -292,6 +292,30 @@ describe('RunManager snapshot usage', () => {
   });
 });
 
+describe('RunManager snapshot current challenge', () => {
+  it('carries the latest progress guess per entrant, surviving a reload', async () => {
+    const { journal, manager, runId } = await createManager();
+    try {
+      journal.append(runId, 'codex-1', 'entrant.challenge', {
+        entrantId: 'codex-1', challengeId: 3,
+      });
+      journal.append(runId, 'codex-1', 'entrant.challenge', {
+        entrantId: 'codex-1', challengeId: 11,
+      });
+
+      const { entrants } = manager.snapshot(runId);
+      const codex = entrants.find((entrant) => entrant.id === 'codex-1');
+      const opencode = entrants.find((entrant) => entrant.id === 'opencode-1');
+
+      expect(codex?.currentChallengeId).toBe(11);
+      // No guess yet: null, so a lane shows nothing rather than a challenge #0.
+      expect(opencode?.currentChallengeId).toBeNull();
+    } finally {
+      journal.close();
+    }
+  });
+});
+
 describe('RunManager idempotency', () => {
   it('returns one run for repeated idempotency keys', async () => {
     const journal = new EventJournal(':memory:');

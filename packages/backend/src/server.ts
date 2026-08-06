@@ -13,7 +13,9 @@ import {
   type RosterEntry,
 } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
+import { resolveAgentToken } from './agent-auth.js';
 import {
+  bearerToken,
   isSecureRequest,
   operatorAuth,
   serializeSessionCookie,
@@ -82,6 +84,12 @@ const createRunSchema = z.object({
 
 // Steer and broadcast carry the same body; only the fan-out differs.
 const textSchema = z.object({ text: z.string().min(1) }).strict();
+const agentProgressSchema = z.object({
+  challengeId: z.number().int().min(1).max(12),
+}).strict();
+// Journalled announcements are rate limited; repeats of the same value are
+// deduped before the limit so they stay cheap instead of burning the budget.
+const AGENT_ANNOUNCE_INTERVAL_MS = 1_000;
 const seedSchema = z.object({
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
 }).strict();
@@ -292,6 +300,45 @@ export function createServer(options: ServerOptions): ArenaServer {
     const result = await manager.broadcast(id, body.text);
     const response: BroadcastResponse = { accepted: true, ...result };
     return reply.status(202).send(response);
+  });
+
+  // The agent-facing channel: authenticated by the per-entrant token the driver
+  // injects as ARENA_AGENT_TOKEN, never by the operator credential. The agent's
+  // announcement of the challenge it works on journals as entrant.challenge.
+  app.post('/agent/progress', async (request, reply) => {
+    const token = bearerToken(request.headers.authorization);
+    const identity = token === undefined ? undefined : resolveAgentToken(token);
+    if (identity === undefined) {
+      return reply
+        .status(401)
+        .header('WWW-Authenticate', 'Bearer realm="agents-arena-agent"')
+        .send({ error: 'Agent token required' });
+    }
+    const body = agentProgressSchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.status(400).send({ error: 'challengeId must be an integer from 1 to 12' });
+    }
+
+    const { challengeId } = body.data;
+    if (identity.lastChallengeId === challengeId) {
+      return { ok: true, changed: false };
+    }
+    const now = Date.now();
+    if (
+      identity.lastAnnouncedAtMs !== undefined
+      && now - identity.lastAnnouncedAtMs < AGENT_ANNOUNCE_INTERVAL_MS
+    ) {
+      return reply.status(429).send({ error: 'Announcing too fast; try again in a second' });
+    }
+    // State moves only after the journal accepts the event: an append that
+    // throws must leave the retry journalling, not deduping into silence.
+    journal.append(identity.runId, identity.entrantId, 'entrant.challenge', {
+      entrantId: identity.entrantId,
+      challengeId,
+    });
+    identity.lastChallengeId = challengeId;
+    identity.lastAnnouncedAtMs = now;
+    return { ok: true, changed: true };
   });
 
   app.get('/runs/:id/events', async (request, reply) => {

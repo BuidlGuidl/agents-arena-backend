@@ -10,6 +10,7 @@ import type {
   RuntimeExecution,
 } from '../runtime/container.js';
 import { createDockerContainer } from '../runtime/container.js';
+import { revokeAgentToken } from '../agent-auth.js';
 import type { ChallengePackResolver } from '../ctf/resolve.js';
 import { EntrantUnavailableError, type EntrantDriver, type EntrantRecord, type RunRecord } from './types.js';
 import type { HarnessLineParser, ParsedArenaEvent, ParserLogger } from './parser-types.js';
@@ -22,6 +23,9 @@ export interface HarnessDriverOptions {
   // into every entrant container. Throwing here fails prepare, which is how a
   // missing ai-ctf checkout surfaces (ADR-0009).
   resolveChallengePack?: ChallengePackResolver;
+  // The backend base URL as seen from inside an entrant container, for the
+  // agent-facing routes (POST /agent/progress).
+  agentApiUrl?: string;
 }
 
 interface EntrantRuntimeState {
@@ -40,6 +44,7 @@ interface EntrantRuntimeState {
 export abstract class HarnessEntrantDriver implements EntrantDriver {
   protected readonly containerFactory: ContainerFactory;
   protected readonly rpcUrl: string;
+  protected readonly agentApiUrl: string;
   protected readonly logger: ParserLogger;
   private readonly states = new Map<string, EntrantRuntimeState>();
   // Keyed like states — by run and entrant, not by entrant alone. Entrant ids are
@@ -62,6 +67,10 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
         challengePackDir: resolveChallengePack(containerOptions.runId),
       });
     this.rpcUrl = options.rpcUrl ?? process.env.ARENA_RPC_URL ?? 'http://host.docker.internal:8545';
+    // Containers reach the host the same way they reach the chain RPC.
+    this.agentApiUrl = options.agentApiUrl
+      ?? process.env.ARENA_AGENT_API_URL
+      ?? `http://host.docker.internal:${process.env.PORT ?? 4177}`;
     this.logger = options.logger ?? console;
   }
 
@@ -70,7 +79,14 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     const key = this.key(run.id, entrant.id);
     if (this.states.has(key)) throw new Error(`Entrant ${entrant.id} is already prepared`);
 
-    const container = await this.createContainer(run, entrant);
+    let container: EntrantContainer;
+    try {
+      container = await this.createContainer(run, entrant);
+    } catch (error) {
+      // createContainer issues the agent token before the factory can fail.
+      revokeAgentToken(run.id, entrant.id);
+      throw error;
+    }
     const state: EntrantRuntimeState = {
       run,
       entrant,
@@ -91,6 +107,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       this.setStatus(run.id, entrant.id, 'idle');
     } catch (error) {
       this.states.delete(key);
+      revokeAgentToken(run.id, entrant.id);
       await container.teardown();
       throw error;
     }
@@ -135,7 +152,13 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       }
     }
     await state.turnTask;
-    await state.container.teardown();
+    try {
+      await state.container.teardown();
+    } finally {
+      // A throwing teardown must not leave the token resolving for a dead
+      // entrant that could still journal announcements into a finished run.
+      revokeAgentToken(run.id, entrant.id);
+    }
     this.states.delete(key);
     this.parsers.delete(key);
     this.setStatus(run.id, entrant.id, 'done');
@@ -270,6 +293,10 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
         const detail = stderrTail.length === 0 ? '' : `: ${stderrTail.join('\n')}`;
         this.appendError(state, `Harness exited with code ${String(code)}${detail}`);
       }
+      // Container execs are single-writer, so housekeeping that needs the
+      // container must run here — the turn still owns it, the next queued
+      // steer has not started.
+      await this.afterTurn(state.run, state.entrant, state.container);
     } catch (error) {
       launchFailed = state.active === undefined;
       const normalized = error instanceof Error ? error : new Error(String(error));
@@ -282,6 +309,14 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       this.finishTurn(state);
     }
   }
+
+  // Turn-boundary hook: the harness may inspect its container between turns.
+  // Must not throw — a housekeeping failure is not a turn failure.
+  protected async afterTurn(
+    _run: RunRecord,
+    _entrant: EntrantRecord,
+    _container: EntrantContainer,
+  ): Promise<void> {}
 
   private finishTurn(state: EntrantRuntimeState): void {
     state.running = false;

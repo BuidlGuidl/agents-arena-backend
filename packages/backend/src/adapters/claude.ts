@@ -1,3 +1,4 @@
+import { issueAgentToken } from '../agent-auth.js';
 import type { EventJournal } from '../journal.js';
 import type { EntrantContainer } from '../runtime/container.js';
 import { getWallet } from '../chain/wallet.js';
@@ -50,6 +51,8 @@ export class ClaudeDriver extends HarnessEntrantDriver {
         CLAUDE_CONFIG_DIR: '/creds/claude',
         CLAUDE_CODE_OAUTH_TOKEN: oauthToken,
         ETH_RPC_URL: this.rpcUrl,
+        ARENA_API_URL: this.agentApiUrl,
+        ARENA_AGENT_TOKEN: issueAgentToken(run.id, entrant.id),
         ...(wallet === null
           ? {}
           : {

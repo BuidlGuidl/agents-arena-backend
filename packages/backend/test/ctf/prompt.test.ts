@@ -40,6 +40,28 @@ describe('buildOpeningPrompt', () => {
     expect(prompt).not.toContain('Your wallet address is');
   });
 
+  // The instruction references the env vars, so the journalled prompt never
+  // carries the live token itself.
+  it('tells the agent to announce its challenge through the env-var channel', () => {
+    const profile: ChainProfile = {
+      name: 'local-test',
+      rpcUrl: 'http://127.0.0.1:8545',
+      containerRpcUrl: 'http://host.docker.internal:9545',
+      chainId: 31337,
+      confirmations: 1,
+      nftFlags: '0x0000000000000000000000000000000000000001',
+      challenge1: '0x0000000000000000000000000000000000000002',
+      identityRegistry: '0x0000000000000000000000000000000000000003',
+      funderAddress: '0x0000000000000000000000000000000000000000',
+      fundingThresholdWei: 1n,
+    };
+
+    const prompt = buildOpeningPrompt(entrant, profile);
+
+    expect(prompt).toContain('$ARENA_API_URL/agent/progress');
+    expect(prompt).toContain('Bearer $ARENA_AGENT_TOKEN');
+  });
+
   it('uses the public briefing without local mount instructions', () => {
     const profile: ChainProfile = {
       name: 'public-test',

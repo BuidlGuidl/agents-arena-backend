@@ -210,6 +210,8 @@ export function describeEvent(event: ArenaEvent): string {
       return `balance ${formatWei(event.payload.wei)} eth${event.payload.funded ? ' (funded)' : ''}`;
     case 'score.flag':
       return `flag challenge ${event.payload.challengeId} token ${event.payload.tokenId} (${event.payload.txHash})`;
+    case 'entrant.challenge':
+      return `now on challenge ${event.payload.challengeId}`;
     case 'entrant.error':
       return `error: ${event.payload.message}`;
     case 'run.error':

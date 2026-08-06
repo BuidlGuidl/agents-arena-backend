@@ -36,10 +36,11 @@ describe('newDraft', () => {
 });
 
 describe('draftEffort', () => {
-  it('sends a level only when a codex row picked one', () => {
+  it('sends a picked level for Codex and Claude only', () => {
     expect(draftEffort({ ...newDraft('codex'), effort: 'xhigh' })).toBe('xhigh');
-    expect(draftEffort(newDraft('codex'))).toBeUndefined();
-    expect(draftEffort({ ...newDraft('claude'), effort: 'xhigh' })).toBeUndefined();
+    expect(draftEffort({ ...newDraft('claude'), effort: 'max' })).toBe('max');
+    expect(draftEffort({ ...newDraft('opencode'), effort: 'high' })).toBeUndefined();
+    expect(draftEffort(newDraft('claude'))).toBeUndefined();
   });
 });
 
@@ -56,11 +57,12 @@ describe('buildRoster', () => {
     ]);
   });
 
-  it('omits effort unless a codex row picked a level', () => {
+  it('includes picked effort for Codex and Claude but omits defaults and OpenCode effort', () => {
     const { entries } = buildRoster([
       { ...newDraft('codex'), effort: 'xhigh' },
       newDraft('codex'),
-      newDraft('claude'),
+      { ...newDraft('claude'), effort: 'max' },
+      { ...newDraft('opencode'), effort: 'high' },
     ]);
     expect(entries[0]).toEqual({
       id: 'codex-1',
@@ -69,7 +71,13 @@ describe('buildRoster', () => {
       effort: 'xhigh',
     });
     expect(entries[1]).not.toHaveProperty('effort');
-    expect(entries[2]).not.toHaveProperty('effort');
+    expect(entries[2]).toEqual({
+      id: 'claude-1',
+      harness: 'claude',
+      model: 'claude-opus-5',
+      effort: 'max',
+    });
+    expect(entries[3]).not.toHaveProperty('effort');
   });
 
   it('reports the rules the backend enforces', () => {
@@ -80,8 +88,8 @@ describe('buildRoster', () => {
       .toBe('10 entrants max.');
   });
 
-  it('drops a stale effort when the row switches off codex', () => {
-    const stale = { ...newDraft('claude'), effort: 'high' } as DraftEntrant;
+  it('drops a stale effort when the row switches to OpenCode', () => {
+    const stale = { ...newDraft('opencode'), effort: 'high' } as DraftEntrant;
     const { entries, problem } = buildRoster([stale]);
     expect(problem).toBeNull();
     expect(entries[0]).not.toHaveProperty('effort');

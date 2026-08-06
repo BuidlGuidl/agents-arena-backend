@@ -370,7 +370,7 @@ function LineupComposer({ drafts, roster, disabled, onChange }: {
                   <option key={model} value={model}>{model}</option>
                 ))}
               </select>
-              {draft.harness === 'codex' ? (
+              {draft.harness !== 'opencode' ? (
                 <span className="field lineup-effort">
                   <label htmlFor={`effort-${index}`}>effort</label>
                   <select
@@ -426,7 +426,7 @@ function LineupComposer({ drafts, roster, disabled, onChange }: {
       ) : null}
 
       <p className="lineup-note">
-        the model list is server-enforced. effort is a codex knob, so only codex rows carry it.
+        the model list is server-enforced. codex and claude rows can set effort; default uses the harness setting.
       </p>
     </section>
   );

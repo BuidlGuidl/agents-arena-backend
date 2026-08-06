@@ -60,11 +60,11 @@ const rosterEntrySchema = z.object({
       message: `${entry.harness} models must be one of: ${allowedModels.join(', ')}`,
     });
   }
-  if (entry.effort !== undefined && entry.harness !== 'codex') {
+  if (entry.effort !== undefined && entry.harness === 'opencode') {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['effort'],
-      message: 'effort is codex-only for now; claude and opencode have no verified CLI knob',
+      message: 'effort applies to codex and claude; opencode has no effort knob',
     });
   }
 });

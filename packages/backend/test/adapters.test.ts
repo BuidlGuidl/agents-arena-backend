@@ -885,7 +885,7 @@ describe('adapter guardrails', () => {
     }
   });
 
-  it('uses the exact Claude start and resume argument order', async () => {
+  it('omits Claude effort from start and resume arguments when unset', async () => {
     const context = await setup('claude');
     try {
       expect(context.container.calls[2]?.argv).toEqual(['claude', '--version']);
@@ -919,6 +919,51 @@ describe('adapter guardrails', () => {
         '--dangerously-skip-permissions',
         '--model',
         'claude-opus-5',
+      ]);
+      completeTurn('claude', context.container.turns[1] as ControlledExecution, 'session-1');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('passes Claude effort in start and resume arguments when set', async () => {
+    const context = await setup('claude', undefined, false, undefined, 'high');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening prompt');
+      expect(context.container.calls[3]?.argv).toEqual([
+        'claude',
+        '-p',
+        'opening prompt',
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        '--dangerously-skip-permissions',
+        '--model',
+        'claude-opus-5',
+        '--effort',
+        'high',
+      ]);
+      completeTurn('claude', context.container.turns[0] as ControlledExecution, 'session-1');
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.status')
+        .at(-1)?.payload.status === 'idle');
+
+      await context.driver.steer(context.run, context.entrant, 'steer text');
+      expect(context.container.calls[4]?.argv).toEqual([
+        'claude',
+        '-p',
+        '--resume',
+        'session-1',
+        'steer text',
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        '--dangerously-skip-permissions',
+        '--model',
+        'claude-opus-5',
+        '--effort',
+        'high',
       ]);
       completeTurn('claude', context.container.turns[1] as ControlledExecution, 'session-1');
     } finally {

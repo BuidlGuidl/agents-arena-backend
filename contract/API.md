@@ -238,7 +238,13 @@ Sends text to one entrant.
 {"text":"Inspect the contract first."}
 ```
 
-The response has status `202`. An entrant that exists but cannot take a turn — stopping, or degraded — returns status `409`, and the refusal is recorded on that entrant's feed as an `entrant.error`.
+The response has status `202`. `status` is `injected` when the turn entered the session now, or `queued` when it waits behind a turn in flight.
+
+```json
+{"accepted":true,"status":"injected"}
+```
+
+An entrant that exists but cannot take a turn — stopping, or degraded — returns status `409`, and the refusal is recorded on that entrant's feed as an `entrant.error`.
 
 ### `POST /runs/:id/broadcast`
 
@@ -252,10 +258,10 @@ The run must be `running`; any other state returns status `400` and nothing reac
 
 The response has status `202`. An entrant that cannot take the turn is named in `failed` and gets an `entrant.error` event; the rest still receive the message.
 
-`delivered` means the entrant accepted the message, not that it has read it yet: an entrant that is mid-turn queues it and takes it when that turn ends, exactly as a per-entrant steer does. The `director.broadcast` event lands immediately either way, so the feed shows the message the moment the director sends it.
+`delivered` means the entrant accepted the message. `queued` names the delivered entrants whose message still waits behind a turn in flight; if such an entrant degrades or stops before its turn ends, the drop is journaled as an `entrant.error`. The `director.broadcast` event lands immediately either way, while `entrant.steered` lands only when the message enters the session.
 
 ```json
-{"accepted":true,"delivered":["codex-1"],"failed":[{"entrantId":"opencode-1","message":"Entrant opencode-1 is stopping"}]}
+{"accepted":true,"delivered":["codex-1","opencode-1"],"queued":["codex-1"],"failed":[{"entrantId":"claude-1","message":"Entrant claude-1 is stopping"}]}
 ```
 
 ## Event stream

@@ -1,4 +1,10 @@
-import type { EntrantStatus, HarnessId, RosterEffort, RunState } from '../contract.js';
+import type {
+  EntrantStatus,
+  HarnessId,
+  RosterEffort,
+  RunState,
+  SteerDelivery,
+} from '../contract.js';
 
 export interface RunRecord {
   id: string;
@@ -28,6 +34,6 @@ export class EntrantUnavailableError extends Error {}
 export interface EntrantDriver {
   prepare(run: RunRecord, entrant: EntrantRecord): Promise<void>;
   start(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void>;
-  steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<void>;
+  steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<SteerDelivery>;
   stop(run: RunRecord, entrant: EntrantRecord): Promise<void>;
 }

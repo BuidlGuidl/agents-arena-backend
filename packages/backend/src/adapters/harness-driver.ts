@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 
-import type { EntrantStatus } from '../contract.js';
+import type { EntrantStatus, SteerDelivery } from '../contract.js';
 import { entrants } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
 import { costForTokens } from '../pricing.js';
@@ -136,7 +136,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     await this.beginTurn(state, openingPrompt, false);
   }
 
-  async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<void> {
+  async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<SteerDelivery> {
     this.assertHarness(entrant);
     const state = this.requireState(run.id, entrant.id);
     if (state.stopping) throw new EntrantUnavailableError(`Entrant ${entrant.id} is stopping`);
@@ -147,9 +147,10 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
 
     if (state.running) {
       state.queuedSteers.push(text);
-      return;
+      return 'queued';
     }
     await this.beginTurn(state, text, true);
+    return 'injected';
   }
 
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {
@@ -340,6 +341,11 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     if (state.stopping) return;
     this.setStatus(state.run.id, state.entrant.id, state.degraded ? 'blocked' : 'idle');
     if (state.degraded) {
+      // The steer route answered 'queued' for these, so the drop must reconcile
+      // in the journal — a consumer waiting on entrant.steered would wait forever.
+      for (const dropped of state.queuedSteers) {
+        this.appendError(state, `Queued steer dropped (entrant degraded): ${dropped}`);
+      }
       state.queuedSteers.splice(0);
       return;
     }
@@ -348,6 +354,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     if (next !== undefined) {
       void this.beginTurn(state, next, true).catch((error: unknown) => {
         this.logger.warn(`[${this.harnessName()}] queued steer failed: ${errorMessage(error)}`);
+        this.appendError(state, `Queued steer dropped (${errorMessage(error)}): ${next}`);
       });
     }
   }

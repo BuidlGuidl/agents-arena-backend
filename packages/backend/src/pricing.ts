@@ -23,6 +23,9 @@ export const MODEL_RATES: Readonly<Record<string, ModelRate>> = {
   'claude-opus-5': { inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 25 },
   'claude-opus-4-8': { inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 25 },
   'claude-sonnet-5': { inputPerMillion: 3, cachedInputPerMillion: 0.3, outputPerMillion: 15 },
+  // Not a roster model: claude's Task subagents run on it, and their tokens land
+  // in the delegating entrant's modelUsage (#38).
+  'claude-haiku-4-5': { inputPerMillion: 1, cachedInputPerMillion: 0.1, outputPerMillion: 5 },
   'claude-fable-5': { inputPerMillion: 10, cachedInputPerMillion: 1, outputPerMillion: 50 },
 };
 
@@ -44,6 +47,37 @@ export function costForTokens(
       + cached * rate.cachedInputPerMillion
       + outputTokens * rate.outputPerMillion) / 1_000_000,
   );
+}
+
+// Same token convention as costForTokens: cachedInputTokens sit inside inputTokens.
+export interface ModelTokenUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+}
+
+// A harness that breaks a turn down per model — claude reports one row per model
+// the turn touched, subagents included — gets each row priced at its own rate,
+// so an opus entrant that delegates to sonnet no longer bills the delegated
+// tokens at the opus rate. A row for a model the table does not list falls back
+// to the entrant's own rate: its tokens are real, and the entrant's row is the
+// closest figure available. Null when nothing can be priced, same as the
+// aggregate path — an entrant on an unlisted model keeps an empty cost field.
+export function costForModelUsage(
+  rows: readonly ModelTokenUsage[],
+  entrantModel: string,
+): number | null {
+  if (rows.length === 0) return null;
+
+  let total = 0;
+  for (const row of rows) {
+    const cost = costForTokens(row.model, row.inputTokens, row.outputTokens, row.cachedInputTokens)
+      ?? costForTokens(entrantModel, row.inputTokens, row.outputTokens, row.cachedInputTokens);
+    if (cost === null) return null;
+    total += cost;
+  }
+  return roundUsd(total);
 }
 
 // Six decimals: a single cheap turn still registers, and summed floats do not

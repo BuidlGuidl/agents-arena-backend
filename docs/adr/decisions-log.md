@@ -262,6 +262,8 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 
 **Consequence:** the entrant image ships `@anthropic-ai/claude-code` pinned like the other two CLIs, so `docker/build.sh` runs again. the same-harness-different-model lineup (#2) becomes preset data — nothing new may key on `harness`, identity stays `entrantId`. the `fake.ts` scripted-solve branch that picked flags by harness is fixed in the same change, since a third harness made its binary else-arm silently wrong.
 
+**Amendment (2026-08-04, from #38):** the claude parser prices a turn off the result line's `modelUsage` breakdown, one `MODEL_RATES` row per model the turn touched, instead of letting the driver price the aggregate at `entrant.model`. delegating to a subagent no longer bills sonnet tokens at the opus rate. a row is keyed on its `canonicalModel` (the id without a release date, the form the table and the roster use), falling back to the `modelUsage` key; a model with no table row falls back to the entrant's rate, and a line without the breakdown at all — an errored turn — still reaches the driver's aggregate path. tokens on the `usage` event stay aggregate; only cost is split. `costUsd` remains the notional API-rate figure this ADR describes.
+
 ---
 
 ## ADR-0016 — entrant rosters override preset entrants
@@ -293,3 +295,17 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 **Trade-off:** the backend and the image now share a protocol vocabulary. an image built before the `file` command answers `Unknown command: file`, which the driver attributes to the pending transfer and surfaces as the creation failure. nothing detects a stale image yet — `demo.sh` and the integration test only check that the image exists — so a runner change means remembering `./docker/build.sh`.
 
 **Consequence:** `docker/build.sh` runs again after this change. the host-side mkdtemp/chmod/cleanup lifecycle is deleted. a runner error while a transfer is pending is attributed to that transfer, which is sound because injection is serialized inside container creation, before any exec can start.
+
+---
+
+## ADR-0018 — subagent tool work reaches the board, tagged with the call that spawned it
+
+**Status:** accepted (2026-08-04), from #37
+
+**Decision:** the claude parser no longer drops assistant/user lines carrying `parent_tool_use_id`. their `tool_use` and `tool_result` blocks become ordinary `tool.call` / `tool.result` events in the entrant's own lane, with one added optional payload field: `parentToolCallId`, the tool call id of the outer call that spawned the subagent (claude's Task). subagent prose — text and thinking blocks on the same nested lines — stays dropped. the reference frontend renders nested rows flat, in arrival order, behind a `↳ subagent` marker.
+
+**Why:** a claude entrant that delegates to a Task subagent did most of its work inside that subagent — the bash commands and file reads that actually touched the challenge. spectators saw only the opaque outer Task call, which defeats the point of an arena. the parent id costs one optional field and lets a client nest or badge the rows without the arena deciding the layout.
+
+**Trade-off:** a lane gets busier, and a delegating entrant's rows interleave its own work with its subagent's. flat-with-a-marker is the v1 answer; nesting is a frontend choice the field enables, not a contract change. prose is asymmetric — tool work from a subagent shows, its narration does not — because `agent.message` has nowhere to say whose voice it is, and unlabeled subagent narration would read as the entrant's own. claude sends that narration only under `--forward-subagent-text`, which the driver does not pass.
+
+**Consequence:** `arena-types.ts` bumps, which the frontend re-copies; the field is optional, so existing clients and the codex and opencode parsers are untouched. anything that reads `tool.call` details now sees subagent commands too — when the current-challenge heuristic (#4) lands, its guess will follow whichever process touched a challenge, which is the behavior it wants.

@@ -1,3 +1,4 @@
+import { costForModelUsage, type ModelTokenUsage } from '../pricing.js';
 import type { ParsedArenaEvent, ParsedHarnessLine, ParserLogger } from './parser-types.js';
 
 type JsonObject = Record<string, unknown>;
@@ -6,8 +7,11 @@ export class ClaudeEventParser {
   unknownEvents = 0;
   private readonly toolNames = new Map<string, string>();
 
+  // The entrant model is the fallback rate for a subagent model the table has no
+  // row for, so pricing needs it here rather than only in the driver.
   constructor(
     private readonly entrantId: string,
+    private readonly entrantModel: string,
     private readonly logger: ParserLogger = console,
   ) {}
 
@@ -21,13 +25,12 @@ export class ClaudeEventParser {
       const sessionId = stringValue(value.session_id);
       return sessionId === undefined ? { events: [] } : { events: [], sessionId };
     }
-    if ((type === 'assistant' || type === 'user')
-        && value.parent_tool_use_id !== undefined
-        && value.parent_tool_use_id !== null) {
-      return { events: [] };
-    }
-    if (type === 'assistant') return { events: this.assistantEvents(value) };
-    if (type === 'user') return { events: this.userEvents(value) };
+    // A line carrying parent_tool_use_id comes from a subagent the entrant
+    // delegated to; the id is the outer Task call, and it rides along on the
+    // tool events so a lane can nest or badge the nested work (#37).
+    const parentToolCallId = stringValue(value.parent_tool_use_id);
+    if (type === 'assistant') return { events: this.assistantEvents(value, parentToolCallId) };
+    if (type === 'user') return { events: this.userEvents(value, parentToolCallId) };
     if (type === 'result') return this.result(value);
     if (type === 'rate_limit_event') {
       const info = objectValue(value.rate_limit_info);
@@ -52,7 +55,7 @@ export class ClaudeEventParser {
     return { events: [] };
   }
 
-  private assistantEvents(value: JsonObject): ParsedArenaEvent[] {
+  private assistantEvents(value: JsonObject, parentToolCallId?: string): ParsedArenaEvent[] {
     const content = objectValue(value.message)?.content;
     if (!Array.isArray(content)) return [];
 
@@ -61,6 +64,10 @@ export class ClaudeEventParser {
       const block = objectValue(rawBlock);
       const blockType = stringValue(block?.type);
       if (block === undefined || blockType === undefined) continue;
+      // A subagent's prose is its own, not the entrant's, and the contract has
+      // nowhere to say so — only its tool work reaches the board. Claude sends
+      // it at all only under --forward-subagent-text, which the driver omits.
+      if (parentToolCallId !== undefined && blockType !== 'tool_use') continue;
       if (blockType === 'text') {
         const text = stringValue(block.text) ?? '';
         if (text.length > 0) {
@@ -89,6 +96,7 @@ export class ClaudeEventParser {
             tool,
             toolCallId,
             detail: detailValue(block.input),
+            ...(parentToolCallId === undefined ? {} : { parentToolCallId }),
           },
         });
       } else {
@@ -98,7 +106,7 @@ export class ClaudeEventParser {
     return events;
   }
 
-  private userEvents(value: JsonObject): ParsedArenaEvent[] {
+  private userEvents(value: JsonObject, parentToolCallId?: string): ParsedArenaEvent[] {
     const content = objectValue(value.message)?.content;
     if (!Array.isArray(content)) return [];
 
@@ -118,6 +126,7 @@ export class ClaudeEventParser {
           toolCallId,
           ok: block.is_error !== true,
           detail: detailValue(block.content),
+          ...(parentToolCallId === undefined ? {} : { parentToolCallId }),
         },
       });
     }
@@ -148,8 +157,12 @@ export class ClaudeEventParser {
           + numberValue(usage?.cache_creation_input_tokens),
         outputTokens: numberValue(usage?.output_tokens),
         cachedInputTokens,
-        // Ignore Anthropic's cache-write premiums because comparable MODEL_RATES costs matter more than exact provider billing.
-        costUsd: null,
+        // Priced off modelUsage, not the line's own total_cost_usd: comparable
+        // MODEL_RATES costs matter more than exact provider billing, which is
+        // also why Anthropic's cache-write premiums stay ignored. Null when the
+        // line carries no breakdown (an errored turn does not) leaves the driver
+        // to price the aggregate at the entrant model, as before.
+        costUsd: costForModelUsage(modelUsageRows(value.modelUsage), this.entrantModel),
       },
     });
     return { events, turnEnded: true };
@@ -173,6 +186,35 @@ function parseObject(line: string, logger: ParserLogger): JsonObject | undefined
   }
   logger.warn('[claude parser] skipped malformed line');
   return undefined;
+}
+
+// The result line's aggregate usage says nothing about which model spent what, so
+// a turn that delegates to a subagent would price every token at the entrant's
+// model. modelUsage carries one row per model the turn actually used, keyed by
+// model id, each counting its fresh, cached, and cache-creation prompt tokens
+// separately — the same split the aggregate gets normalized from. The row's
+// `canonicalModel` names the model without a release date, which is the form
+// MODEL_RATES and the roster key on; the object key is the fallback for a row
+// that omits it.
+function modelUsageRows(value: unknown): ModelTokenUsage[] {
+  const modelUsage = objectValue(value);
+  if (modelUsage === undefined) return [];
+
+  const rows: ModelTokenUsage[] = [];
+  for (const [key, rawRow] of Object.entries(modelUsage)) {
+    const row = objectValue(rawRow);
+    if (row === undefined) continue;
+    const cachedInputTokens = numberValue(row.cacheReadInputTokens);
+    rows.push({
+      model: stringValue(row.canonicalModel) ?? key,
+      inputTokens: numberValue(row.inputTokens)
+        + cachedInputTokens
+        + numberValue(row.cacheCreationInputTokens),
+      outputTokens: numberValue(row.outputTokens),
+      cachedInputTokens,
+    });
+  }
+  return rows;
 }
 
 function objectValue(value: unknown): JsonObject | undefined {

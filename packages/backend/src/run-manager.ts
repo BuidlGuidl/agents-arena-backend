@@ -199,6 +199,7 @@ export class RunManager {
         preset: input.preset,
         startedAt: null,
         deadlineAt: null,
+        durationMs: input.durationMs ?? null,
         idempotencyKey: input.idempotencyKey ?? null,
         createdAt: now,
       }).run();
@@ -257,6 +258,7 @@ export class RunManager {
         id: run.id,
         state: run.state,
         preset: run.preset,
+        chainId: activeChainProfile.chainId,
         entrants: entrantSummaries,
         startedAt: run.startedAt,
         deadlineAt: run.deadlineAt,
@@ -271,10 +273,14 @@ export class RunManager {
       throw new InvalidTransitionError(`Cannot move run ${runId} from ${run.state} to ${nextState}`);
     }
 
-    const startedAt = nextState === 'running' ? new Date().toISOString() : run.startedAt;
+    const startTime = nextState === 'running' ? new Date() : undefined;
+    const startedAt = startTime?.toISOString() ?? run.startedAt;
+    const deadlineAt = startTime !== undefined && run.durationMs !== null
+      ? new Date(startTime.getTime() + run.durationMs).toISOString()
+      : run.deadlineAt;
     this.journal.database
       .update(runs)
-      .set({ state: nextState, startedAt })
+      .set({ state: nextState, startedAt, deadlineAt })
       .where(eq(runs.id, runId))
       .run();
     const payload = reason === undefined ? { state: nextState } : { state: nextState, reason };

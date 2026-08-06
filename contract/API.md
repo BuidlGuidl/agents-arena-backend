@@ -2,6 +2,12 @@
 
 The backend listens on `PORT`, or port `4177` when `PORT` is unset. JSON request bodies use `Content-Type: application/json`.
 
+## Operations and environment
+
+Set `ARENA_CORS_ORIGINS` to a comma-separated list of browser origins that can call the backend. Each entry is an exact origin, including its scheme and port when present. For local development, use `ARENA_CORS_ORIGINS=http://localhost:3000`.
+
+When the variable is unset or blank, the backend registers no CORS support and sends no CORS headers. When set, CORS allows credentials, methods `GET`, `POST`, `HEAD`, and `OPTIONS`, and request headers `Content-Type` and `Authorization`. It exposes no extra response headers.
+
 ## Operator auth
 
 Every mutating route (create, start, stop, steer, broadcast) needs one of two credentials. The snapshot, the event stream, and the history read are open, so spectators need neither.
@@ -80,11 +86,13 @@ A session lasts 12 hours. Sessions and nonces live in the backend process, so a 
 
 ### `POST /runs`
 
-Creates a run from a required preset. The preset selects the fake or Docker substrate. It supplies entrants when `roster` is absent. Set `autoStart` to `true` to begin the start flow.
+Creates a run from a required preset. The preset selects the fake or Docker substrate. It supplies entrants when `roster` is absent. Set `autoStart` to `true` to begin the start flow. The optional `durationMs` must be an integer from `60000` through `86400000`.
 
 ```json
-{"preset":"fake-duel","autoStart":true,"idempotencyKey":"demo-1"}
+{"preset":"fake-duel","autoStart":true,"idempotencyKey":"demo-1","durationMs":3600000}
 ```
+
+The backend stores `durationMs` when it creates the run. When the run enters `running`, it sets `deadlineAt` to that transition time plus `durationMs`. The deadline is display only. The backend does not stop or enforce the run at that time; the operator stops it manually. If `durationMs` is absent, `deadlineAt` stays `null`.
 
 An optional `roster` replaces the preset entrants. It accepts 1–10 entries:
 
@@ -111,14 +119,16 @@ The response has status `201` for a new run and status `200` for an existing ide
 The chainless `fake-duel` preset skips wallet seeding. The `docker-duel` preset uses the seed and funding gates.
 
 ```json
-{"run":{"id":"...","state":"running","preset":"fake-duel","entrants":[],"startedAt":"...","deadlineAt":null,"lastEventId":4}}
+{"run":{"id":"...","state":"running","preset":"fake-duel","chainId":31337,"entrants":[],"startedAt":"2026-08-05T10:00:00.000Z","deadlineAt":"2026-08-05T11:00:00.000Z","lastEventId":4}}
 ```
 
 An unknown preset or invalid roster returns status `400`.
 
 ### `GET /runs/:id`
 
-Returns the current `RunSnapshot`. A missing run returns status `404`.
+Returns `{"run": RunSnapshot}` — every run endpoint (create, get, start, seed, stop) wraps the snapshot in this same envelope, the `RunResponse` type in the contract file. A missing run returns status `404`.
+
+`chainId` is the active chain profile's chain ID. Clients use it for seed typed data and chain links instead of assuming Anvil's `31337`. `deadlineAt` is the display-only deadline set when the run enters `running`; it does not trigger a timer or state change.
 
 Each entrant carries its confirmed solves in journal order, and `flags` equals `solves.length`, so a reload can repaint the board without replaying events.
 
@@ -148,7 +158,7 @@ The agent-facing announce route. Authenticated by the per-entrant bearer token t
 
 ### `POST /runs/:id/start`
 
-Starts the run and returns its current snapshot. With local automatic signing, the request waits until the run reaches `running`. Without automatic signing, it returns after the run enters `awaiting_signature`. The run advances asynchronously after seed submission and funding. A run already at `ready` starts without preparation.
+Starts the run and returns `{"run": RunSnapshot}`. With local automatic signing, the request waits until the run reaches `running`. Without automatic signing, it returns after the run enters `awaiting_signature`. The run advances asynchronously after seed submission and funding. A run already at `ready` starts without preparation.
 
 The `docker-duel` lifecycle is:
 
@@ -210,11 +220,11 @@ The funder signs this typed data. `chainId` is the active chain profile's chain 
 
 The domain has no `verifyingContract`. The backend verifies the signature against the active chain profile's `funderAddress`. It derives each entrant wallet in memory, stores each address on the entrant, and emits one `wallet.assigned` event per entrant. The signature and private keys never enter the event journal or database.
 
-A valid request returns status `202` with the current run snapshot. A malformed or non-canonical signature returns status `400`. A canonical signature from another address returns status `403`. A run outside `awaiting_signature` returns status `409`.
+A valid request returns status `202` with `{"run": RunSnapshot}`. A malformed or non-canonical signature returns status `400`. A canonical signature from another address returns status `403`. A run outside `awaiting_signature` returns status `409`.
 
 ### `POST /runs/:id/stop`
 
-Stops every entrant and advances a running run through `stopping` to `finished`. A run in `awaiting_signature` also advances through `stopping` to `finished`.
+Stops every entrant and advances a running run through `stopping` to `finished`. A run in `awaiting_signature` also advances through `stopping` to `finished`. Returns `{"run": RunSnapshot}`.
 
 ### `POST /runs/:id/entrants/:eid/steer`
 

@@ -14,7 +14,7 @@ import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { getAddress, isAddress, type Address } from 'viem';
 
-const CHALLENGE_COUNT = 12;
+export const CHALLENGE_COUNT = 12;
 
 export interface ChallengePackOptions {
   aiCtfRepo: string;
@@ -160,7 +160,7 @@ function buildBriefing(
   ].join(' ');
 
   return [
-    '# BuidlGuidl AI CTF — challenge briefing',
+    '# Solidity Invaders — the BuidlGuidl Fortress briefing',
     '',
     intro,
     '',

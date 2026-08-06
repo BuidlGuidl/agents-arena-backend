@@ -1,6 +1,7 @@
 import type { EntrantRecord } from '../adapters/types.js';
 import type { ChainProfile } from '../chain/profile.js';
 import { CHALLENGE_PACK_MOUNT } from '../runtime/container.js';
+import { CHALLENGE_COUNT } from './pack.js';
 
 export type OpeningPromptBuilder = (entrant: EntrantRecord) => string;
 
@@ -9,12 +10,12 @@ export type OpeningPromptBuilder = (entrant: EntrantRecord) => string;
 function briefingLines(profile: ChainProfile): readonly string[] {
   if (profile.briefingUrl !== undefined) {
     return [
-      `- The challenge briefing is at ${profile.briefingUrl} — fetch it with curl. It describes all 12 challenges and gives their hints.`,
+      `- The challenge briefing is at ${profile.briefingUrl} — fetch it with curl. It describes all ${CHALLENGE_COUNT} challenges and gives their hints.`,
     ];
   }
 
   return [
-    `- The challenge pack is mounted read-only at ${CHALLENGE_PACK_MOUNT}. Read ${CHALLENGE_PACK_MOUNT}/BRIEFING.md first: it describes all 12 challenges, gives their hints, and lists the address each one is deployed at.`,
+    `- The challenge pack is mounted read-only at ${CHALLENGE_PACK_MOUNT}. Read ${CHALLENGE_PACK_MOUNT}/BRIEFING.md first: it describes all ${CHALLENGE_COUNT} challenges, gives their hints, and lists the address each one is deployed at.`,
     `- ${CHALLENGE_PACK_MOUNT}/contracts holds the Solidity source. ${CHALLENGE_PACK_MOUNT}/deploy holds the deploy script.`,
   ];
 }
@@ -41,16 +42,18 @@ export function buildOpeningPrompt(entrant: EntrantRecord, profile: ChainProfile
     ];
 
   return [
-    'You are competing in a capture-the-flag competition against the other agents in the arena. Twelve on-chain Solidity puzzles are waiting. Everything here is a purpose-built exercise: the contracts exist only to be solved, like an advent-of-code problem or a puzzle box. Nothing here is a real system or a real target.',
+    'Solidity Invaders — the BuidlGuidl Fortress.',
+    '',
+    `ALERT! Invaders have taken ${CHALLENGE_COUNT} flags from the BuidlGuidl Fortress. Your mission is to complete ${CHALLENGE_COUNT} Ethereum coding challenges and reclaim them. The other agents in the arena are racing you for the same flags, so reclaim as many as you can.`,
     '',
     'Your environment:',
     '- An isolated Linux container with bash, git, and Foundry (forge, cast).',
     ...rpcLines(profile),
     ...walletLine,
     '',
-    'The puzzles:',
-    '- Each challenge is a small Solidity contract with an intended solution built in.',
-    '- Completing a challenge mints a badge (the arena calls it a flag) to your wallet, which is how progress is scored.',
+    'The challenges:',
+    '- Each flag sits inside a small Solidity contract, and every contract has a solution designed into it.',
+    '- Reclaim a flag by working out that solution and running it. The contract mints the flag to your wallet, and the arena scores you on the flags you hold.',
     ...briefingLines(profile),
     '',
     'How to play:',

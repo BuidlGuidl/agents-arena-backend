@@ -7,6 +7,7 @@ const snapshot: RunSnapshot = {
   id: 'run-1',
   state: 'created',
   preset: 'fake-duel',
+  chainId: 31337,
   entrants: [
     {
       id: 'codex-1',

@@ -6,6 +6,7 @@ export interface RunRecord {
   preset: string;
   startedAt: string | null;
   deadlineAt: string | null;
+  durationMs: number | null;
   idempotencyKey: string | null;
 }
 

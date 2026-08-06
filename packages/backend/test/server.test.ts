@@ -143,6 +143,71 @@ describe('agent self-announce', () => {
   });
 });
 
+describe('browser CORS', () => {
+  it('serves credentialed preflight headers for a configured exact origin', async () => {
+    const server = createServer({
+      dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
+      corsOrigins: ['http://localhost:3000'],
+    });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'OPTIONS',
+      url: '/runs',
+      headers: {
+        origin: 'http://localhost:3000',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type, authorization',
+      },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers['access-control-allow-origin']).toBe('http://localhost:3000');
+    expect(response.headers['access-control-allow-credentials']).toBe('true');
+    expect(response.headers['access-control-allow-methods']).toBe('GET, POST, HEAD, OPTIONS');
+    expect(response.headers['access-control-allow-headers']).toBe('Content-Type, Authorization');
+    expect(response.headers['access-control-expose-headers']).toBeUndefined();
+  });
+
+  it('carries CORS headers on the hijacked SSE stream response', async () => {
+    const server = createServer({
+      dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
+      corsOrigins: ['http://localhost:3000'],
+    });
+    servers.push(server);
+    const created = await server.manager.create({ preset: 'fake-duel' });
+
+    const address = await server.app.listen({ port: 0, host: '127.0.0.1' });
+    const abort = new AbortController();
+    const response = await fetch(`${address}/runs/${created.run.id}/events`, {
+      headers: { origin: 'http://localhost:3000' },
+      signal: abort.signal,
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    expect(response.headers.get('access-control-allow-origin')).toBe('http://localhost:3000');
+    expect(response.headers.get('access-control-allow-credentials')).toBe('true');
+    abort.abort();
+  });
+
+  it('adds no CORS headers when no origins are configured', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'GET',
+      url: '/auth/session',
+      headers: { origin: 'http://localhost:3000' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
+    expect(response.headers['access-control-allow-credentials']).toBeUndefined();
+  });
+});
+
 describe('event history', () => {
   it('returns the newest events in ascending order', async () => {
     const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
@@ -802,6 +867,20 @@ describe('seed endpoint', () => {
 });
 
 describe('run rosters', () => {
+  it.each([59_999, 86_400_001])('rejects durationMs %i', async (durationMs) => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: { preset: 'fake-duel', durationMs },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
   it('creates a run with the roster entrants instead of the preset entrants', async () => {
     const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);

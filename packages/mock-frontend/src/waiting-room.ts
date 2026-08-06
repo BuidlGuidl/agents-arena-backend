@@ -1,9 +1,5 @@
 import type { RunState } from '../../../contract/arena-types';
 
-// The backend does not expose its active chain yet, so this local mock stays
-// pinned to Anvil until RunSnapshot carries the profile chain ID.
-export const SEED_CHAIN_ID = 31337;
-
 export function seedTypedData(runId: string, chainId: number) {
   return {
     domain: {

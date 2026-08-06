@@ -7,6 +7,7 @@ import { InvalidOperatorAddressError, MissingSiweDomainError, parseCsvList } fro
 
 const port = Number(process.env.PORT ?? 4177);
 const operatorToken = (process.env.ARENA_OPERATOR_TOKEN ?? '').trim();
+const corsOrigins = parseCsvList(process.env.ARENA_CORS_ORIGINS);
 
 // Fail closed: a deploy that forgets the token would leave the run controls open.
 // Whitespace counts as forgotten — a blank token can never match a request.
@@ -14,6 +15,11 @@ if (operatorToken.length === 0) {
   console.error('ARENA_OPERATOR_TOKEN is required. Generate one with: openssl rand -hex 32');
   process.exit(1);
 }
+
+// The faucet tops entrants up the moment they exist, so the funding phase ends
+// before an operator can reach the fund button. An unattended run needs it; a
+// demo driven from the arena UI funds by hand.
+const localFaucetEnabled = process.env.ARENA_LOCAL_FAUCET === 'true';
 
 // Wallet login is optional: with no allowlist the arena stays token-only.
 const siwe = {
@@ -26,10 +32,11 @@ const { app } = ((): ReturnType<typeof createServer> => {
     return createServer({
       operatorToken,
       siwe,
+      corsOrigins,
       logger: true,
       fundingGateFactory: (journal) => {
         const fundingGate = createFundingGate(journal);
-        if (activeChainProfile.name !== 'local') {
+        if (activeChainProfile.name !== 'local' || !localFaucetEnabled) {
           return fundingGate;
         }
         const localFundingFlow: FundingGate = async (run, entrants, signal) => {

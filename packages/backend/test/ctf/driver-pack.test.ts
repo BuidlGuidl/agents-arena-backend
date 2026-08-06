@@ -62,6 +62,7 @@ const run: RunRecord = {
   preset: 'test',
   startedAt: null,
   deadlineAt: null,
+  durationMs: null,
   idempotencyKey: null,
 };
 

@@ -4,6 +4,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 
 import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
+import { activeChainProfile } from '../src/chain/profile.js';
 import { recordSolve } from '../src/chain/storage.js';
 import { getWallet, seedTypedData } from '../src/chain/wallet.js';
 import { entrants } from '../src/db/schema.js';
@@ -139,6 +140,31 @@ describe('run presets', () => {
         { id: 'codex-1', harness: 'codex', model: 'gpt-5.5' },
         { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.2' },
       ]);
+    } finally {
+      journal.close();
+    }
+  });
+});
+
+describe('RunManager snapshot timing', () => {
+  it('exposes the active chain and sets the deadline only when the run starts', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, noopDriver);
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel', durationMs: 60_000 });
+
+      expect(run.chainId).toBe(activeChainProfile.chainId);
+      expect(run.startedAt).toBeNull();
+      expect(run.deadlineAt).toBeNull();
+
+      const started = await manager.start(run.id);
+      expect(started.state).toBe('running');
+      expect(started.startedAt).not.toBeNull();
+      expect(started.deadlineAt).not.toBeNull();
+      expect(Date.parse(started.deadlineAt!) - Date.parse(started.startedAt!)).toBe(60_000);
+
+      const finished = await manager.stop(run.id);
+      expect(finished.deadlineAt).toBe(started.deadlineAt);
     } finally {
       journal.close();
     }

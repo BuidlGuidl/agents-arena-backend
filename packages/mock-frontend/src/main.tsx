@@ -33,7 +33,6 @@ import {
   isWaitingRoomState,
   looksLikeSignature,
   requestSeedSignature,
-  SEED_CHAIN_ID,
   seedErrorMessage,
   seedTypedData,
   walletErrorMessage,
@@ -534,7 +533,7 @@ function WaitingRoom({ run, feed }: { run: RunSnapshot; feed: FeedState }) {
   const [signing, setSigning] = useState(false);
   const [typedDataCopied, copyTypedData] = useCopyFlag();
 
-  const typedData = seedTypedData(run.id, SEED_CHAIN_ID);
+  const typedData = seedTypedData(run.id, run.chainId);
   const typedDataJson = JSON.stringify(typedData);
   const provider = injectedProvider();
   const roster = useMemo(

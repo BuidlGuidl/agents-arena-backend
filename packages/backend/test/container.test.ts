@@ -13,6 +13,16 @@ interface FakeWaitResult {
   StatusCode: number;
 }
 
+interface FakeDialOptions {
+  path: string;
+  method: string;
+  hijack?: boolean;
+  openStdin?: boolean;
+  headers?: Record<string, string>;
+  file?: Buffer;
+  options?: { _query?: Record<string, unknown> };
+}
+
 class FakeDocker {
   readonly attachment = new PassThrough();
   readonly runnerOutput = new PassThrough();
@@ -23,6 +33,12 @@ class FakeDocker {
   readonly listContainers = vi.fn(async () => []);
   readonly listNetworks = vi.fn(async () => []);
   readonly commands: Array<Record<string, unknown>> = [];
+  readonly dial = vi.fn((
+    _options: FakeDialOptions,
+    callback: (error: unknown, attachment: PassThrough) => void,
+  ) => {
+    callback(null, this.attachment);
+  });
 
   private resolveWait!: (result: FakeWaitResult) => void;
   private inputBuffer = '';
@@ -38,12 +54,13 @@ class FakeDocker {
   ) {
     this.attachment.on('data', (chunk: Buffer) => this.receiveCommandChunk(chunk));
     this.container = {
-      attach: vi.fn(async () => this.attachment),
+      id: 'fake-container-id',
       start: vi.fn(async () => this.onStart(this)),
       wait: vi.fn(async () => this.waitResult),
       stop: vi.fn(async () => undefined),
       remove: vi.fn(async () => undefined),
       modem: {
+        dial: this.dial,
         demuxStream: vi.fn((_attachment: Readable, output: Writable, error: Writable) => {
           this.runnerOutput.pipe(output);
           this.runnerError.pipe(error);
@@ -65,6 +82,12 @@ class FakeDocker {
       this.onCommand(this, command);
       newline = this.inputBuffer.indexOf('\n');
     }
+  }
+
+  dialedAttach(): FakeDialOptions {
+    const options = this.dial.mock.calls[0]?.[0];
+    if (options === undefined) throw new Error('Expected the attach endpoint to be dialed');
+    return options;
   }
 
   send(message: object): void {
@@ -121,6 +144,41 @@ async function within<T>(promise: Promise<T>): Promise<T> {
     if (timer !== undefined) clearTimeout(timer);
   }
 }
+
+describe('DockerEntrantContainer attach', () => {
+  it('attaches with an empty request body so nothing can leak into runner stdin', async () => {
+    const docker = new FakeDocker();
+
+    await createContainer(docker);
+
+    const dialed = docker.dialedAttach();
+    expect(dialed.method).toBe('POST');
+    expect(dialed.path).toBe('/containers/fake-container-id/attach?');
+    expect(dialed.hijack).toBe(true);
+    // openStdin keeps the request unfinished, so the hijacked socket stays writable.
+    expect(dialed.openStdin).toBe(true);
+    // The body is empty and every attach parameter travels in the query string:
+    // docker-modem would otherwise POST the options object, and the daemon can
+    // hand those bytes to the container as its first stdin read.
+    expect(dialed.file).toEqual(Buffer.alloc(0));
+    expect(dialed.headers).toEqual({ 'Content-Type': 'text/plain' });
+    expect(dialed.options).toEqual({
+      _query: { stream: true, stdin: true, stdout: true, stderr: true },
+    });
+  });
+
+  it('propagates an attach failure and cleans up the container and network', async () => {
+    const docker = new FakeDocker();
+    docker.dial.mockImplementationOnce((_options, callback) => {
+      callback(new Error('no such container'), docker.attachment);
+    });
+
+    await expect(createContainer(docker)).rejects.toThrow('no such container');
+
+    expect(docker.container.remove).toHaveBeenCalledWith({ force: true });
+    expect(docker.network.remove).toHaveBeenCalledOnce();
+  });
+});
 
 describe('DockerEntrantContainer lifecycle', () => {
   it('keeps the network uniqueness suffix with a max-length entrant id', async () => {

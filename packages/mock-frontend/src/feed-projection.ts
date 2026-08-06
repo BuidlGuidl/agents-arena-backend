@@ -211,7 +211,11 @@ export function describeEvent(event: ArenaEvent): string {
     case 'score.flag':
       return `flag challenge ${event.payload.challengeId} token ${event.payload.tokenId} (${event.payload.txHash})`;
     case 'entrant.challenge':
-      return `now on challenge ${event.payload.challengeId}`;
+      // A missing via is an announcement: rows journalled before the guesser
+      // existed had one source only.
+      return event.payload.via === 'command'
+        ? `now on challenge ${event.payload.challengeId} (guessed from ${event.payload.evidence ?? 'a command'})`
+        : `now on challenge ${event.payload.challengeId} (announced)`;
     case 'entrant.error':
       return `error: ${event.payload.message}`;
     case 'run.error':

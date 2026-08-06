@@ -1,5 +1,5 @@
 import type { EventJournal } from '../journal.js';
-import type { ChallengePackResolver } from '../ctf/resolve.js';
+import type { ChallengePackAccess, ChallengePackResolver } from '../ctf/resolve.js';
 import { ClaudeDriver, type ClaudeDriverOptions } from './claude.js';
 import { CodexDriver, type CodexDriverOptions } from './codex.js';
 import { OpenCodeDriver, type OpenCodeDriverOptions } from './opencode.js';
@@ -10,6 +10,7 @@ export interface DockerEntrantDriverOptions {
   codex?: CodexDriverOptions;
   opencode?: OpenCodeDriverOptions;
   resolveChallengePack?: ChallengePackResolver;
+  challengeAddresses?: ChallengePackAccess['addressesFor'];
 }
 
 export class DockerEntrantDriver implements EntrantDriver {
@@ -20,9 +21,14 @@ export class DockerEntrantDriver implements EntrantDriver {
   constructor(journal: EventJournal, options: DockerEntrantDriverOptions = {}) {
     // Every entrant reads the same pack, so the resolver is shared unless a
     // per-harness option overrides it.
-    const shared = options.resolveChallengePack === undefined
-      ? {}
-      : { resolveChallengePack: options.resolveChallengePack };
+    const shared = {
+      ...(options.resolveChallengePack === undefined
+        ? {}
+        : { resolveChallengePack: options.resolveChallengePack }),
+      ...(options.challengeAddresses === undefined
+        ? {}
+        : { challengeAddresses: options.challengeAddresses }),
+    };
     this.claude = new ClaudeDriver(journal, { ...shared, ...options.claude });
     this.codex = new CodexDriver(journal, { ...shared, ...options.codex });
     this.opencode = new OpenCodeDriver(journal, { ...shared, ...options.opencode });

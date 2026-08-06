@@ -7,9 +7,9 @@ import { randomBytes } from 'node:crypto';
 export interface AgentTokenRecord {
   runId: string;
   entrantId: string;
-  // Route-level state: the last announced challenge (dedupe) and when the last
-  // journalled announcement landed (rate limit).
-  lastChallengeId?: number;
+  // Route-level state: when the last journalled announcement landed (rate
+  // limit). Dedupe lives in the shared current-challenge store, which the
+  // command heuristic reads and moves too.
   lastAnnouncedAtMs?: number;
 }
 

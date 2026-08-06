@@ -14,6 +14,7 @@ import {
 } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import { resolveAgentToken } from './agent-auth.js';
+import { currentChallenge, recordCurrentChallenge } from './ctf/challenge-tracker.js';
 import {
   bearerToken,
   isSecureRequest,
@@ -304,7 +305,8 @@ export function createServer(options: ServerOptions): ArenaServer {
 
   // The agent-facing channel: authenticated by the per-entrant token the driver
   // injects as ARENA_AGENT_TOKEN, never by the operator credential. The agent's
-  // announcement of the challenge it works on journals as entrant.challenge.
+  // announcement of the challenge it works on journals as entrant.challenge with
+  // via 'self'; the command heuristic keeps feeding via 'command', latest wins.
   app.post('/agent/progress', async (request, reply) => {
     const token = bearerToken(request.headers.authorization);
     const identity = token === undefined ? undefined : resolveAgentToken(token);
@@ -320,7 +322,9 @@ export function createServer(options: ServerOptions): ArenaServer {
     }
 
     const { challengeId } = body.data;
-    if (identity.lastChallengeId === challengeId) {
+    // Deduped against the same current the command heuristic reads and moves,
+    // so the two sources cannot disagree about what is already announced.
+    if (currentChallenge(identity.runId, identity.entrantId) === challengeId) {
       return { ok: true, changed: false };
     }
     const now = Date.now();
@@ -335,8 +339,10 @@ export function createServer(options: ServerOptions): ArenaServer {
     journal.append(identity.runId, identity.entrantId, 'entrant.challenge', {
       entrantId: identity.entrantId,
       challengeId,
+      via: 'self',
+      evidence: 'announced',
     });
-    identity.lastChallengeId = challengeId;
+    recordCurrentChallenge(identity.runId, identity.entrantId, challengeId);
     identity.lastAnnouncedAtMs = now;
     return { ok: true, changed: true };
   });

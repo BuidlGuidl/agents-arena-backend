@@ -146,7 +146,9 @@ A claude turn that delegates to a subagent spends tokens on more than one model,
 
 Each `usage` event counts only the work it covers, never a running total, and `inputTokens` is the whole prompt with `cachedInputTokens` counted inside it. Events are not turns: codex emits one per turn, opencode one per step, so a turn that calls tools produces several. The harnesses also disagree upstream — codex reports a running session total that `exec resume` keeps growing, opencode reports its input net of cache reads — so the adapters normalize both to this shape before journalling.
 
-`currentChallengeId` is the challenge the entrant last announced through `POST /agent/progress`, journalled as `entrant.challenge`. Each change journals one event, and the snapshot field carries the latest value so a reload lands where the feed already was. `null` until the agent announces one.
+`currentChallengeId` has two sources, and the latest one wins. The agent can announce the challenge it works on through `POST /agent/progress` (journalled as `entrant.challenge` with `via: "self"`), and the backend also guesses from its commands: when one references exactly one challenge — by name (`Challenge5.sol`) or by a deployed address the pack knows — that becomes the current challenge (`via: "command"`). Each change journals an `entrant.challenge` event whose `evidence` says where it came from; the snapshot field carries the latest value so a reload lands where the feed already was. `null` until either source names one. Both sources dedupe against the same current value, so one moving it lets the other move it back. Events journalled before the guesser existed carry neither `via` nor `evidence` — every one of those was an announcement, and readers treat absence as `via: "self"`. Commands that reference several challenges (a grep across all sources, reading the briefing) are ignored as ambiguous, and a mint against NFTFlags moves nothing — solved is not the same as next.
+
+The command heuristic stays on even though agents can self-report: an agent forgets to announce, or announces and moves on, and its commands keep telling the truth either way. Neither source is authoritative — both are labelled, and the UI shows the freshest.
 
 ### `POST /agent/progress`
 
@@ -156,7 +158,7 @@ The agent-facing announce route. Authenticated by the per-entrant bearer token t
 {"challengeId": 5}
 ```
 
-`challengeId` must be an integer from 1 to 12. Announcing the value already current answers `{"ok":true,"changed":false}` without journalling. A change journals `entrant.challenge` and answers `{"ok":true,"changed":true}`; changes faster than once a second get status `429`. A missing or unknown token gets status `401`. Journalled announcements stream and replay like every other event.
+`challengeId` must be an integer from 1 to 12. Announcing the value already current answers `{"ok":true,"changed":false}` without journalling. A change journals `entrant.challenge` with `via: "self"` and answers `{"ok":true,"changed":true}`; changes faster than once a second get status `429`. A missing or unknown token gets status `401`. Journalled announcements stream and replay like every other event.
 
 ### `POST /runs/:id/start`
 

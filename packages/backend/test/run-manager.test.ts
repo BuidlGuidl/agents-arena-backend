@@ -297,10 +297,10 @@ describe('RunManager snapshot current challenge', () => {
     const { journal, manager, runId } = await createManager();
     try {
       journal.append(runId, 'codex-1', 'entrant.challenge', {
-        entrantId: 'codex-1', challengeId: 3,
+        entrantId: 'codex-1', challengeId: 3, via: 'command', evidence: 'Challenge3',
       });
       journal.append(runId, 'codex-1', 'entrant.challenge', {
-        entrantId: 'codex-1', challengeId: 11,
+        entrantId: 'codex-1', challengeId: 11, via: 'self', evidence: 'announced',
       });
 
       const { entrants } = manager.snapshot(runId);

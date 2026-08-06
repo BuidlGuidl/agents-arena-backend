@@ -9,6 +9,7 @@ import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { issueAgentToken, revokeAgentToken } from '../src/agent-auth.js';
+import { dropCurrentChallenge, recordCurrentChallenge } from '../src/ctf/challenge-tracker.js';
 import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
 import { isSecureRequest, MissingOperatorTokenError } from '../src/auth.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
@@ -62,7 +63,7 @@ describe('agent self-announce', () => {
       expect(accepted.statusCode).toBe(200);
       expect(accepted.json()).toEqual({ ok: true, changed: true });
       expect(progressEvents(server, runId).map((event) => event.payload)).toEqual([
-        { entrantId: 'codex-1', challengeId: 5 },
+        { entrantId: 'codex-1', challengeId: 5, via: 'self', evidence: 'announced' },
       ]);
       expect(server.manager.snapshot(runId).entrants.find((entrant) => entrant.id === 'codex-1')
         ?.currentChallengeId).toBe(5);
@@ -125,6 +126,27 @@ describe('agent self-announce', () => {
       expect(tooFast.statusCode).toBe(429);
       expect(progressEvents(server, runId)).toHaveLength(1);
     } finally {
+      revokeAgentToken(runId, 'codex-1');
+    }
+  });
+
+  it('dedupes against the command heuristic, not its own last value', async () => {
+    const { server, runId, token } = await announceSetup();
+    try {
+      // The heuristic already moved the shared current to 5; the agent
+      // announcing 5 now adds nothing.
+      recordCurrentChallenge(runId, 'codex-1', 5);
+      const repeat = await server.app.inject({
+        method: 'POST',
+        url: '/agent/progress',
+        headers: { authorization: `Bearer ${token}` },
+        payload: { challengeId: 5 },
+      });
+      expect(repeat.statusCode).toBe(200);
+      expect(repeat.json()).toEqual({ ok: true, changed: false });
+      expect(progressEvents(server, runId)).toEqual([]);
+    } finally {
+      dropCurrentChallenge(runId, 'codex-1');
       revokeAgentToken(runId, 'codex-1');
     }
   });

@@ -389,7 +389,7 @@ describe('event → lane routing', () => {
   });
 });
 
-describe('describeEvent — all 16 contract types render', () => {
+describe('describeEvent — all 17 contract types render', () => {
   const base = { id: 1, runId: 'run-1', source: 'codex-1', seq: 1, ts: 'now' };
   const samples: ArenaEvent[] = [
     { ...base, source: RUN_SOURCE, type: 'run.state', payload: { state: 'running' } },
@@ -405,13 +405,32 @@ describe('describeEvent — all 16 contract types render', () => {
     { ...base, type: 'wallet.assigned', payload: { entrantId: 'codex-1', address: '0xabc' } },
     { ...base, type: 'funding.balance', payload: { entrantId: 'codex-1', address: '0xabc', wei: '100', funded: true } },
     { ...base, type: 'score.flag', payload: { entrantId: 'codex-1', challengeId: 1, txHash: '0xtx', tokenId: '7' } },
+    { ...base, type: 'entrant.challenge', payload: { entrantId: 'codex-1', challengeId: 5, via: 'self', evidence: 'announced' } },
     { ...base, type: 'entrant.error', payload: { entrantId: 'codex-1', message: 'boom' } },
     { ...base, source: RUN_SOURCE, type: 'run.error', payload: { message: 'fatal' } },
     { ...base, type: 'usage', payload: { entrantId: 'codex-1', inputTokens: 10, outputTokens: 5, cachedInputTokens: 4, costUsd: 0.001 } },
   ];
 
   it('covers every contract event type', () => {
-    expect(samples).toHaveLength(16);
+    expect(samples).toHaveLength(17);
+  });
+
+  // Rows journalled before the guesser existed carry no via — they were all
+  // announcements, and must not render as a guess from nothing.
+  it('renders entrant.challenge without via as announced', () => {
+    const legacy = {
+      ...base,
+      type: 'entrant.challenge',
+      payload: { entrantId: 'codex-1', challengeId: 5 },
+    } as ArenaEvent;
+    const guessed = {
+      ...base,
+      type: 'entrant.challenge',
+      payload: { entrantId: 'codex-1', challengeId: 5, via: 'command', evidence: 'Challenge5' },
+    } as ArenaEvent;
+
+    expect(describeEvent(legacy)).toBe('now on challenge 5 (announced)');
+    expect(describeEvent(guessed)).toBe('now on challenge 5 (guessed from Challenge5)');
   });
 
   it('renders a non-empty summary for each without throwing', () => {

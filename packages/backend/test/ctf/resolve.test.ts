@@ -66,8 +66,8 @@ describe('createChallengePackResolver', () => {
     })).toBeUndefined();
   });
 
-  it('returns a resolver for a profile without a briefing URL', () => {
-    expect(createChallengePackResolver(localProfile)).toBeTypeOf('function');
+  it('returns pack access for a profile without a briefing URL', () => {
+    expect(createChallengePackResolver(localProfile)?.resolve).toBeTypeOf('function');
   });
 
   it.each(['unset', 'empty'] as const)(
@@ -78,33 +78,44 @@ describe('createChallengePackResolver', () => {
       } else {
         process.env.AI_CTF_REPO = '';
       }
-      const resolver = createChallengePackResolver(localProfile);
-      if (resolver === undefined) throw new Error('Expected a local challenge pack resolver');
+      const pack = createChallengePackResolver(localProfile);
+      if (pack === undefined) throw new Error('Expected a local challenge pack resolver');
 
-      expect(() => resolver('run-without-repo')).toThrow('AI_CTF_REPO');
+      expect(() => pack.resolve('run-without-repo')).toThrow('AI_CTF_REPO');
     },
   );
 
   it('assembles and caches a pack from the existing fixture tree', () => {
     process.env.AI_CTF_REPO = fixtureDir;
-    const resolver = createChallengePackResolver(localProfile);
-    if (resolver === undefined) throw new Error('Expected a local challenge pack resolver');
+    const pack = createChallengePackResolver(localProfile);
+    if (pack === undefined) throw new Error('Expected a local challenge pack resolver');
     const runId = `resolver-${randomUUID()}`;
 
-    const firstPath = resolver(runId);
+    const firstPath = pack.resolve(runId);
     generatedPaths.push(firstPath);
-    const secondPath = resolver(runId);
+    const secondPath = pack.resolve(runId);
 
     expect(existsSync(join(firstPath, 'BRIEFING.md'))).toBe(true);
     expect(secondPath).toBe(firstPath);
   });
 
+  it('reports a resolved run\'s addresses and none for an unresolved run', () => {
+    process.env.AI_CTF_REPO = fixtureDir;
+    const pack = createChallengePackResolver(localProfile);
+    if (pack === undefined) throw new Error('Expected a local challenge pack resolver');
+    const runId = `addresses-${randomUUID()}`;
+
+    expect(pack.addressesFor(runId)).toBeUndefined();
+    generatedPaths.push(pack.resolve(runId));
+    expect(pack.addressesFor(runId)?.Challenge1).toBe(challenge1);
+  });
+
   it('removes the oldest packs once the retention bound is passed', () => {
     process.env.AI_CTF_REPO = fixtureDir;
-    const resolver = createChallengePackResolver(localProfile);
-    if (resolver === undefined) throw new Error('Expected a local challenge pack resolver');
+    const pack = createChallengePackResolver(localProfile);
+    if (pack === undefined) throw new Error('Expected a local challenge pack resolver');
 
-    const paths = Array.from({ length: 10 }, (_, index) => resolver(`retain-${index}`));
+    const paths = Array.from({ length: 10 }, (_, index) => pack.resolve(`retain-${index}`));
     generatedPaths.push(...paths);
 
     expect(existsSync(paths[0] as string)).toBe(false);

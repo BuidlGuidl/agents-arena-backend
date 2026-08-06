@@ -293,6 +293,10 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
         const detail = stderrTail.length === 0 ? '' : `: ${stderrTail.join('\n')}`;
         this.appendError(state, `Harness exited with code ${String(code)}${detail}`);
       }
+      // Container execs are single-writer, so housekeeping that needs the
+      // container must run here — the turn still owns it, the next queued
+      // steer has not started.
+      await this.afterTurn(state.run, state.entrant, state.container);
     } catch (error) {
       launchFailed = state.active === undefined;
       const normalized = error instanceof Error ? error : new Error(String(error));
@@ -305,6 +309,14 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       this.finishTurn(state);
     }
   }
+
+  // Turn-boundary hook: the harness may inspect its container between turns.
+  // Must not throw — a housekeeping failure is not a turn failure.
+  protected async afterTurn(
+    _run: RunRecord,
+    _entrant: EntrantRecord,
+    _container: EntrantContainer,
+  ): Promise<void> {}
 
   private finishTurn(state: EntrantRuntimeState): void {
     state.running = false;

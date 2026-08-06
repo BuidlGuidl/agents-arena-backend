@@ -89,6 +89,32 @@ export class EventJournal {
     return event;
   }
 
+  // A secret learned late — a token rotated inside a container — can already sit
+  // in stored rows from before it was registered. Rewriting them keeps history
+  // reads clean; events delivered live before the rewrite are the residual window.
+  scrubStoredSecrets(runId: string): void {
+    const secrets = [
+      ...runKeySecrets(runId),
+      ...credentialSecrets(runId),
+      ...agentTokenSecrets(runId),
+    ];
+    if (secrets.length === 0) return;
+    const rows = this.database
+      .select({ id: events.id, payloadJson: events.payloadJson })
+      .from(events)
+      .where(eq(events.runId, runId))
+      .all();
+    for (const row of rows) {
+      const scrubbed = redactExactSecrets(row.payloadJson, secrets);
+      if (scrubbed === row.payloadJson) continue;
+      this.database
+        .update(events)
+        .set({ payloadJson: scrubbed })
+        .where(eq(events.id, row.id))
+        .run();
+    }
+  }
+
   transaction<T>(action: () => T): T {
     const notifications: ArenaEvent[] = [];
     this.pendingNotifications.push(notifications);

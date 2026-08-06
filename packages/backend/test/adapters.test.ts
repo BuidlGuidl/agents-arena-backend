@@ -477,7 +477,8 @@ describe('codex auth rotation', () => {
   // run dies with refresh_token_reused.
   it('syncs a rotated auth.json back to the host on stop', async () => {
     const context = await setup('codex');
-    const rotated = JSON.stringify({ auth: { access: 'rotated-access-token-98765' } });
+    // A real rotation rewrites tokens in place; the file keeps its other keys.
+    const rotated = JSON.stringify({ auth: { access: 'rotated-access-token-98765' }, short: 'ignored' });
     try {
       context.container.authFileContent = rotated;
       await context.driver.stop(context.run, context.entrant);
@@ -528,6 +529,44 @@ describe('codex auth rotation', () => {
       );
     } finally {
       dropCredentialSecrets(context.run.id);
+      context.journal.close();
+    }
+  });
+
+  // The container copy is agent-writable; a rotation keeps the seeded shape,
+  // junk does not, and junk must never replace the operator's login.
+  it('refuses to overwrite the host login with agent-written junk', async () => {
+    const context = await setup('codex');
+    try {
+      context.container.authFileContent = '{}';
+      await context.driver.stop(context.run, context.entrant);
+      await expect(readFile(context.authPath as string, 'utf8')).resolves.toBe(testCodexAuth);
+    } finally {
+      context.journal.close();
+    }
+  });
+
+  it('learns rotated secrets at the turn boundary and scrubs rows already stored', async () => {
+    const context = await setup('codex');
+    const rotatedAccess = 'turn-rotated-access-token-abcdef';
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      // The agent echoes the rotated token mid-turn, before anything registered it.
+      context.journal.append(context.run.id, context.entrant.id, 'entrant.error', {
+        entrantId: context.entrant.id,
+        message: `saw ${rotatedAccess} in auth.json`,
+      });
+      context.container.authFileContent = JSON.stringify({ auth: { access: rotatedAccess } });
+      completeTurn('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+      await waitFor(() => credentialSecrets(context.run.id).includes(rotatedAccess));
+
+      const stored = context.journal.after(context.run.id, 0)
+        .find((event) => event.type === 'entrant.error');
+      expect(JSON.stringify(stored?.payload)).not.toContain(rotatedAccess);
+      expect(JSON.stringify(stored?.payload)).toContain('[redacted-key]');
+    } finally {
+      dropCredentialSecrets(context.run.id);
+      await context.driver.stop(context.run, context.entrant);
       context.journal.close();
     }
   });

@@ -60,11 +60,14 @@ const rosterEntrySchema = z.object({
       message: `${entry.harness} models must be one of: ${allowedModels.join(', ')}`,
     });
   }
-  if (entry.effort !== undefined && entry.harness === 'opencode') {
+  if (
+    entry.harness === 'opencode'
+    && (entry.effort === 'xhigh' || entry.effort === 'max')
+  ) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['effort'],
-      message: 'effort applies to codex and claude; opencode has no effort knob',
+      message: 'opencode effort through openrouter must be one of: low, medium, high',
     });
   }
 });

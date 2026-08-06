@@ -32,10 +32,9 @@ export function newDraft(harness: HarnessId): DraftEntrant {
   return { harness, model: ROSTER_MODELS[harness][0], effort: DEFAULT_EFFORT };
 }
 
-// This gate mirrors the backend rule so OpenCode rows cannot carry effort into
-// the request. The default sentinel omits the field and preserves harness defaults.
+// The default sentinel omits the field and preserves the harness setting.
 export function draftEffort(draft: DraftEntrant): RosterEffort | undefined {
-  if (draft.harness === 'opencode' || draft.effort === DEFAULT_EFFORT) return undefined;
+  if (draft.effort === DEFAULT_EFFORT) return undefined;
   return draft.effort;
 }
 

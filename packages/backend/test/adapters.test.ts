@@ -705,6 +705,48 @@ describe('adapter guardrails', () => {
     }
   });
 
+  it('writes OpenCode reasoning effort to the project config when set', async () => {
+    const context = await setup(
+      'opencode',
+      undefined,
+      false,
+      'openrouter/z-ai/glm-5.2',
+      'high',
+    );
+    try {
+      expect(context.containerOptions.credentialFiles).toEqual([
+        {
+          path: '/work/opencode.json',
+          content: `${JSON.stringify({
+            provider: {
+              openrouter: {
+                models: {
+                  'z-ai/glm-5.2': {
+                    options: { reasoningEffort: 'high' },
+                  },
+                },
+              },
+            },
+          }, null, 2)}\n`,
+          mode: 0o644,
+        },
+      ]);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('writes no OpenCode config when reasoning effort is unset', async () => {
+    const context = await setup('opencode');
+    try {
+      expect(context.containerOptions.credentialFiles).toBeUndefined();
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
   it.each(['codex', 'opencode', 'claude'] as const)(
     '%s credentials are scrubbed after prepare and exposed after teardown cleanup',
     async (harness) => {
@@ -869,16 +911,6 @@ describe('adapter guardrails', () => {
       expect(context.containerOptions.env).not.toHaveProperty('ANTHROPIC_API_KEY');
       expect(context.containerOptions.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
       expect(context.containerOptions.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
-    } finally {
-      await context.driver.stop(context.run, context.entrant);
-      context.journal.close();
-    }
-  });
-
-  it('passes no credential files for OpenCode', async () => {
-    const context = await setup('opencode');
-    try {
-      expect(context.containerOptions.credentialFiles).toBeUndefined();
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

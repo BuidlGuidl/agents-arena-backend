@@ -338,6 +338,9 @@ function LineupComposer({ drafts, roster, disabled, onChange }: {
         {drafts.map((draft, index) => {
           const id = roster.entries[index].id;
           const models = ROSTER_MODELS[draft.harness];
+          const efforts = draft.harness === 'opencode'
+            ? ROSTER_EFFORTS.filter((effort) => effort !== 'xhigh' && effort !== 'max')
+            : ROSTER_EFFORTS;
           return (
             <li
               className="lineup-row"
@@ -370,27 +373,25 @@ function LineupComposer({ drafts, roster, disabled, onChange }: {
                   <option key={model} value={model}>{model}</option>
                 ))}
               </select>
-              {draft.harness !== 'opencode' ? (
-                <span className="field lineup-effort">
-                  <label htmlFor={`effort-${index}`}>effort</label>
-                  <select
-                    id={`effort-${index}`}
-                    className="preset pick"
-                    data-testid={`effort-${index}`}
-                    value={draft.effort}
-                    disabled={disabled}
-                    onChange={(event) => update(index, {
-                      ...draft,
-                      effort: event.target.value as DraftEntrant['effort'],
-                    })}
-                  >
-                    <option value={DEFAULT_EFFORT}>{DEFAULT_EFFORT}</option>
-                    {ROSTER_EFFORTS.map((effort) => (
-                      <option key={effort} value={effort}>{effort}</option>
-                    ))}
-                  </select>
-                </span>
-              ) : null}
+              <span className="field lineup-effort">
+                <label htmlFor={`effort-${index}`}>effort</label>
+                <select
+                  id={`effort-${index}`}
+                  className="preset pick"
+                  data-testid={`effort-${index}`}
+                  value={draft.effort}
+                  disabled={disabled}
+                  onChange={(event) => update(index, {
+                    ...draft,
+                    effort: event.target.value as DraftEntrant['effort'],
+                  })}
+                >
+                  <option value={DEFAULT_EFFORT}>{DEFAULT_EFFORT}</option>
+                  {efforts.map((effort) => (
+                    <option key={effort} value={effort}>{effort}</option>
+                  ))}
+                </select>
+              </span>
               <button
                 type="button"
                 className="btn row-btn"
@@ -426,7 +427,7 @@ function LineupComposer({ drafts, roster, disabled, onChange }: {
       ) : null}
 
       <p className="lineup-note">
-        the model list is server-enforced. codex and claude rows can set effort; default uses the harness setting.
+        the model list is server-enforced. all rows can set effort; opencode offers low, medium, or high. default uses the harness setting.
       </p>
     </section>
   );

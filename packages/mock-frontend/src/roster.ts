@@ -32,11 +32,9 @@ export function newDraft(harness: HarnessId): DraftEntrant {
   return { harness, model: ROSTER_MODELS[harness][0], effort: DEFAULT_EFFORT };
 }
 
-// Only codex reads an effort level, and only when the operator picked one. This
-// is where the backend's codex-only rule is kept, so no other row can carry the
-// field into the request.
+// The default sentinel omits the field and preserves the harness setting.
 export function draftEffort(draft: DraftEntrant): RosterEffort | undefined {
-  if (draft.harness !== 'codex' || draft.effort === DEFAULT_EFFORT) return undefined;
+  if (draft.effort === DEFAULT_EFFORT) return undefined;
   return draft.effort;
 }
 

@@ -113,7 +113,7 @@ Each `id` must match `^[a-z][a-z0-9-]*$`, contain at most 20 characters, and be 
 - `claude`: `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`
 - `opencode`: `openrouter/z-ai/glm-5.2`, `openrouter/moonshotai/kimi-k3`, `openrouter/deepseek/deepseek-v4-flash-0731`
 
-The optional `effort` accepts `low`, `medium`, `high`, or `xhigh`. Only `codex` entries can set it. Claude and OpenCode have no verified CLI setting for effort yet.
+All three harnesses accept the optional `effort` field. Codex and Claude accept `low`, `medium`, `high`, `xhigh`, or `max`. OpenCode accepts `low`, `medium`, or `high` because OpenRouter supports only those effort levels.
 
 The response has status `201` for a new run and status `200` for an existing idempotent run.
 The chainless `fake-duel` preset skips wallet seeding. The `docker-duel` preset uses the seed and funding gates.

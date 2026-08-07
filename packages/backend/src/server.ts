@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import {
   HARNESS_IDS,
+  OPENCODE_EFFORTS,
   ROSTER_EFFORTS,
   ROSTER_MODELS,
   type ArenaEvent,
@@ -60,11 +61,15 @@ const rosterEntrySchema = z.object({
       message: `${entry.harness} models must be one of: ${allowedModels.join(', ')}`,
     });
   }
-  if (entry.effort !== undefined && entry.harness !== 'codex') {
+  if (
+    entry.harness === 'opencode'
+    && entry.effort
+    && !OPENCODE_EFFORTS.some((effort) => effort === entry.effort)
+  ) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['effort'],
-      message: 'effort is codex-only for now; claude and opencode have no verified CLI knob',
+      message: `opencode effort through openrouter must be one of: ${OPENCODE_EFFORTS.join(', ')}`,
     });
   }
 });

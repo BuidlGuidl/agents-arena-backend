@@ -49,9 +49,25 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
       throw new Error(`OpenRouter API key not found in OPENROUTER_API_KEY or ${this.authPath}`);
     }
     registerCredentialSecrets(run.id, [apiKey]);
+    const config = entrant.effort === null
+      ? undefined
+      : `${JSON.stringify({
+        provider: {
+          openrouter: {
+            models: {
+              [entrant.model.replace(/^openrouter\//, '')]: {
+                options: { reasoningEffort: entrant.effort },
+              },
+            },
+          },
+        },
+      }, null, 2)}\n`;
     return this.containerFactory({
       runId: run.id,
       entrantId: entrant.id,
+      ...(config === undefined ? {} : {
+        credentialFiles: [{ path: '/work/opencode.json', content: config, mode: 0o644 }],
+      }),
       env: scrubOpenCodeEnvironment({
         OPENROUTER_API_KEY: apiKey,
         ETH_RPC_URL: this.rpcUrl,

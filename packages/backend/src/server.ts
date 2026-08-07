@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import {
   HARNESS_IDS,
+  OPENCODE_EFFORTS,
   ROSTER_EFFORTS,
   ROSTER_MODELS,
   type ArenaEvent,
@@ -62,12 +63,13 @@ const rosterEntrySchema = z.object({
   }
   if (
     entry.harness === 'opencode'
-    && (entry.effort === 'xhigh' || entry.effort === 'max')
+    && entry.effort
+    && !OPENCODE_EFFORTS.some((effort) => effort === entry.effort)
   ) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['effort'],
-      message: 'opencode effort through openrouter must be one of: low, medium, high',
+      message: `opencode effort through openrouter must be one of: ${OPENCODE_EFFORTS.join(', ')}`,
     });
   }
 });

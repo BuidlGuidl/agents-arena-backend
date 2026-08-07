@@ -11,7 +11,12 @@ import type {
   RunSnapshot,
   RunState,
 } from '../../../contract/arena-types';
-import { HARNESS_IDS, ROSTER_EFFORTS, ROSTER_MODELS } from '../../../contract/arena-types';
+import {
+  HARNESS_IDS,
+  OPENCODE_EFFORTS,
+  ROSTER_EFFORTS,
+  ROSTER_MODELS,
+} from '../../../contract/arena-types';
 import { projectSnapshot } from './project-snapshot';
 import {
   deriveLaneWallet,
@@ -339,7 +344,7 @@ function LineupComposer({ drafts, roster, disabled, onChange }: {
           const id = roster.entries[index].id;
           const models = ROSTER_MODELS[draft.harness];
           const efforts = draft.harness === 'opencode'
-            ? ROSTER_EFFORTS.filter((effort) => effort !== 'xhigh' && effort !== 'max')
+            ? OPENCODE_EFFORTS
             : ROSTER_EFFORTS;
           return (
             <li

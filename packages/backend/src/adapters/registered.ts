@@ -1,4 +1,5 @@
 import { activeChainProfile } from '../chain/profile.js';
+import type { SteerDelivery } from '../contract.js';
 import { createChallengePackResolver } from '../ctf/resolve.js';
 import type { EventJournal } from '../journal.js';
 import { presetSubstrate, UnknownPresetError } from '../run-manager.js';
@@ -31,8 +32,8 @@ export class RegisteredEntrantDriver implements EntrantDriver {
     await this.driver(run).start(run, entrant, openingPrompt);
   }
 
-  async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<void> {
-    await this.driver(run).steer(run, entrant, text);
+  async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<SteerDelivery> {
+    return this.driver(run).steer(run, entrant, text);
   }
 
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {

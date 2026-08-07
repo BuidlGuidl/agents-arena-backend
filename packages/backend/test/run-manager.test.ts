@@ -22,7 +22,7 @@ import type { RunState } from '../src/contract.js';
 const noopDriver: EntrantDriver = {
   async prepare() {},
   async start() {},
-  async steer() {},
+  async steer() { return 'injected'; },
   async stop() {},
 };
 
@@ -451,7 +451,7 @@ class BarrierDriver implements EntrantDriver {
     this.starts.push({ entrantId: entrant.id, startedAt: run.startedAt });
   }
 
-  async steer() {}
+  async steer() { return 'injected' as const; }
 
   async stop(_run: Parameters<EntrantDriver['stop']>[0], entrant: Parameters<EntrantDriver['stop']>[1]) {
     this.stops.push(entrant.id);
@@ -515,7 +515,7 @@ describe('RunManager ready barrier', () => {
         expect(getWallet(run.id, entrant.id)).not.toBeNull();
       },
       async start() {},
-      async steer() {},
+      async steer() { return 'injected'; },
       async stop() {},
     };
     const manager = new RunManager(journal, driver);
@@ -777,7 +777,7 @@ describe('RunManager lifecycle cancellation', () => {
     const driver: EntrantDriver = {
       async prepare() {},
       async start() {},
-      async steer() {},
+      async steer() { return 'injected'; },
       async stop(_run, entrant) {
         stops.push(entrant.id);
         if (entrant.id === 'codex-1') throw stopError;
@@ -815,6 +815,7 @@ describe('RunManager broadcast', () => {
       async steer(_run, entrant, text) {
         if (entrant.id === 'opencode-1') throw new Error('container is gone');
         steers.push(`${entrant.id}:${text}`);
+        return 'injected';
       },
     };
     const manager = new RunManager(journal, driver);
@@ -825,6 +826,7 @@ describe('RunManager broadcast', () => {
 
       expect(steers).toEqual(['codex-1:Ten minutes left.']);
       expect(result.delivered).toEqual(['codex-1']);
+      expect(result.queued).toEqual([]);
       expect(result.failed).toEqual([{ entrantId: 'opencode-1', message: 'container is gone' }]);
 
       const events = journal.after(run.id, 0);
@@ -850,6 +852,7 @@ describe('RunManager broadcast', () => {
       ...noopDriver,
       async steer(_run, entrant) {
         steers.push(entrant.id);
+        return 'injected';
       },
     };
     const manager = new RunManager(journal, driver);
@@ -866,6 +869,7 @@ describe('RunManager broadcast', () => {
 
       expect(steers).toEqual(['opencode-1']);
       expect(result.delivered).toEqual(['opencode-1']);
+      expect(result.queued).toEqual([]);
       const broadcast = journal.after(run.id, 0).find((event) => event.type === 'director.broadcast');
       expect(broadcast?.payload.targetEntrantIds).toEqual(['opencode-1']);
     } finally {
@@ -895,6 +899,7 @@ describe('RunManager broadcast', () => {
         ...noopDriver,
         async steer(_run, entrant) {
           steers.push(entrant.id);
+          return 'injected';
         },
       };
       const manager = new RunManager(journal, driver);

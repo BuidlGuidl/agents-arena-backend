@@ -24,8 +24,9 @@ export const ROSTER_MODELS: Readonly<Record<HarnessId, readonly string[]>> = {
   ],
 };
 
-export const ROSTER_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+export const ROSTER_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type RosterEffort = (typeof ROSTER_EFFORTS)[number];
+export const OPENCODE_EFFORTS = ['low', 'medium', 'high'] as const satisfies readonly RosterEffort[];
 
 export interface EntrantSolve {
   challengeId: number;

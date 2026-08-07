@@ -36,10 +36,12 @@ describe('newDraft', () => {
 });
 
 describe('draftEffort', () => {
-  it('sends a level only when a codex row picked one', () => {
+  it('sends a picked level for every harness and drops the default sentinel', () => {
     expect(draftEffort({ ...newDraft('codex'), effort: 'xhigh' })).toBe('xhigh');
-    expect(draftEffort(newDraft('codex'))).toBeUndefined();
-    expect(draftEffort({ ...newDraft('claude'), effort: 'xhigh' })).toBeUndefined();
+    expect(draftEffort({ ...newDraft('claude'), effort: 'max' })).toBe('max');
+    expect(draftEffort({ ...newDraft('opencode'), effort: 'high' })).toBe('high');
+    expect(draftEffort(newDraft('claude'))).toBeUndefined();
+    expect(draftEffort(newDraft('opencode'))).toBeUndefined();
   });
 });
 
@@ -56,11 +58,12 @@ describe('buildRoster', () => {
     ]);
   });
 
-  it('omits effort unless a codex row picked a level', () => {
+  it('includes picked effort for every harness but omits defaults', () => {
     const { entries } = buildRoster([
       { ...newDraft('codex'), effort: 'xhigh' },
       newDraft('codex'),
-      newDraft('claude'),
+      { ...newDraft('claude'), effort: 'max' },
+      { ...newDraft('opencode'), effort: 'high' },
     ]);
     expect(entries[0]).toEqual({
       id: 'codex-1',
@@ -69,7 +72,18 @@ describe('buildRoster', () => {
       effort: 'xhigh',
     });
     expect(entries[1]).not.toHaveProperty('effort');
-    expect(entries[2]).not.toHaveProperty('effort');
+    expect(entries[2]).toEqual({
+      id: 'claude-1',
+      harness: 'claude',
+      model: 'claude-opus-5',
+      effort: 'max',
+    });
+    expect(entries[3]).toEqual({
+      id: 'opencode-1',
+      harness: 'opencode',
+      model: 'openrouter/z-ai/glm-5.2',
+      effort: 'high',
+    });
   });
 
   it('reports the rules the backend enforces', () => {
@@ -80,9 +94,8 @@ describe('buildRoster', () => {
       .toBe('10 entrants max.');
   });
 
-  it('drops a stale effort when the row switches off codex', () => {
-    const stale = { ...newDraft('claude'), effort: 'high' } as DraftEntrant;
-    const { entries, problem } = buildRoster([stale]);
+  it('drops the default effort sentinel for OpenCode', () => {
+    const { entries, problem } = buildRoster([newDraft('opencode')]);
     expect(problem).toBeNull();
     expect(entries[0]).not.toHaveProperty('effort');
   });

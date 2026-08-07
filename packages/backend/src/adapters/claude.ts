@@ -78,6 +78,7 @@ export class ClaudeDriver extends HarnessEntrantDriver {
       '--dangerously-skip-permissions',
       '--model',
       entrant.model,
+      ...(entrant.effort === null ? [] : ['--effort', entrant.effort]),
     ];
   }
 
@@ -94,6 +95,7 @@ export class ClaudeDriver extends HarnessEntrantDriver {
       '--dangerously-skip-permissions',
       '--model',
       entrant.model,
+      ...(entrant.effort === null ? [] : ['--effort', entrant.effort]),
     ];
   }
 

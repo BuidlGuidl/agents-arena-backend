@@ -12,6 +12,7 @@ import {
   type BroadcastResponse,
   type CreateRunRequest,
   type RosterEntry,
+  type SteerResponse,
 } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import { resolveAgentToken } from './agent-auth.js';
@@ -295,8 +296,9 @@ export function createServer(options: ServerOptions): ArenaServer {
     const body = parseBody(textSchema, request.body, reply);
     if (body === undefined) return;
     const { id, entrantId } = request.params as { id: string; entrantId: string };
-    await manager.steer(id, entrantId, body.text);
-    return reply.status(202).send({ accepted: true });
+    const status = await manager.steer(id, entrantId, body.text);
+    const response: SteerResponse = { accepted: true, status };
+    return reply.status(202).send(response);
   });
 
   app.post('/runs/:id/broadcast', async (request, reply) => {

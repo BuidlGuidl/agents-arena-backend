@@ -1,5 +1,6 @@
-import type { EventJournal } from '../journal.js';
 import type { ChallengePackAccess, ChallengePackResolver } from '../ctf/resolve.js';
+import type { SteerDelivery } from '../contract.js';
+import type { EventJournal } from '../journal.js';
 import { ClaudeDriver, type ClaudeDriverOptions } from './claude.js';
 import { CodexDriver, type CodexDriverOptions } from './codex.js';
 import { OpenCodeDriver, type OpenCodeDriverOptions } from './opencode.js';
@@ -42,8 +43,8 @@ export class DockerEntrantDriver implements EntrantDriver {
     await this.driver(entrant).start(run, entrant, openingPrompt);
   }
 
-  async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<void> {
-    await this.driver(entrant).steer(run, entrant, text);
+  async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<SteerDelivery> {
+    return this.driver(entrant).steer(run, entrant, text);
   }
 
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {

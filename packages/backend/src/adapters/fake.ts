@@ -1,7 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 
 import { recordSolve } from '../chain/storage.js';
-import type { EntrantStatus } from '../contract.js';
+import type { EntrantStatus, SteerDelivery } from '../contract.js';
 import { entrants } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
 import { costForTokens } from '../pricing.js';
@@ -97,11 +97,12 @@ export class FakeDriver implements EntrantDriver {
     }
   }
 
-  async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<void> {
+  async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<SteerDelivery> {
     this.journal.append(run.id, entrant.id, 'entrant.steered', {
       entrantId: entrant.id,
       text,
     });
+    return 'injected';
   }
 
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {

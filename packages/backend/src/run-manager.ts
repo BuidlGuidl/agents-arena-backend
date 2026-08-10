@@ -11,6 +11,7 @@ import type {
   RosterEntry,
   RunSnapshot,
   RunState,
+  SteerDelivery,
 } from './contract.js';
 import { entrants, events, runs, scores } from './db/schema.js';
 import { ensureChainTables } from './chain/storage.js';
@@ -55,6 +56,7 @@ export interface CreateRunResult {
 
 export interface BroadcastResult {
   delivered: string[];
+  queued: string[];
   failed: { entrantId: string; message: string }[];
 }
 
@@ -528,7 +530,7 @@ export class RunManager {
     }
   }
 
-  async steer(runId: string, entrantId: string, text: string): Promise<void> {
+  async steer(runId: string, entrantId: string, text: string): Promise<SteerDelivery> {
     const run = this.requireRun(runId);
     const entrant = this.journal.database
       .select()
@@ -538,7 +540,7 @@ export class RunManager {
     if (entrant === undefined) {
       throw new EntrantNotFoundError(`Entrant ${entrantId} does not exist in run ${runId}`);
     }
-    await this.deliver(run, entrant, text, 'Steer');
+    return this.deliver(run, entrant, text, 'Steer');
   }
 
   // The director speaks once and every entrant still in the fight hears it. The
@@ -564,23 +566,25 @@ export class RunManager {
 
     const outcomes = await Promise.all(live.map(async (entrant) => {
       try {
-        await this.deliver(run, entrant, text, 'Broadcast');
-        return { entrantId: entrant.id, message: undefined };
+        const status = await this.deliver(run, entrant, text, 'Broadcast');
+        return { entrantId: entrant.id, status, message: undefined };
       } catch (error) {
-        return { entrantId: entrant.id, message: errorMessage(error) };
+        return { entrantId: entrant.id, status: undefined, message: errorMessage(error) };
       }
     }));
 
     const delivered: string[] = [];
+    const queued: string[] = [];
     const failed: BroadcastResult['failed'] = [];
     for (const outcome of outcomes) {
       if (outcome.message === undefined) {
         delivered.push(outcome.entrantId);
+        if (outcome.status === 'queued') queued.push(outcome.entrantId);
         continue;
       }
       failed.push({ entrantId: outcome.entrantId, message: outcome.message });
     }
-    return { delivered, failed };
+    return { delivered, queued, failed };
   }
 
   // Every operator message travels this path so a miss is recorded on the lane it
@@ -590,9 +594,9 @@ export class RunManager {
     entrant: EntrantRecord,
     text: string,
     label: 'Steer' | 'Broadcast',
-  ): Promise<void> {
+  ): Promise<SteerDelivery> {
     try {
-      await this.driver.steer(run, entrant, text);
+      return await this.driver.steer(run, entrant, text);
     } catch (error) {
       this.journal.append(run.id, entrant.id, 'entrant.error', {
         entrantId: entrant.id,

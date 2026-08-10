@@ -167,7 +167,7 @@ async function setup(
 }> {
   const journal = new EventJournal(':memory:');
   const seedDriver: EntrantDriver = {
-    async prepare() {}, async start() {}, async steer() {}, async stop() {},
+    async prepare() {}, async start() {}, async steer() { return 'injected'; }, async stop() {},
   };
   const manager = new RunManager(journal, seedDriver);
   const created = await manager.create({ preset: harness === 'claude' ? 'docker-arena' : 'docker-duel' });
@@ -293,7 +293,8 @@ describe.each(['codex', 'opencode', 'claude'] as const)('%s steer queue', (harne
       await context.driver.start(context.run, context.entrant, 'opening');
       expect(context.container.turns).toHaveLength(1);
 
-      await context.driver.steer(context.run, context.entrant, 'queued steer');
+      await expect(context.driver.steer(context.run, context.entrant, 'queued steer'))
+        .resolves.toBe('queued');
       expect(context.container.turns).toHaveLength(1);
 
       completeTurn(harness, context.container.turns[0] as ControlledExecution, sessionId);
@@ -308,13 +309,138 @@ describe.each(['codex', 'opencode', 'claude'] as const)('%s steer queue', (harne
         return statuses.at(-1)?.payload.status === 'idle';
       });
 
-      await context.driver.steer(context.run, context.entrant, 'idle steer');
+      await expect(context.driver.steer(context.run, context.entrant, 'idle steer'))
+        .resolves.toBe('injected');
       expect(context.container.turns).toHaveLength(3);
       const steers = context.journal.after(context.run.id, 0).filter((event) =>
         event.type === 'entrant.steered');
       expect(steers.map((event) => event.payload.text)).toEqual(['queued steer', 'idle steer']);
       completeTurn(harness, context.container.turns[2] as ControlledExecution, sessionId);
       await waitFor(() => context.container.calls.length >= 6);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+});
+
+// The route answered 'queued' for these steers, so a silent drop would leave a
+// consumer reconciling against entrant.steered waiting forever.
+describe('dropped queued steers', () => {
+  it('journals a queued steer whose drain fails to start a turn', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      await expect(context.driver.steer(context.run, context.entrant, 'ghost steer'))
+        .resolves.toBe('queued');
+
+      // The opening turn ends without ever reporting a thread, so the drained
+      // steer has no session to resume into.
+      const opening = context.container.turns[0] as ControlledExecution;
+      opening.push(JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }));
+      opening.finish(0);
+
+      await waitFor(() => context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' && event.payload.message.includes('ghost steer')));
+      expect(context.container.turns).toHaveLength(1);
+      expect(context.journal.after(context.run.id, 0).filter((event) =>
+        event.type === 'entrant.steered')).toHaveLength(0);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('journals every queued steer when a sessionless drain cannot start', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      await expect(context.driver.steer(context.run, context.entrant, 'first ghost steer'))
+        .resolves.toBe('queued');
+      await expect(context.driver.steer(context.run, context.entrant, 'second ghost steer'))
+        .resolves.toBe('queued');
+
+      const opening = context.container.turns[0] as ControlledExecution;
+      opening.push(JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }));
+      opening.finish(0);
+
+      await waitFor(() => context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' && event.payload.message.includes('second ghost steer')));
+      const errors = context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.error')
+        .filter((event) => event.payload.message.includes('Queued steer dropped'));
+      expect(errors.map((event) => event.payload.message)).toEqual([
+        expect.stringContaining('first ghost steer'),
+        expect.stringContaining('second ghost steer'),
+      ]);
+      expect(context.container.turns).toHaveLength(1);
+      expect(context.journal.after(context.run.id, 0).filter((event) =>
+        event.type === 'entrant.steered')).toHaveLength(0);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('journals queued steers spliced away when the entrant degrades', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      completeTurn('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+      await waitFor(() => {
+        const statuses = context.journal.after(context.run.id, 0).filter((event) =>
+          event.type === 'entrant.status');
+        return statuses.at(-1)?.payload.status === 'idle';
+      });
+
+      await expect(context.driver.steer(context.run, context.entrant, 'first steer'))
+        .resolves.toBe('injected');
+      await expect(context.driver.steer(context.run, context.entrant, 'second steer'))
+        .resolves.toBe('queued');
+
+      // The first steer's resume comes back on the wrong thread, degrading the
+      // entrant; the still-queued second steer gets dropped at turn end.
+      completeTurn('codex', context.container.turns[1] as ControlledExecution, 'thread-999');
+
+      await waitFor(() => context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error'
+          && event.payload.message.includes('degraded')
+          && event.payload.message.includes('second steer')));
+      const steers = context.journal.after(context.run.id, 0).filter((event) =>
+        event.type === 'entrant.steered');
+      expect(steers.map((event) => event.payload.text)).toEqual(['first steer']);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('journals queued steers discarded when the entrant stops', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      await expect(context.driver.steer(context.run, context.entrant, 'first stopped steer'))
+        .resolves.toBe('queued');
+      await expect(context.driver.steer(context.run, context.entrant, 'second stopped steer'))
+        .resolves.toBe('queued');
+
+      await context.driver.stop(context.run, context.entrant);
+
+      const errors = context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.error')
+        .filter((event) => event.payload.message.includes('Queued steer dropped'));
+      expect(errors.map((event) => event.payload.message)).toEqual([
+        'Queued steer dropped (entrant stopped): first stopped steer',
+        'Queued steer dropped (entrant stopped): second stopped steer',
+      ]);
+      expect(context.journal.after(context.run.id, 0).filter((event) =>
+        event.type === 'entrant.steered')).toHaveLength(0);
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();
@@ -329,7 +455,7 @@ describe('parser isolation', () => {
   it('gives each run its own parser so a second run cannot reset the baseline', async () => {
     const journal = new EventJournal(':memory:');
     const manager = new RunManager(journal, {
-      async prepare() {}, async start() {}, async steer() {}, async stop() {},
+      async prepare() {}, async start() {}, async steer() { return 'injected'; }, async stop() {},
     });
     const authDirectory = await mkdtemp(join(tmpdir(), 'arena-test-auth-'));
     temporaryPaths.push(authDirectory);

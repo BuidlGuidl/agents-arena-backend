@@ -1,6 +1,11 @@
+import closeWithGrace from 'close-with-grace';
+import Docker from 'dockerode';
+
 import { createFundingGate, runLocalDevFaucet } from './chain/funding-gate.js';
 import { activeChainProfile } from './chain/profile.js';
 import { createSolveWatch } from './chain/solve-poller.js';
+import { resolveListenHost } from './config.js';
+import { removeArenaResources } from './runtime/reconcile.js';
 import { createServer } from './server.js';
 import type { FundingGate } from './run-manager.js';
 import { InvalidOperatorAddressError, MissingSiweDomainError, parseCsvList } from './siwe.js';
@@ -27,7 +32,7 @@ const siwe = {
   domains: parseCsvList(process.env.ARENA_SIWE_DOMAINS),
 };
 
-const { app } = ((): ReturnType<typeof createServer> => {
+const { app, manager } = ((): ReturnType<typeof createServer> => {
   try {
     return createServer({
       operatorToken,
@@ -65,10 +70,53 @@ const { app } = ((): ReturnType<typeof createServer> => {
   }
 })();
 
-await app.listen({ port, host: '127.0.0.1' });
-
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.once(signal, () => {
-    void app.close().finally(() => process.exit(0));
-  });
+// The request timeout keeps a wedged daemon from hanging boot or eating the
+// shutdown grace budget; this client only serves reconciliation.
+const docker = new Docker({ timeout: 10_000 });
+// A dev machine without a Docker daemon must still boot; leftovers get swept
+// on the next start that does have one.
+let bootResources = { containers: 0, networks: 0 };
+try {
+  bootResources = await removeArenaResources(docker, app.log);
+} catch (error) {
+  app.log.error(error);
 }
+let bootRunsFailed = 0;
+try {
+  bootRunsFailed = manager.failNonTerminalRuns('backend restarted while run was active');
+} catch (error) {
+  app.log.error(error);
+}
+app.log.info(
+  `Boot reconciliation: ${bootResources.containers} containers, ${bootResources.networks} networks, ${bootRunsFailed} runs failed`,
+);
+
+await app.listen({ port, host: resolveListenHost() });
+
+closeWithGrace({ delay: 25_000 }, async ({ signal, err }) => {
+  if (err !== undefined) app.log.error(err);
+  if (signal !== undefined) app.log.info(`Received ${signal}; shutting down`);
+
+  // The local DB write goes first: the Docker sweep is bounded but can still
+  // spend seconds of the grace budget against a sick daemon.
+  let runsFailed = 0;
+  try {
+    runsFailed = manager.failNonTerminalRuns('backend shut down during run');
+  } catch (error) {
+    app.log.error(error);
+  }
+
+  let removedContainers = 0;
+  let removedNetworks = 0;
+  try {
+    const removed = await removeArenaResources(docker, app.log);
+    removedContainers = removed.containers;
+    removedNetworks = removed.networks;
+  } catch (error) {
+    app.log.error(error);
+  }
+  app.log.info(
+    `Shutdown reconciliation: ${removedContainers} containers, ${removedNetworks} networks, ${runsFailed} runs failed`,
+  );
+  await app.close();
+});

@@ -670,6 +670,101 @@ describe('SSE event delivery', () => {
   });
 });
 
+describe('single active run guard', () => {
+  it('rejects create with the active run identity', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    const { run: active } = await server.manager.create({ preset: 'fake-duel' });
+    server.manager.transition(active.id, 'preparing');
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: { preset: 'fake-duel' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: `Run ${active.id} is active in state preparing`,
+      activeRunId: active.id,
+      activeRunState: 'preparing',
+    });
+  });
+
+  it('rejects start with the other active run identity', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    const { run: active } = await server.manager.create({ preset: 'fake-duel' });
+    const { run: drafted } = await server.manager.create({ preset: 'fake-duel' });
+    server.manager.transition(active.id, 'preparing');
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${drafted.id}/start`,
+      headers: operatorHeaders,
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: `Run ${active.id} is active in state preparing`,
+      activeRunId: active.id,
+      activeRunState: 'preparing',
+    });
+  });
+
+  it('allows create and start while another run remains created', async () => {
+    const server = createServer({
+      dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
+      schedule: (task) => {
+        task();
+        return undefined;
+      },
+    });
+    servers.push(server);
+    await server.manager.create({ preset: 'fake-duel' });
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: { preset: 'fake-duel' },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(server.manager.countRuns()).toBe(2);
+    const { run } = response.json() as { run: RunSnapshot };
+    const startResponse = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/start`,
+      headers: operatorHeaders,
+    });
+    expect(startResponse.statusCode).toBe(200);
+  });
+
+  it('replays an idempotent create while that run is active', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    const { run } = await server.manager.create({
+      preset: 'fake-duel',
+      idempotencyKey: 'active-request',
+    });
+    server.manager.transition(run.id, 'preparing');
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: { preset: 'fake-duel', idempotencyKey: 'active-request' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect((response.json() as { run: RunSnapshot }).run.id).toBe(run.id);
+    expect(server.manager.countRuns()).toBe(1);
+  });
+});
+
 describe('seed endpoint', () => {
   it('returns from start while a human-gated run awaits its seed signature', async () => {
     await withAutoSignDisabled(async () => {

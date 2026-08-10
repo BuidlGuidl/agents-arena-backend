@@ -29,6 +29,7 @@ import { EntrantUnavailableError, type EntrantDriver } from './adapters/types.js
 import { eventTypes } from './db/schema.js';
 import { capEvent, EventJournal } from './journal.js';
 import {
+  ActiveRunConflictError,
   type FundingGate,
   EntrantNotFoundError,
   InvalidTransitionError,
@@ -176,6 +177,14 @@ export function createServer(options: ServerOptions): ArenaServer {
     }
     if (error instanceof SeedStateConflictError) {
       void reply.status(409).send({ error: error.message });
+      return;
+    }
+    if (error instanceof ActiveRunConflictError) {
+      void reply.status(409).send({
+        error: error.message,
+        activeRunId: error.activeRunId,
+        activeRunState: error.activeRunState,
+      });
       return;
     }
     if (error instanceof SeedSignatureError) {

@@ -160,7 +160,12 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     if (state === undefined) return;
 
     state.stopping = true;
-    this.dropQueuedSteers(state, 'entrant stopped');
+    try {
+      this.dropQueuedSteers(state, 'entrant stopped');
+    } catch (error) {
+      // A journal failure must not abort the kill/teardown/revoke below.
+      this.logger.warn(`[${this.harnessName()}] failed to journal dropped steers: ${errorMessage(error)}`);
+    }
     if (state.active !== undefined) {
       try {
         await state.active.kill();
@@ -357,11 +362,11 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   }
 
   private dropQueuedSteers(state: EntrantRuntimeState, reason: string): void {
-    // Each queued response must resolve in the journal so consumers do not wait forever.
-    for (const dropped of state.queuedSteers) {
+    // Drain before journaling: a mid-loop append failure must not leave
+    // already-journaled texts queued for a second drop.
+    for (const dropped of state.queuedSteers.splice(0)) {
       this.appendError(state, `Queued steer dropped (${reason}): ${dropped}`);
     }
-    state.queuedSteers.splice(0);
   }
 
   private async preflight(container: EntrantContainer, argv: string[], name: string): Promise<void> {

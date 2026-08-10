@@ -160,7 +160,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     if (state === undefined) return;
 
     state.stopping = true;
-    state.queuedSteers.splice(0);
+    this.dropQueuedSteers(state, 'entrant stopped');
     if (state.active !== undefined) {
       try {
         await state.active.kill();
@@ -341,22 +341,27 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     if (state.stopping) return;
     this.setStatus(state.run.id, state.entrant.id, state.degraded ? 'blocked' : 'idle');
     if (state.degraded) {
-      // The steer route answered 'queued' for these, so the drop must reconcile
-      // in the journal — a consumer waiting on entrant.steered would wait forever.
-      for (const dropped of state.queuedSteers) {
-        this.appendError(state, `Queued steer dropped (entrant degraded): ${dropped}`);
-      }
-      state.queuedSteers.splice(0);
+      this.dropQueuedSteers(state, 'entrant degraded');
       return;
     }
 
     const next = state.queuedSteers.shift();
     if (next !== undefined) {
       void this.beginTurn(state, next, true).catch((error: unknown) => {
-        this.logger.warn(`[${this.harnessName()}] queued steer failed: ${errorMessage(error)}`);
-        this.appendError(state, `Queued steer dropped (${errorMessage(error)}): ${next}`);
+        const message = errorMessage(error);
+        this.logger.warn(`[${this.harnessName()}] queued steer failed: ${message}`);
+        this.appendError(state, `Queued steer dropped (${message}): ${next}`);
+        if (!state.running && !state.stopping) this.dropQueuedSteers(state, message);
       });
     }
+  }
+
+  private dropQueuedSteers(state: EntrantRuntimeState, reason: string): void {
+    // Each queued response must resolve in the journal so consumers do not wait forever.
+    for (const dropped of state.queuedSteers) {
+      this.appendError(state, `Queued steer dropped (${reason}): ${dropped}`);
+    }
+    state.queuedSteers.splice(0);
   }
 
   private async preflight(container: EntrantContainer, argv: string[], name: string): Promise<void> {

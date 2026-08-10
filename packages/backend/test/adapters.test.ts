@@ -354,6 +354,40 @@ describe('dropped queued steers', () => {
     }
   });
 
+  it('journals every queued steer when a sessionless drain cannot start', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      await expect(context.driver.steer(context.run, context.entrant, 'first ghost steer'))
+        .resolves.toBe('queued');
+      await expect(context.driver.steer(context.run, context.entrant, 'second ghost steer'))
+        .resolves.toBe('queued');
+
+      const opening = context.container.turns[0] as ControlledExecution;
+      opening.push(JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }));
+      opening.finish(0);
+
+      await waitFor(() => context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' && event.payload.message.includes('second ghost steer')));
+      const errors = context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.error')
+        .filter((event) => event.payload.message.includes('Queued steer dropped'));
+      expect(errors.map((event) => event.payload.message)).toEqual([
+        expect.stringContaining('first ghost steer'),
+        expect.stringContaining('second ghost steer'),
+      ]);
+      expect(context.container.turns).toHaveLength(1);
+      expect(context.journal.after(context.run.id, 0).filter((event) =>
+        event.type === 'entrant.steered')).toHaveLength(0);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
   it('journals queued steers spliced away when the entrant degrades', async () => {
     const context = await setup('codex');
     try {
@@ -381,6 +415,32 @@ describe('dropped queued steers', () => {
       const steers = context.journal.after(context.run.id, 0).filter((event) =>
         event.type === 'entrant.steered');
       expect(steers.map((event) => event.payload.text)).toEqual(['first steer']);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('journals queued steers discarded when the entrant stops', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      await expect(context.driver.steer(context.run, context.entrant, 'first stopped steer'))
+        .resolves.toBe('queued');
+      await expect(context.driver.steer(context.run, context.entrant, 'second stopped steer'))
+        .resolves.toBe('queued');
+
+      await context.driver.stop(context.run, context.entrant);
+
+      const errors = context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.error')
+        .filter((event) => event.payload.message.includes('Queued steer dropped'));
+      expect(errors.map((event) => event.payload.message)).toEqual([
+        'Queued steer dropped (entrant stopped): first stopped steer',
+        'Queued steer dropped (entrant stopped): second stopped steer',
+      ]);
+      expect(context.journal.after(context.run.id, 0).filter((event) =>
+        event.type === 'entrant.steered')).toHaveLength(0);
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

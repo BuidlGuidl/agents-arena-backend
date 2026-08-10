@@ -544,12 +544,14 @@ export class RunManager {
   // session to replace, and after the race the lane is torn down.
   async restart(runId: string, entrantId: string): Promise<void> {
     const run = this.requireRun(runId);
+    // Existence before state, as steer does: a name that was never on the roster
+    // is a 404 whatever the run is doing, and the docs promise that.
+    const entrant = this.requireEntrant(runId, entrantId);
     if (run.state !== 'running') {
       throw new InvalidTransitionError(
         `Cannot restart entrant ${entrantId} in run ${runId} in state ${run.state}`,
       );
     }
-    const entrant = this.requireEntrant(runId, entrantId);
     // The prompt is rebuilt, not replayed: it is a pure function of the entrant,
     // whose wallet address the seed already fixed, so it comes out identical.
     try {

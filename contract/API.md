@@ -260,7 +260,9 @@ The response has status `202`.
 
 The lane emits `entrant.restarted`, payload `{entrantId}`, followed by the usual `entrant.prompt` carrying the re-fed prompt. Solves, usage totals, and the run's own state are unchanged.
 
-The run must be `running`; any other state returns status `400`. An unknown run or entrant returns status `404`. A lane that cannot be restarted right now — one already stopping or restarting — returns status `409`. Any failure is also recorded on that entrant's feed as an `entrant.error`.
+An unknown run or entrant returns status `404`, whatever state the run is in. Otherwise the run must be `running`; any other state returns status `400`. A lane that cannot be restarted right now — one already stopping or restarting — returns status `409`. Any failure is also recorded on that entrant's feed as an `entrant.error`.
+
+A restart that fails after the old session is already killed leaves the entrant `blocked`: `entrant.restarted` is on the feed with no `entrant.prompt` behind it, and because the lane has no session left, a steer cannot revive it — only another restart can.
 
 ### `POST /runs/:id/broadcast`
 

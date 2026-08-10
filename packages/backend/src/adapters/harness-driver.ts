@@ -46,6 +46,11 @@ interface EntrantRuntimeState {
   running: boolean;
   stopping: boolean;
   restarting: boolean;
+  // Set while something waits for the turn in flight to end. A turn still inside
+  // its launch has no execution to kill yet, so runTurn reads this the moment
+  // one exists — without it a restart arriving mid-launch skips the kill and
+  // then waits out the whole turn, stranding the lane it came to save.
+  killRequested: boolean;
   degraded: boolean;
   // Cleared on restart: the session it names is the one being abandoned.
   sessionId: string | undefined;
@@ -112,6 +117,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       running: false,
       stopping: false,
       restarting: false,
+      killRequested: false,
       degraded: false,
       sessionId: undefined,
       active: undefined,
@@ -162,6 +168,14 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   // resume can only make a blocked or stale thread worse — and the opening
   // prompt starts a new one in the container the entrant already has, so its
   // wallet, credentials, and challenge pack survive the restart.
+  //
+  // When it fails it fails after the kill, so the old session is gone either
+  // way and the lane lands on `blocked`: `entrant.restarted` is already on the
+  // feed, no prompt follows it, and with no sessionId a steer cannot revive the
+  // lane — only another restart can. `restarting` also clears before the
+  // replacement turn is injected (holding it through the launch would deadlock
+  // against finishTurn), so a steer racing that launch is answered `queued` and
+  // then dropped if the launch never lands.
   async restart(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {
     this.assertHarness(entrant);
     const state = this.requireState(run.id, entrant.id);
@@ -171,10 +185,12 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     // Claimed before the first await: finishTurn must not drain a queued steer
     // into the container while the restart is taking over its single writer.
     state.restarting = true;
+    let killed = false;
     try {
       await this.settleTurn(state);
       // A stop that landed while the wedged turn unwound owns the container now.
       if (state.stopping) throw new EntrantUnavailableError(`Entrant ${entrant.id} is stopping`);
+      killed = true;
       this.discardQueuedSteers(state, 'entrant restarted');
       // Both belong to the session being abandoned: the id a resume would
       // target, and the parser's half-read view of its stream.
@@ -182,10 +198,23 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       this.parsers.delete(this.key(run.id, entrant.id));
       state.degraded = false;
       this.journal.append(run.id, entrant.id, 'entrant.restarted', { entrantId: entrant.id });
-    } finally {
+      // Released before the launch. Holding it through beginTurn would let a
+      // turn that ends inside the launch reach finishTurn while the flag is
+      // still up, and that turn's status and queue drain would go missing.
       state.restarting = false;
+      await this.beginTurn(state, openingPrompt, false);
+    } catch (error) {
+      state.restarting = false;
+      // The kill already happened, so there is no session to fall back on and
+      // finishTurn cannot report it — a launch that never started never reaches
+      // it. Without this the lane sits on the board as `working`, or as `idle`
+      // after a launch failure, with nothing running behind either.
+      if (killed && !state.stopping && !state.running) {
+        state.degraded = true;
+        this.setStatus(run.id, entrant.id, 'blocked');
+      }
+      throw error;
     }
-    await this.beginTurn(state, openingPrompt, false);
   }
 
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {
@@ -282,6 +311,13 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
         });
       }
       resolveInjected();
+      // A stop or restart that arrived while this turn was launching had nothing
+      // to kill; it does now, and it is still waiting on this task.
+      if (state.killRequested) {
+        void execution.kill().catch((error: unknown) => {
+          this.logger.warn(`[${this.harnessName()}] launch-race kill failed: ${errorMessage(error)}`);
+        });
+      }
 
       const timeoutMs = this.watchdogMs();
       if (timeoutMs !== undefined) {
@@ -367,14 +403,22 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   // The container takes one exec at a time, so anything that wants the next turn
   // first kills what is in flight and waits for it to unwind.
   private async settleTurn(state: EntrantRuntimeState): Promise<void> {
-    if (state.active !== undefined) {
-      try {
-        await state.active.kill();
-      } catch {
-        // The turn task settles either way; the caller decides what follows.
+    // Claimed before the kill so a turn whose exec has not landed yet still gets
+    // killed the moment it does. A container wedged inside exec() itself is
+    // beyond this — that lane needs a new container, not a new session.
+    state.killRequested = true;
+    try {
+      if (state.active !== undefined) {
+        try {
+          await state.active.kill();
+        } catch {
+          // The turn task settles either way; the caller decides what follows.
+        }
       }
+      await state.turnTask;
+    } finally {
+      state.killRequested = false;
     }
-    await state.turnTask;
   }
 
   private finishTurn(state: EntrantRuntimeState): void {

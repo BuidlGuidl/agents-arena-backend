@@ -1231,7 +1231,7 @@ describe('fake run vertical slice', () => {
       const entrantEvents = beforeSteer.filter((event) => event.source === entrantId);
       expect(entrantEvents.map((event) => event.type))
         .toEqual([
-          'entrant.status', 'agent.message', 'tool.call', 'tool.result',
+          'entrant.prompt', 'entrant.status', 'agent.message', 'tool.call', 'tool.result',
           'usage', 'entrant.status', 'usage', 'entrant.challenge', 'entrant.challenge',
         ]);
       const toolEvents = entrantEvents.filter((event) =>
@@ -1523,6 +1523,15 @@ describe('entrant restart', () => {
       headers: operatorHeaders,
     });
     expect(notRunning.statusCode).toBe(400);
+
+    // Both wrong at once: a name that was never on the roster is a 404 whatever
+    // the run is doing, the same answer steer gives.
+    const ghostBeforeStart = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/entrants/ghost-1/restart`,
+      headers: operatorHeaders,
+    });
+    expect(ghostBeforeStart.statusCode).toBe(404);
 
     advanceToRunning(server, run.id);
     const missingEntrant = await server.app.inject({

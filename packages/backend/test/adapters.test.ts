@@ -113,10 +113,31 @@ class ControlledContainer implements EntrantContainer {
   readonly turns: ControlledExecution[] = [];
   authFileContent: string | undefined;
   tornDown = false;
+  failNextLaunch = false;
   private active: ControlledExecution | undefined;
+  private launchGate: Promise<void> | undefined;
+
+  // Freezes the next exec inside its launch, where the driver has a turn in
+  // flight but no execution to kill yet. Returns the release.
+  holdNextLaunch(): () => void {
+    let release!: () => void;
+    this.launchGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return release;
+  }
 
   async exec(argv: string[], env?: Record<string, string>): Promise<RuntimeExecution> {
     if (this.active !== undefined) throw new Error('single-writer violation');
+    const gate = this.launchGate;
+    if (gate !== undefined) {
+      this.launchGate = undefined;
+      await gate;
+    }
+    if (this.failNextLaunch) {
+      this.failNextLaunch = false;
+      throw new Error('container is gone');
+    }
     this.calls.push(env === undefined ? { argv } : { argv, env });
     const execution = new ControlledExecution(`exec-${this.calls.length}`, () => {
       if (this.active === execution) this.active = undefined;
@@ -552,6 +573,74 @@ describe('codex restart', () => {
       await expect(context.driver.steer(context.run, context.entrant, 'after restart'))
         .resolves.toBe('injected');
       expect(context.container.calls.at(-1)?.argv).toContain('thread-2');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  // The window the kill used to miss: state.active is only set once exec()
+  // resolves, so a restart landing mid-launch had nothing to kill and then sat
+  // on turnTask waiting out the very turn it came to end.
+  it('kills a turn that was still launching when the restart landed', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      completeTurn('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+      await waitFor(() => {
+        const statuses = context.journal.after(context.run.id, 0).filter((event) =>
+          event.type === 'entrant.status');
+        return statuses.at(-1)?.payload.status === 'idle';
+      });
+
+      const release = context.container.holdNextLaunch();
+      // Never resolves on its own: its turn is frozen inside the launch.
+      const steering = context.driver.steer(context.run, context.entrant, 'lands mid-launch');
+      void steering.catch(() => {});
+      const restarting = context.driver.restart(context.run, context.entrant, 'opening again');
+      release();
+
+      await restarting;
+      await steering;
+      // The frozen turn was killed the moment it had an execution, and the
+      // restart went on to open its own.
+      expect((context.container.turns[1] as ControlledExecution).killCalls).toEqual(['kill']);
+      expect(context.container.turns).toHaveLength(3);
+      expect(context.container.calls.at(-1)?.argv).toContain('opening again');
+      expect(context.container.calls.at(-1)?.argv).not.toContain('thread-1');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  // The kill already happened, so there is no session to fall back on: the lane
+  // must not be left claiming it is working.
+  it('marks the lane blocked when the replacement turn cannot launch', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      completeTurn('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+      await waitFor(() => {
+        const statuses = context.journal.after(context.run.id, 0).filter((event) =>
+          event.type === 'entrant.status');
+        return statuses.at(-1)?.payload.status === 'idle';
+      });
+
+      context.container.failNextLaunch = true;
+      await expect(context.driver.restart(context.run, context.entrant, 'opening again'))
+        .rejects.toThrow('container is gone');
+
+      const events = context.journal.after(context.run.id, 0);
+      expect(events.filter((event) => event.type === 'entrant.status')
+        .map((event) => event.payload.status).at(-1)).toBe('blocked');
+      // The restart is on the record with no prompt behind it, and the lane
+      // only comes back through another restart.
+      expect(events.filter((event) => event.type === 'entrant.restarted')).toHaveLength(1);
+      expect(events.filter((event) => event.type === 'entrant.prompt')
+        .map((event) => event.payload.text)).toEqual(['opening']);
+      await expect(context.driver.steer(context.run, context.entrant, 'cannot revive'))
+        .rejects.toBeInstanceOf(EntrantUnavailableError);
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

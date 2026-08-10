@@ -24,7 +24,11 @@ const SCRIPTED_FLAG_SETS: readonly (readonly number[])[] = [
 ];
 
 export class FakeDriver implements EntrantDriver {
-  private readonly activeEntrants = new Set<string>();
+  // Which run of the script each lane is on. A restart bumps it, so timers the
+  // previous script left behind fire into a generation that has moved on and go
+  // quiet — a membership flag cannot do that, because restart re-adds the lane
+  // in the same tick and the old timers would find it back and emit.
+  private readonly generations = new Map<string, number>();
   private toolCallCount = 0;
 
   constructor(
@@ -38,7 +42,15 @@ export class FakeDriver implements EntrantDriver {
     const key = this.key(run.id, entrant.id);
     const toolCallId = `fake-${++this.toolCallCount}`;
     const scriptedFlags = this.scriptedFlags(run.id, entrant.id);
-    this.activeEntrants.add(key);
+    const generation = (this.generations.get(key) ?? 0) + 1;
+    this.generations.set(key, generation);
+    // The turn the lane was given, on the substrate that has no harness to
+    // journal it. The docs promise this row after a restart, and the feed's
+    // task line comes from it on a fake duel the same as on a real one.
+    this.journal.append(run.id, entrant.id, 'entrant.prompt', {
+      entrantId: entrant.id,
+      text: openingPrompt,
+    });
     this.setStatus(run.id, entrant.id, 'working');
 
     const script: Array<readonly [number, () => void]> = [
@@ -90,7 +102,7 @@ export class FakeDriver implements EntrantDriver {
 
     for (const [delay, emit] of script) {
       this.schedule(() => {
-        if (this.activeEntrants.has(key)) {
+        if (this.generations.get(key) === generation) {
           emit();
         }
       }, delay);
@@ -105,17 +117,17 @@ export class FakeDriver implements EntrantDriver {
     return 'injected';
   }
 
-  // Dropping the key first cancels the old script: every pending emission checks
-  // it before firing, so the lane replays from the top instead of interleaving.
-  // The scripted solves are idempotent, so a restart cannot inflate a score.
+  // start() bumps the generation, which silences the script still in flight, so
+  // the lane replays from the top instead of two scripts interleaving their
+  // statuses and double-counting their usage rows.
   async restart(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {
-    this.activeEntrants.delete(this.key(run.id, entrant.id));
     this.journal.append(run.id, entrant.id, 'entrant.restarted', { entrantId: entrant.id });
     await this.start(run, entrant, openingPrompt);
   }
 
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {
-    this.activeEntrants.delete(this.key(run.id, entrant.id));
+    // No generation left to match, so the script goes quiet for good.
+    this.generations.delete(this.key(run.id, entrant.id));
     this.setStatus(run.id, entrant.id, 'done');
   }
 

@@ -167,7 +167,8 @@ async function setup(
 }> {
   const journal = new EventJournal(':memory:');
   const seedDriver: EntrantDriver = {
-    async prepare() {}, async start() {}, async steer() { return 'injected'; }, async stop() {},
+    async prepare() {}, async start() {}, async steer() { return 'injected'; },
+    async restart() {}, async stop() {},
   };
   const manager = new RunManager(journal, seedDriver);
   const created = await manager.create({ preset: harness === 'claude' ? 'docker-arena' : 'docker-duel' });
@@ -233,6 +234,31 @@ async function waitFor(check: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   throw new Error('Condition was not met');
+}
+
+// Opens a session and says something on it, so a test can wait for the message
+// and know the session line ahead of it has already been parsed.
+function openSession(harness: TestHarness, execution: ControlledExecution, sessionId: string): void {
+  if (harness === 'codex') {
+    execution.push(JSON.stringify({ type: 'thread.started', thread_id: sessionId }));
+    execution.push(JSON.stringify({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: 'working' },
+    }));
+  } else if (harness === 'opencode') {
+    execution.push(JSON.stringify({ type: 'step_start', sessionID: sessionId, part: {} }));
+    execution.push(JSON.stringify({
+      type: 'text',
+      sessionID: sessionId,
+      part: { text: 'working' },
+    }));
+  } else {
+    execution.push(JSON.stringify({ type: 'system', subtype: 'init', session_id: sessionId }));
+    execution.push(JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'working' }] },
+    }));
+  }
 }
 
 function completeTurn(harness: TestHarness, execution: ControlledExecution, sessionId: string): void {
@@ -448,6 +474,105 @@ describe('dropped queued steers', () => {
   });
 });
 
+// The lane recovery path (#49): the operator's last resort when a session goes
+// stale mid-race, and the rest of the field must not notice.
+describe.each(['codex', 'opencode', 'claude'] as const)('%s restart', (harness) => {
+  it('kills the wedged turn and opens a fresh session on the opening prompt', async () => {
+    const context = await setup(harness);
+    const sessionId = harness === 'codex' ? 'thread-1' : `${harness}-session-1`;
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const wedged = context.container.turns[0] as ControlledExecution;
+      // A session exists but the turn never ends — the stale lane the operator sees.
+      openSession(harness, wedged, sessionId);
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .some((event) => event.type === 'agent.message'));
+      await expect(context.driver.steer(context.run, context.entrant, 'never delivered'))
+        .resolves.toBe('queued');
+
+      await context.driver.restart(context.run, context.entrant, 'opening again');
+
+      expect(wedged.killCalls).toEqual(['kill']);
+      expect(context.container.turns).toHaveLength(2);
+      // A fresh session, not a resume: the restart argv carries no session id.
+      const restarted = context.container.calls.at(-1)?.argv ?? [];
+      expect(restarted).toContain('opening again');
+      expect(restarted).not.toContain(sessionId);
+
+      const events = context.journal.after(context.run.id, 0);
+      expect(events.some((event) => event.type === 'entrant.restarted'
+        && event.payload.entrantId === context.entrant.id)).toBe(true);
+      // The queued steer was answered 'queued', so its drop is on the record.
+      expect(events.some((event) => event.type === 'entrant.error'
+        && event.payload.message === 'Queued steer dropped (entrant restarted): never delivered')).toBe(true);
+      expect(events.filter((event) => event.type === 'entrant.prompt')
+        .map((event) => event.payload.text)).toEqual(['opening', 'opening again']);
+      expect(events.filter((event) => event.type === 'entrant.status')
+        .at(-1)?.payload.status).toBe('working');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+});
+
+describe('codex restart', () => {
+  it('un-blocks a degraded entrant and steers into the new session', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      // A resume that comes back on the wrong thread degrades the lane; from
+      // here every steer is refused, which is the state #49 was raised for.
+      completeTurn('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+      await waitFor(() => {
+        const statuses = context.journal.after(context.run.id, 0).filter((event) =>
+          event.type === 'entrant.status');
+        return statuses.at(-1)?.payload.status === 'idle';
+      });
+      await expect(context.driver.steer(context.run, context.entrant, 'first steer'))
+        .resolves.toBe('injected');
+      completeTurn('codex', context.container.turns[1] as ControlledExecution, 'thread-999');
+      await waitFor(() => {
+        const statuses = context.journal.after(context.run.id, 0).filter((event) =>
+          event.type === 'entrant.status');
+        return statuses.at(-1)?.payload.status === 'blocked';
+      });
+      await expect(context.driver.steer(context.run, context.entrant, 'refused'))
+        .rejects.toBeInstanceOf(EntrantUnavailableError);
+
+      await context.driver.restart(context.run, context.entrant, 'opening again');
+      completeTurn('codex', context.container.turns[2] as ControlledExecution, 'thread-2');
+      await waitFor(() => {
+        const statuses = context.journal.after(context.run.id, 0).filter((event) =>
+          event.type === 'entrant.status');
+        return statuses.at(-1)?.payload.status === 'idle';
+      });
+
+      // The lane takes turns again, and the resume targets the new thread.
+      await expect(context.driver.steer(context.run, context.entrant, 'after restart'))
+        .resolves.toBe('injected');
+      expect(context.container.calls.at(-1)?.argv).toContain('thread-2');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('refuses a restart while the entrant is stopping', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const stopping = context.driver.stop(context.run, context.entrant);
+      await expect(context.driver.restart(context.run, context.entrant, 'too late'))
+        .rejects.toBeInstanceOf(EntrantUnavailableError);
+      await stopping;
+      expect(context.container.turns).toHaveLength(1);
+    } finally {
+      context.journal.close();
+    }
+  });
+});
+
 describe('parser isolation', () => {
   // One CodexDriver serves every run in the process and entrant ids are preset
   // literals, so a parser cache keyed by entrant alone would let two runs in
@@ -455,7 +580,8 @@ describe('parser isolation', () => {
   it('gives each run its own parser so a second run cannot reset the baseline', async () => {
     const journal = new EventJournal(':memory:');
     const manager = new RunManager(journal, {
-      async prepare() {}, async start() {}, async steer() { return 'injected'; }, async stop() {},
+      async prepare() {}, async start() {}, async steer() { return 'injected'; },
+      async restart() {}, async stop() {},
     });
     const authDirectory = await mkdtemp(join(tmpdir(), 'arena-test-auth-'));
     temporaryPaths.push(authDirectory);

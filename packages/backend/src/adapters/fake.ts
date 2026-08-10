@@ -105,6 +105,15 @@ export class FakeDriver implements EntrantDriver {
     return 'injected';
   }
 
+  // Dropping the key first cancels the old script: every pending emission checks
+  // it before firing, so the lane replays from the top instead of interleaving.
+  // The scripted solves are idempotent, so a restart cannot inflate a score.
+  async restart(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {
+    this.activeEntrants.delete(this.key(run.id, entrant.id));
+    this.journal.append(run.id, entrant.id, 'entrant.restarted', { entrantId: entrant.id });
+    await this.start(run, entrant, openingPrompt);
+  }
+
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {
     this.activeEntrants.delete(this.key(run.id, entrant.id));
     this.setStatus(run.id, entrant.id, 'done');

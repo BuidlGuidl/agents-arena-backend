@@ -26,5 +26,19 @@
     "fundingThresholdEth": "0.005",
     "briefingUrl": "https://ai-ctf-buidlguidl-com-nextjs.vercel.app/",
     "addressNote": "Addresses match the production Base deployment artifacts. The zero funder address blocks seed signatures until a treasury EOA replaces it."
+  },
+  "baseSepolia": {
+    "name": "baseSepolia",
+    "rpcUrl": "https://sepolia.base.org",
+    "containerRpcUrl": "https://sepolia.base.org",
+    "chainId": 84532,
+    "confirmations": 2,
+    "nftFlags": "0x2667573cEfDe02fb72070b49581de9713BE6f659",
+    "challenge1": "0xbEa17B21E80851b1D730d85aF3D685A86BC75E46",
+    "identityRegistry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    "funderAddress": "0x55b9CB0bCf56057010b9c471e7D42d60e1111EEa",
+    "fundingThresholdEth": "0.005",
+    "briefingUrl": "https://ai-ctf-buidlguidl-com-nextjs-git-base-sepo-169d4a-buidlguidldao.vercel.app/",
+    "addressNote": "Addresses match the baseSepolia deployment artifacts on ai.ctf.buidlguidl.com. The identity registry is the ERC-8004 testnet deployment, which differs from the mainnet address."
   }
 }

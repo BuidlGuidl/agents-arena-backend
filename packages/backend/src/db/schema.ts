@@ -24,6 +24,7 @@ export const eventTypes = [
   'tool.result',
   'entrant.steered',
   'entrant.prompt',
+  'entrant.restarted',
   'entrant.nudged',
   'director.broadcast',
   'wallet.assigned',

@@ -31,6 +31,7 @@ const noopDriver: EntrantDriver = {
   async prepare() {},
   async start() {},
   async steer() { return 'injected'; },
+  async restart() {},
   async stop() {},
 };
 
@@ -1230,7 +1231,7 @@ describe('fake run vertical slice', () => {
       const entrantEvents = beforeSteer.filter((event) => event.source === entrantId);
       expect(entrantEvents.map((event) => event.type))
         .toEqual([
-          'entrant.status', 'agent.message', 'tool.call', 'tool.result',
+          'entrant.prompt', 'entrant.status', 'agent.message', 'tool.call', 'tool.result',
           'usage', 'entrant.status', 'usage', 'entrant.challenge', 'entrant.challenge',
         ]);
       const toolEvents = entrantEvents.filter((event) =>
@@ -1446,6 +1447,7 @@ describe('director broadcast', () => {
         async steer(_run, entrant) {
           throw new EntrantUnavailableError(`Entrant ${entrant.id} is degraded`);
         },
+        async restart() {},
         async stop() {},
       }),
     });
@@ -1463,6 +1465,101 @@ describe('director broadcast', () => {
   });
 });
 
+describe('entrant restart', () => {
+  function advanceToRunning(server: ArenaServer, runId: string): void {
+    for (const state of ['awaiting_signature', 'preparing', 'awaiting_funding', 'ready', 'running'] as const) {
+      server.manager.transition(runId, state);
+    }
+  }
+
+  async function runningServer(driver?: Partial<EntrantDriver>) {
+    const server = createServer({
+      dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
+      ...(driver === undefined ? {} : { driverFactory: () => ({ ...noopDriver, ...driver }) }),
+    });
+    servers.push(server);
+    const { run } = await server.manager.create({ preset: 'fake-duel' });
+    return { server, run };
+  }
+
+  it('restarts one lane and reports it accepted', async () => {
+    const restarts: Array<{ entrantId: string; prompt: string }> = [];
+    const { server, run } = await runningServer({
+      async restart(_run, entrant, openingPrompt) {
+        restarts.push({ entrantId: entrant.id, prompt: openingPrompt });
+      },
+    });
+    advanceToRunning(server, run.id);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/entrants/codex-1/restart`,
+      headers: operatorHeaders,
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({ accepted: true });
+    // Only the named lane, and on the prompt the backend rebuilt for it.
+    expect(restarts.map((restart) => restart.entrantId)).toEqual(['codex-1']);
+    expect(restarts[0]?.prompt).toContain('Solidity Invaders');
+    expect(server.manager.snapshot(run.id).state).toBe('running');
+  });
+
+  it('rejects an unknown run, an unknown entrant, and a run that is not running', async () => {
+    const { server, run } = await runningServer();
+
+    const missingRun = await server.app.inject({
+      method: 'POST',
+      url: '/runs/missing-run/entrants/codex-1/restart',
+      headers: operatorHeaders,
+    });
+    expect(missingRun.statusCode).toBe(404);
+
+    // The run exists but has not started, so there is no session to replace.
+    const notRunning = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/entrants/codex-1/restart`,
+      headers: operatorHeaders,
+    });
+    expect(notRunning.statusCode).toBe(400);
+
+    // Both wrong at once: a name that was never on the roster is a 404 whatever
+    // the run is doing, the same answer steer gives.
+    const ghostBeforeStart = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/entrants/ghost-1/restart`,
+      headers: operatorHeaders,
+    });
+    expect(ghostBeforeStart.statusCode).toBe(404);
+
+    advanceToRunning(server, run.id);
+    const missingEntrant = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/entrants/ghost-1/restart`,
+      headers: operatorHeaders,
+    });
+    expect(missingEntrant.statusCode).toBe(404);
+  });
+
+  it('answers 409 when the lane cannot be restarted right now', async () => {
+    const { server, run } = await runningServer({
+      async restart(_run, entrant) {
+        throw new EntrantUnavailableError(`Entrant ${entrant.id} is stopping`);
+      },
+    });
+    advanceToRunning(server, run.id);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/entrants/codex-1/restart`,
+      headers: operatorHeaders,
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: 'Entrant codex-1 is stopping' });
+  });
+});
+
 describe('operator auth', () => {
   it('rejects every mutating route with a missing or wrong token and leaves reads open', async () => {
     const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
@@ -1477,6 +1574,7 @@ describe('operator auth', () => {
       { url: `/runs/${run.id}/seed` },
       { url: `/runs/${run.id}/stop` },
       { url: `/runs/${run.id}/entrants/codex-1/steer`, payload: { text: 'no token' } },
+      { url: `/runs/${run.id}/entrants/codex-1/restart` },
       { url: `/runs/${run.id}/broadcast`, payload: { text: 'no token' } },
     ];
     const credentials = [undefined, { authorization: 'Bearer wrong-token' }, { authorization: OPERATOR_TOKEN }];

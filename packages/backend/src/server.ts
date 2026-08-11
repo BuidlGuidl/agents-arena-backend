@@ -11,6 +11,7 @@ import {
   type ArenaEvent,
   type BroadcastResponse,
   type CreateRunRequest,
+  type RestartResponse,
   type RosterEntry,
   type SteerResponse,
 } from './contract.js';
@@ -298,6 +299,15 @@ export function createServer(options: ServerOptions): ArenaServer {
     const { id, entrantId } = request.params as { id: string; entrantId: string };
     const status = await manager.steer(id, entrantId, body.text);
     const response: SteerResponse = { accepted: true, status };
+    return reply.status(202).send(response);
+  });
+
+  // No body: the opening prompt is rebuilt from the run, so an operator cannot
+  // quietly swap in a different one through the recovery path.
+  app.post('/runs/:id/entrants/:entrantId/restart', async (request, reply) => {
+    const { id, entrantId } = request.params as { id: string; entrantId: string };
+    await manager.restart(id, entrantId);
+    const response: RestartResponse = { accepted: true };
     return reply.status(202).send(response);
   });
 

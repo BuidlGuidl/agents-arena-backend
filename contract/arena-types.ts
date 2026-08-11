@@ -91,6 +91,9 @@ export type ArenaEvent =
   | (ArenaEventBase & { type: 'tool.result'; payload: { entrantId: string; tool: string; toolCallId: string; ok: boolean; detail: string; parentToolCallId?: string } })
   | (ArenaEventBase & { type: 'entrant.steered'; payload: { entrantId: string; text: string } })
   | (ArenaEventBase & { type: 'entrant.prompt'; payload: { entrantId: string; text: string } })
+  // The operator abandoned this lane's session and opened a fresh one. The
+  // opening prompt that follows arrives as the usual `entrant.prompt`.
+  | (ArenaEventBase & { type: 'entrant.restarted'; payload: { entrantId: string } })
   | (ArenaEventBase & { type: 'entrant.nudged'; payload: { entrantId: string; text: string; flags: number } })
   | (ArenaEventBase & { type: 'director.broadcast'; payload: { text: string; targetEntrantIds: string[] } })
   | (ArenaEventBase & { type: 'wallet.assigned'; payload: { entrantId: string; address: string } })
@@ -166,6 +169,11 @@ export type SteerDelivery = 'queued' | 'injected';
 export interface SteerResponse {
   accepted: boolean;
   status: SteerDelivery;
+}
+
+// Restart takes no body: the opening prompt is rebuilt from the run, not sent.
+export interface RestartResponse {
+  accepted: boolean;
 }
 
 export interface BroadcastRequest {

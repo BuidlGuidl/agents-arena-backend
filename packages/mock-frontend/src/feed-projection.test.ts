@@ -400,6 +400,7 @@ describe('describeEvent — all 17 contract types render', () => {
     { ...base, type: 'tool.result', payload: { entrantId: 'codex-1', tool: 'bash', toolCallId: 'call-1', ok: true, detail: 'ok' } },
     { ...base, type: 'entrant.steered', payload: { entrantId: 'codex-1', text: 'go' } },
     { ...base, type: 'entrant.prompt', payload: { entrantId: 'codex-1', text: 'begin' } },
+    { ...base, type: 'entrant.restarted', payload: { entrantId: 'codex-1' } },
     { ...base, type: 'entrant.nudged', payload: { entrantId: 'codex-1', text: 'nudge', flags: 1 } },
     { ...base, source: RUN_SOURCE, type: 'director.broadcast', payload: { text: 'wrap up', targetEntrantIds: ['codex-1', 'opencode-1'] } },
     { ...base, type: 'wallet.assigned', payload: { entrantId: 'codex-1', address: '0xabc' } },
@@ -412,7 +413,7 @@ describe('describeEvent — all 17 contract types render', () => {
   ];
 
   it('covers every contract event type', () => {
-    expect(samples).toHaveLength(17);
+    expect(samples).toHaveLength(18);
   });
 
   // Rows journalled before the guesser existed carry no via — they were all

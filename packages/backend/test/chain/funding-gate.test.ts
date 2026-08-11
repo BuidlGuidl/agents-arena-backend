@@ -11,6 +11,7 @@ const noopDriver: EntrantDriver = {
   async prepare() {},
   async start() {},
   async steer() { return 'injected'; },
+  async restart() {},
   async stop() {},
 };
 

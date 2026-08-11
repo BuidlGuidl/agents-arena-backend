@@ -47,6 +47,10 @@ export class DockerEntrantDriver implements EntrantDriver {
     return this.driver(entrant).steer(run, entrant, text);
   }
 
+  async restart(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {
+    await this.driver(entrant).restart(run, entrant, openingPrompt);
+  }
+
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {
     await this.driver(entrant).stop(run, entrant);
   }

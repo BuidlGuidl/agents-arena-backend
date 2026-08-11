@@ -124,7 +124,21 @@ curl -fsS -X POST \
 ```
 
 The reply names who took the message. The run log shows one `broadcast` row, then
-each lane takes its own turn. Stop the launcher-owned processes after the demo:
+each lane takes its own turn.
+
+If one lane wedges — no turns, or a `blocked` status no steer gets past — give it a
+fresh session on its opening prompt without touching the other:
+
+```bash
+curl -fsS -X POST \
+  "http://127.0.0.1:4177/runs/$RUN_ID/entrants/codex-1/restart" \
+  -H "authorization: Bearer $(./scripts/demo.sh token)"
+```
+
+There is no body: the backend rebuilds the prompt. The lane shows a `restart` row,
+then its opening `task` row again, and starts working from the top.
+
+Stop the launcher-owned processes after the demo:
 
 ```bash
 ./scripts/demo.sh down

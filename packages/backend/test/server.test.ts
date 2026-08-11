@@ -18,13 +18,14 @@ import {
   seedTypedData,
 } from '../src/chain/wallet.js';
 import type { ArenaEvent, HistoryPage, RunSnapshot } from '../src/contract.js';
-import { entrants } from '../src/db/schema.js';
+import { entrants, runs } from '../src/db/schema.js';
 import { capEvent, EVENT_TEXT_LIMIT } from '../src/journal.js';
 import { createServer, type ArenaServer } from '../src/server.js';
 
 const servers: ArenaServer[] = [];
 const OPERATOR_TOKEN = 'test-operator-token';
 const operatorHeaders = { authorization: `Bearer ${OPERATOR_TOKEN}` };
+const LOCAL_DEV_OPERATOR = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
 const SECP256K1_N =
   0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 const noopDriver: EntrantDriver = {
@@ -767,6 +768,32 @@ describe('single active run guard', () => {
 });
 
 describe('seed endpoint', () => {
+  it('auto-signs with an empty operator allowlist and records the dev signer', async () => {
+    await withAutoSignEnabled(async () => {
+      const server = createSeedTestServer([]);
+
+      const response = await server.app.inject({
+        method: 'POST',
+        url: '/runs',
+        headers: operatorHeaders,
+        payload: { preset: 'docker-duel', autoStart: true },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const { run } = response.json() as { run: RunSnapshot };
+      expect(run.state).toBe('running');
+      expect(run.seededBy).toBe(LOCAL_DEV_OPERATOR.address);
+      const stored = server.journal.database
+        .select({ seededBy: runs.seededBy })
+        .from(runs)
+        .where(eq(runs.id, run.id))
+        .get();
+      expect(stored?.seededBy).toBe(LOCAL_DEV_OPERATOR.address);
+
+      await server.manager.stop(run.id);
+    });
+  });
+
   it('returns from start while a human-gated run awaits its seed signature', async () => {
     await withAutoSignDisabled(async () => {
       const server = createSeedTestServer();
@@ -850,7 +877,7 @@ describe('seed endpoint', () => {
     });
   });
 
-  it('rejects a signature from the wrong signer without exposing signer data', async () => {
+  it('rejects a signature from a non-operator without exposing signer data', async () => {
     await withAutoSignDisabled(async () => {
       const server = createSeedTestServer();
       const created = await server.app.inject({
@@ -878,7 +905,7 @@ describe('seed endpoint', () => {
     });
   });
 
-  it('rejects a high-s variant of the funder signature', async () => {
+  it('rejects a high-s variant of an operator signature', async () => {
     await withAutoSignDisabled(async () => {
       const server = createSeedTestServer();
       const created = await server.app.inject({
@@ -940,9 +967,10 @@ describe('seed endpoint', () => {
     });
   });
 
-  it('accepts the funder signature, stores addresses, and emits address events', async () => {
+  it('accepts an allowlisted operator signature and records its provenance', async () => {
     await withAutoSignDisabled(async () => {
-      const server = createSeedTestServer();
+      const operator = privateKeyToAccount(generatePrivateKey());
+      const server = createSeedTestServer([operator.address]);
       const created = await server.app.inject({
         method: 'POST',
         url: '/runs',
@@ -951,8 +979,8 @@ describe('seed endpoint', () => {
       });
       const { run } = created.json() as { run: RunSnapshot };
       expect(run.state).toBe('awaiting_signature');
-      const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
-      const signature = await account.signTypedData(seedTypedData(run.id, 31337));
+      expect(run).not.toHaveProperty('seededBy');
+      const signature = await operator.signTypedData(seedTypedData(run.id, 31337));
 
       const response = await server.app.inject({
         method: 'POST',
@@ -963,6 +991,15 @@ describe('seed endpoint', () => {
       await waitForState(server, run.id, 'running');
 
       expect(response.statusCode).toBe(202);
+      const seeded = (response.json() as { run: RunSnapshot }).run;
+      expect(seeded.seededBy).toBe(operator.address);
+      expect(server.manager.snapshot(run.id).seededBy).toBe(operator.address);
+      const storedRun = server.journal.database
+        .select({ seededBy: runs.seededBy })
+        .from(runs)
+        .where(eq(runs.id, run.id))
+        .get();
+      expect(storedRun?.seededBy).toBe(operator.address);
       const rows = server.journal.database
         .select({ address: entrants.address })
         .from(entrants)
@@ -1381,10 +1418,27 @@ async function withAutoSignDisabled<T>(action: () => Promise<T>): Promise<T> {
   }
 }
 
-function createSeedTestServer(): ArenaServer {
+async function withAutoSignEnabled<T>(action: () => Promise<T>): Promise<T> {
+  const previous = process.env.ARENA_AUTO_SIGN;
+  process.env.ARENA_AUTO_SIGN = 'true';
+  try {
+    return await action();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ARENA_AUTO_SIGN;
+    } else {
+      process.env.ARENA_AUTO_SIGN = previous;
+    }
+  }
+}
+
+function createSeedTestServer(
+  operatorAddresses: readonly string[] = [LOCAL_DEV_OPERATOR.address],
+): ArenaServer {
   const server = createServer({
     dbPath: ':memory:',
     operatorToken: OPERATOR_TOKEN,
+    siwe: { operatorAddresses, domains: ['localhost'] },
     driverFactory: () => noopDriver,
     fundingGateFactory: () => async () => {},
   });

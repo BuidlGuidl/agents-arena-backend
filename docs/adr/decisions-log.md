@@ -238,7 +238,7 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 
 ## ADR-0014 — funding moves to the funder; the gate only watches
 
-**Status:** accepted (2026-07-30) — with ADR-0013, supersedes the funding half of ADR-0005; from #28 and the 2026-07-29 meeting
+**Status:** accepted (2026-07-30) — with ADR-0013, supersedes the funding half of ADR-0005; from #28 and the 2026-07-29 meeting. superseded in part by ADR-0019 (2026-08-11): the profile-pinned `funderAddress` is gone; the operator allowlist authorizes the seed signature.
 
 **Decision:** the arena never sends funds on base. the run lifecycle gains a state: `created → awaiting_signature → preparing → awaiting_funding → ready → running → stopping → finished`. a new endpoint accepts the funder's seed signature before container prep; the arena verifies it recovers to the profile's pinned `funderAddress` and derives the burner addresses from it (ADR-0013). the funding gate is the balance watcher alone, identical on both profiles. the local faucet survives as an explicitly local-only dev helper outside the gate, so the dev loop stays one-click; on local the arena also signs the seed itself with the anvil dev key (an env knob disables auto-sign to exercise the real sign flow). per-profile config carries `funderAddress`, `fundingThresholdEth` (0.05 local, 0.005 base), and the funding timeout (15 min local; none on base — human-gated states hold until stop or reset, and the waiting room shows the prompt).
 
@@ -309,3 +309,17 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 **Trade-off:** a lane gets busier, and a delegating entrant's rows interleave its own work with its subagent's. flat-with-a-marker is the v1 answer; nesting is a frontend choice the field enables, not a contract change. prose is asymmetric — tool work from a subagent shows, its narration does not — because `agent.message` has nowhere to say whose voice it is, and unlabeled subagent narration would read as the entrant's own. claude sends that narration only under `--forward-subagent-text`, which the driver does not pass.
 
 **Consequence:** `arena-types.ts` bumps, which the frontend re-copies; the field is optional, so existing clients and the codex and opencode parsers are untouched. anything that reads `tool.call` details now sees subagent commands too — when the current-challenge heuristic (#4) lands, its guess will follow whichever process touched a challenge, which is the behavior it wants.
+
+---
+
+## ADR-0019 — the seed signer is any allowlisted operator; the profile no longer pins a funder
+
+**Status:** accepted (2026-08-11) — supersedes the pinned-`funderAddress` half of ADR-0014; the derivation and recovery mechanics of ADR-0013 are unchanged
+
+**Decision:** the seed signature check verifies that the recovered address is in `ARENA_OPERATOR_ADDRESSES` — same normalization as SIWE login — instead of matching one per-profile `funderAddress`. the profile field is deleted. the run records the recovered address in a new `seededBy` column, and the run snapshot exposes it. local auto-sign bypasses the allowlist check: it is the backend signing to itself, still gated to the local profile, and it records the dev signer as `seededBy`. a non-local profile with an empty allowlist gets a boot warning — nobody can seed, so every run would hold in `awaiting_signature`. `ARENA_FUNDER_KEY` is deleted along with the concept; the local faucet always spends from the well-known dev key.
+
+**Why:** the pinned address made deployment brittle — the connected wallet had to be exactly one address, and a mismatch surfaced only as a 403 at seed time (the box deploy hit this). the name was also wrong: `funderAddress` never gated funds. funding is permissionless — the gate is a balance watcher — so the pin only chose whose signature derives the keys. ADR-0014's anti-theft scenario ("anyone who reaches the endpoint could seed with their own signature") predates operator auth; since ADR-0012 the seed endpoint refuses unauthenticated callers, so the pin was a second lock on a door that had gained a first one. "any operator may sign" matches how the arena actually runs: the operators are the humans running the race.
+
+**Trade-off:** recovery custody follows the signer, not the money. whoever signs can re-derive the burner keys and sweep leftovers; nobody else can — including the treasury that funded the run, if someone else signed. accepted: an operator is already trusted with the whole arena, and `seededBy` makes the recovery-key holder auditable. the convention, stated in the README, is that whoever funds signs.
+
+**Consequence:** ADR-0013's plain-EOA, deterministic-signing constraint now applies to every address in `ARENA_OPERATOR_ADDRESSES` — a Safe or MPC operator's signature verifies fine and silently breaks recovery, and the backend cannot detect that at sign time. it is a documentation rule; the out-of-band backstop (save the canonical signature at race time) remains the recommended practice. `seededBy` is a stored address, not key material — the signature itself stays unjournaled and unechoed. only the successful signer's address is exposed; a rejected attempt still leaks nothing.

@@ -27,10 +27,20 @@ if (operatorToken.length === 0) {
 const localFaucetEnabled = process.env.ARENA_LOCAL_FAUCET === 'true';
 
 // Wallet login is optional: with no allowlist the arena stays token-only.
+const operatorAddresses = parseCsvList(process.env.ARENA_OPERATOR_ADDRESSES);
 const siwe = {
-  operatorAddresses: parseCsvList(process.env.ARENA_OPERATOR_ADDRESSES),
+  operatorAddresses,
   domains: parseCsvList(process.env.ARENA_SIWE_DOMAINS),
 };
+
+// Local with auto-sign on is the one shape that seeds itself without an allowlist.
+const autoSignCoversSeeding =
+  activeChainProfile.name === 'local' && process.env.ARENA_AUTO_SIGN !== 'false';
+if (!autoSignCoversSeeding && operatorAddresses.length === 0) {
+  console.warn(
+    'ARENA_OPERATOR_ADDRESSES is empty; no address can sign a seed, so runs will hold in awaiting_signature.',
+  );
+}
 
 const { app, manager } = ((): ReturnType<typeof createServer> => {
   try {

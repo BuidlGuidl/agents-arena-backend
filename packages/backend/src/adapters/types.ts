@@ -13,6 +13,7 @@ export interface RunRecord {
   startedAt: string | null;
   deadlineAt: string | null;
   durationMs: number | null;
+  seededBy: string | null;
   idempotencyKey: string | null;
 }
 

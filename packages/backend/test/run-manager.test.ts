@@ -27,6 +27,7 @@ const noopDriver: EntrantDriver = {
   async restart() {},
   async stop() {},
 };
+const LOCAL_DEV_OPERATOR_ADDRESS = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY).address;
 
 async function createManager() {
   const journal = new EventJournal(':memory:');
@@ -587,7 +588,9 @@ describe('RunManager ready barrier', () => {
   it('rolls back every address and wallet event when one append fails', async () => {
     await withAutoSignDisabled(async () => {
       const journal = new EventJournal(':memory:');
-      const manager = new RunManager(journal, noopDriver);
+      const manager = new RunManager(journal, noopDriver, undefined, {
+        operatorAddresses: [LOCAL_DEV_OPERATOR_ADDRESS],
+      });
       const published: string[] = [];
       let starting: Promise<unknown> | undefined;
       try {
@@ -612,6 +615,7 @@ describe('RunManager ready barrier', () => {
 
         expect(manager.snapshot(run.id).entrants.every((entrant) => entrant.address === null))
           .toBe(true);
+        expect(manager.snapshot(run.id)).not.toHaveProperty('seededBy');
         expect(journal.after(run.id, 0).filter((event) => event.type === 'wallet.assigned'))
           .toEqual([]);
         expect(published).toEqual([]);

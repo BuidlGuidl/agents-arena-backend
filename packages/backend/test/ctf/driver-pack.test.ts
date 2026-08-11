@@ -63,6 +63,7 @@ const run: RunRecord = {
   startedAt: null,
   deadlineAt: null,
   durationMs: null,
+  seededBy: null,
   idempotencyKey: null,
 };
 

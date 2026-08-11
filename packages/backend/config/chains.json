@@ -8,7 +8,6 @@
     "nftFlags": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
     "challenge1": "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
     "identityRegistry": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
-    "funderAddress": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
     "fundingThresholdEth": "0.05",
     "fundingTimeoutMs": 900000,
     "addressNote": "Derived from the localhost deploy order and the default Hardhat deployer. Transactions before later deployments affect their nonces."
@@ -22,10 +21,9 @@
     "nftFlags": "0xD60C911a17594d8683213047ADF5Ad34b95dE01e",
     "challenge1": "0x173ce2Ff3b4C765C57F207067e90f244972939ce",
     "identityRegistry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
-    "funderAddress": "0x0000000000000000000000000000000000000000",
     "fundingThresholdEth": "0.005",
     "briefingUrl": "https://ai-ctf-buidlguidl-com-nextjs.vercel.app/",
-    "addressNote": "Addresses match the production Base deployment artifacts. The zero funder address blocks seed signatures until a treasury EOA replaces it."
+    "addressNote": "Addresses match the production Base deployment artifacts."
   },
   "baseSepolia": {
     "name": "baseSepolia",
@@ -36,7 +34,6 @@
     "nftFlags": "0x2667573cEfDe02fb72070b49581de9713BE6f659",
     "challenge1": "0xbEa17B21E80851b1D730d85aF3D685A86BC75E46",
     "identityRegistry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
-    "funderAddress": "0x55b9CB0bCf56057010b9c471e7D42d60e1111EEa",
     "fundingThresholdEth": "0.005",
     "briefingUrl": "https://ai-ctf-buidlguidl-com-nextjs-git-base-sepo-169d4a-buidlguidldao.vercel.app/",
     "addressNote": "Addresses match the baseSepolia deployment artifacts on ai.ctf.buidlguidl.com. The identity registry is the ERC-8004 testnet deployment, which differs from the mainnet address."

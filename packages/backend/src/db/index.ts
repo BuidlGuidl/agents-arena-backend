@@ -20,6 +20,7 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
       started_at TEXT,
       deadline_at TEXT,
       duration_ms INTEGER,
+      seeded_by TEXT,
       idempotency_key TEXT UNIQUE,
       created_at TEXT NOT NULL
     );
@@ -57,6 +58,9 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
   const runColumns = sqlite.prepare('PRAGMA table_info(runs)').all() as Array<{ name: string }>;
   if (!runColumns.some((column) => column.name === 'duration_ms')) {
     sqlite.exec('ALTER TABLE runs ADD COLUMN duration_ms INTEGER');
+  }
+  if (!runColumns.some((column) => column.name === 'seeded_by')) {
+    sqlite.exec('ALTER TABLE runs ADD COLUMN seeded_by TEXT');
   }
   return { database: drizzle(sqlite, { schema }), sqlite };
 }

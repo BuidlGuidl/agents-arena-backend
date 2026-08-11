@@ -5,7 +5,6 @@ import {
   http,
   parseEther,
   type Address,
-  type Hex,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -76,14 +75,7 @@ async function fundLocalEntrants(
     throw abortError(signal);
   }
 
-  let account: ReturnType<typeof privateKeyToAccount>;
-  try {
-    account = privateKeyToAccount(
-      (process.env.ARENA_FUNDER_KEY ?? LOCAL_DEV_FUNDER_PRIVATE_KEY) as Hex,
-    );
-  } catch {
-    throw new Error('ARENA_FUNDER_KEY is invalid');
-  }
+  const account = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
   const publicClient = createPublicClient({ transport: http(profile.rpcUrl) });
   const chain = {
     id: profile.chainId,

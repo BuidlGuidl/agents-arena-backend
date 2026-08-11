@@ -46,7 +46,7 @@ export interface SiweLoginOptions {
  * dropping the run it was driving.
  */
 export class SiweLogin {
-  readonly #allowlist: Address[];
+  readonly #allowlist: string[];
   readonly #domains: string[];
   readonly #sessionTtlMs: number;
   readonly #nonceTtlMs: number;
@@ -58,7 +58,7 @@ export class SiweLogin {
   readonly #sessions = new Map<string, OperatorSession>();
 
   constructor(options: SiweLoginOptions) {
-    this.#allowlist = options.operatorAddresses.map(normalizeAddress);
+    this.#allowlist = normalizeOperatorAddresses(options.operatorAddresses);
     this.#domains = [...(options.domains ?? [])].map((domain) => domain.trim().toLowerCase())
       .filter((domain) => domain.length > 0);
     if (this.#allowlist.length > 0 && this.#domains.length === 0) {
@@ -126,7 +126,7 @@ export class SiweLogin {
       return { ok: false, reason: 'Message is expired or not yet valid' };
     }
     const claimed = parsed.address;
-    if (claimed === undefined || !this.#allowlist.some((allowed) => isAddressEqual(allowed, claimed))) {
+    if (claimed === undefined || !this.#allowlist.includes(claimed.toLowerCase())) {
       return { ok: false, reason: 'Address is not an arena operator' };
     }
     // EOA only: the signature is recovered here, so login needs no RPC. A
@@ -208,6 +208,10 @@ export function parseCsvList(value: string | undefined): string[] {
     .split(',')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+export function normalizeOperatorAddresses(values: readonly string[]): string[] {
+  return values.map((value) => normalizeAddress(value).toLowerCase());
 }
 
 // Mirrors the loopback rule the session cookie uses for `Secure`, so the local

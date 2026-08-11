@@ -8,8 +8,8 @@
 //   Terminal A:  tsx scripts/demo-funding.ts [thresholdEth=0.05]
 //   Terminal B:  scripts/fund-drill.sh          (funds the addresses it printed)
 //
-// The watcher and the funder talk only through the chain — the funder never
-// touches this process's in-memory DB, just the addresses written to
+// The watcher and the funding script talk only through the chain. The script
+// never touches this process's in-memory DB, only the addresses written to
 // scripts/.funding-request.json.
 
 import { randomUUID } from 'node:crypto';
@@ -40,7 +40,7 @@ const entries: FundingEntry[] = [
 ];
 const thresholdWei = parseEther(thresholdEth);
 
-// Hand the addresses to the funder script.
+// Hand the addresses to the funding script.
 const requestPath = new URL('./.funding-request.json', import.meta.url);
 writeFileSync(
   requestPath,
@@ -70,7 +70,7 @@ console.log('  or by hand with unlocked local account 0:');
 for (const e of entries) {
   console.log(
     `      cast send ${e.address} --value ${thresholdEth}ether \\\n` +
-      `        --unlocked --from ${profile.funderAddress} \\\n` +
+      `        --unlocked --from ${account.address} \\\n` +
       `        --rpc-url ${profile.rpcUrl}`,
   );
 }

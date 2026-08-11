@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { and, asc, count, eq, max, sql } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, max, ne, notInArray, sql } from 'drizzle-orm';
 import { recoverTypedDataAddress, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -48,6 +48,15 @@ export class UnknownPresetError extends Error {}
 export class SeedStateConflictError extends Error {}
 export class SeedEncodingError extends Error {}
 export class SeedSignatureError extends Error {}
+export class ActiveRunConflictError extends Error {
+  constructor(
+    message: string,
+    readonly activeRunId: string,
+    readonly activeRunState: RunState,
+  ) {
+    super(message);
+  }
+}
 
 export interface CreateRunResult {
   run: RunSnapshot;
@@ -139,6 +148,14 @@ const EMPTY_USAGE: EntrantUsage = { inputTokens: 0, outputTokens: 0, costUsd: nu
 
 const DEFAULT_PREPARE_TIMEOUT_MS = 300_000;
 const OPERATOR_STOP_REASON = 'stopped by operator before running';
+const ACTIVE_RUN_STATES: RunState[] = [
+  'awaiting_signature',
+  'preparing',
+  'awaiting_funding',
+  'ready',
+  'running',
+  'stopping',
+];
 
 // The chain funding slice replaces this pass-through hook with the real gate.
 export const passThroughFundingGate: FundingGate = async () => {};
@@ -191,6 +208,7 @@ export class RunManager {
     if (preset === undefined) {
       throw new UnknownPresetError(`Unknown preset: ${input.preset}`);
     }
+    this.assertNoActiveRun();
 
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -397,6 +415,7 @@ export class RunManager {
 
   async startForRequest(runId: string): Promise<RunSnapshot> {
     const run = this.requireRun(runId);
+    this.assertNoActiveRun(runId);
     const starting = this.start(runId);
     if (presetSubstrate(run.preset) !== 'docker' || localAutoSignEnabled()) {
       return starting;
@@ -640,6 +659,18 @@ export class RunManager {
     return this.journal.database.select({ value: count() }).from(runs).get()?.value ?? 0;
   }
 
+  failNonTerminalRuns(reason: string): number {
+    return this.journal.transaction(() => {
+      const interrupted = this.journal.database
+        .select({ id: runs.id })
+        .from(runs)
+        .where(notInArray(runs.state, ['finished', 'failed']))
+        .all();
+      for (const run of interrupted) this.transition(run.id, 'failed', reason);
+      return interrupted.length;
+    });
+  }
+
   private teardownEntrants(
     runId: string,
     run: RunRecord,
@@ -673,6 +704,25 @@ export class RunManager {
   private clearTeardownWhenSafe(runId: string): void {
     if (this.inFlightStarts.has(runId) || this.operatorStops.has(runId)) return;
     this.teardownPromises.delete(runId);
+  }
+
+  private assertNoActiveRun(excludedRunId?: string): void {
+    const active = this.journal.database
+      .select({ id: runs.id, state: runs.state })
+      .from(runs)
+      .where(and(
+        inArray(runs.state, ACTIVE_RUN_STATES),
+        ...(excludedRunId === undefined ? [] : [ne(runs.id, excludedRunId)]),
+      ))
+      .orderBy(asc(runs.createdAt))
+      .get();
+    if (active !== undefined) {
+      throw new ActiveRunConflictError(
+        `Run ${active.id} is active in state ${active.state}`,
+        active.id,
+        active.state,
+      );
+    }
   }
 
   private requireEntrant(runId: string, entrantId: string): EntrantRecord {

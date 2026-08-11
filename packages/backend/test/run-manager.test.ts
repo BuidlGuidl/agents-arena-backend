@@ -119,6 +119,53 @@ describe('RunManager state machine', () => {
       }
     },
   );
+
+  it('fails every non-terminal run with one reason and leaves terminal runs unchanged', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, noopDriver);
+    const states: RunState[] = [
+      'created',
+      'awaiting_signature',
+      'preparing',
+      'awaiting_funding',
+      'ready',
+      'running',
+      'stopping',
+      'finished',
+      'failed',
+    ];
+    try {
+      const runIds = new Map<RunState, string>();
+      for (const state of states) {
+        const { run } = await manager.create({ preset: 'fake-duel' });
+        runIds.set(state, run.id);
+      }
+      for (const state of states) {
+        const runId = runIds.get(state)!;
+        if (state === 'failed') manager.transition(runId, 'failed', 'existing failure');
+        else await advance(manager, runId, state);
+      }
+
+      expect(manager.failNonTerminalRuns('backend restarted while run was active')).toBe(7);
+
+      for (const state of states) {
+        const runId = runIds.get(state)!;
+        const snapshot = manager.snapshot(runId);
+        if (state === 'finished' || state === 'failed') {
+          expect(snapshot.state).toBe(state);
+          continue;
+        }
+        expect(snapshot.state).toBe('failed');
+        const stateEvents = journal.after(runId, 0).filter((event) => event.type === 'run.state');
+        expect(stateEvents.at(-1)?.payload).toEqual({
+          state: 'failed',
+          reason: 'backend restarted while run was active',
+        });
+      }
+    } finally {
+      journal.close();
+    }
+  });
 });
 
 describe('run presets', () => {

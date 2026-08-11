@@ -97,8 +97,13 @@ closeWithGrace({ delay: 25_000 }, async ({ signal, err }) => {
   if (err !== undefined) app.log.error(err);
   if (signal !== undefined) app.log.info(`Received ${signal}; shutting down`);
 
-  // The local DB write goes first: the Docker sweep is bounded but can still
-  // spend seconds of the grace budget against a sick daemon.
+  // Stop accepting connections before touching state: a request landing after
+  // the DB sweep below would pass the single-active-run guard and spawn
+  // containers the Docker sweep never sees.
+  app.server.close();
+
+  // The DB write goes before the Docker sweep: the sweep is bounded but can
+  // still spend seconds of the grace budget against a sick daemon.
   let runsFailed = 0;
   try {
     runsFailed = manager.failNonTerminalRuns('backend shut down during run');

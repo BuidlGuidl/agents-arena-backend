@@ -39,6 +39,8 @@ export function styleForEvent(event: ArenaEvent): EventStyle {
       return { tone: 'steer', tag: 'steer' };
     case 'entrant.prompt':
       return { tone: 'steer', tag: 'task' };
+    case 'entrant.restarted':
+      return { tone: 'steer', tag: 'restart' };
     case 'entrant.nudged':
       return { tone: 'steer', tag: 'nudge' };
     case 'director.broadcast':

@@ -10,7 +10,7 @@ When the variable is unset or blank, the backend registers no CORS support and s
 
 ## Operator auth
 
-Every mutating route (create, start, stop, steer, broadcast) needs one of two credentials. The snapshot, the event stream, and the history read are open, so spectators need neither.
+Every mutating route (create, start, stop, steer, restart, broadcast) needs one of two credentials. The snapshot, the event stream, and the history read are open, so spectators need neither.
 
 **Shared token** — for scripts, the launcher, and a frontend that proxies from its own server:
 
@@ -245,6 +245,24 @@ The response has status `202`. `status` is `injected` when the turn entered the 
 ```
 
 An entrant that exists but cannot take a turn — stopping, or degraded — returns status `409`, and the refusal is recorded on that entrant's feed as an `entrant.error`.
+
+### `POST /runs/:id/entrants/:eid/restart`
+
+Recovers one lane whose session went stale or blocked. The turn in flight is killed, anything queued behind it is dropped and journaled as an `entrant.error`, and the harness starts a **new** session on the entrant's opening prompt — the entrant's container, wallet, credentials, and challenge pack are kept, and no other lane is touched. A `blocked` entrant becomes steerable again.
+
+There is no request body. The opening prompt is rebuilt by the backend, so this route cannot be used to feed an entrant something else — that is what steer is for.
+
+The response has status `202`.
+
+```json
+{"accepted":true}
+```
+
+The lane emits `entrant.restarted`, payload `{entrantId}`, followed by the usual `entrant.prompt` carrying the re-fed prompt. Solves, usage totals, and the run's own state are unchanged.
+
+An unknown run or entrant returns status `404`, whatever state the run is in. Otherwise the run must be `running`; any other state returns status `400`. A lane that cannot be restarted right now — one already stopping or restarting — returns status `409`. Any failure is also recorded on that entrant's feed as an `entrant.error`.
+
+A restart that fails after the old session is already killed leaves the entrant `blocked`: `entrant.restarted` is on the feed with no `entrant.prompt` behind it, and because the lane has no session left, a steer cannot revive it — only another restart can.
 
 ### `POST /runs/:id/broadcast`
 

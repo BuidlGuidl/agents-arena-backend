@@ -45,8 +45,15 @@ interface EntrantRuntimeState {
   queuedSteers: string[];
   running: boolean;
   stopping: boolean;
+  restarting: boolean;
+  // Set while something waits for the turn in flight to end. A turn still inside
+  // its launch has no execution to kill yet, so runTurn reads this the moment
+  // one exists — without it a restart arriving mid-launch skips the kill and
+  // then waits out the whole turn, stranding the lane it came to save.
+  killRequested: boolean;
   degraded: boolean;
-  sessionId?: string;
+  // Cleared on restart: the session it names is the one being abandoned.
+  sessionId: string | undefined;
   active: RuntimeExecution | undefined;
   turnTask: Promise<void> | undefined;
   // Lazy: built on the first tool.call, when the pack addresses already exist.
@@ -109,7 +116,10 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       queuedSteers: [],
       running: false,
       stopping: false,
+      restarting: false,
+      killRequested: false,
       degraded: false,
+      sessionId: undefined,
       active: undefined,
       turnTask: undefined,
     };
@@ -140,6 +150,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     this.assertHarness(entrant);
     const state = this.requireState(run.id, entrant.id);
     if (state.stopping) throw new EntrantUnavailableError(`Entrant ${entrant.id} is stopping`);
+    if (state.restarting) throw new EntrantUnavailableError(`Entrant ${entrant.id} is restarting`);
     // The caller records the miss on the lane, so this only reports it.
     if (state.degraded) {
       throw new EntrantUnavailableError(`Entrant ${entrant.id} is degraded`);
@@ -153,6 +164,59 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     return 'injected';
   }
 
+  // Recovery for one wedged lane. The harness session is thrown away — a
+  // resume can only make a blocked or stale thread worse — and the opening
+  // prompt starts a new one in the container the entrant already has, so its
+  // wallet, credentials, and challenge pack survive the restart.
+  //
+  // When it fails it fails after the kill, so the old session is gone either
+  // way and the lane lands on `blocked`: `entrant.restarted` is already on the
+  // feed, no prompt follows it, and with no sessionId a steer cannot revive the
+  // lane — only another restart can. `restarting` also clears before the
+  // replacement turn is injected (holding it through the launch would deadlock
+  // against finishTurn), so a steer racing that launch is answered `queued` and
+  // then dropped if the launch never lands.
+  async restart(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {
+    this.assertHarness(entrant);
+    const state = this.requireState(run.id, entrant.id);
+    if (state.stopping) throw new EntrantUnavailableError(`Entrant ${entrant.id} is stopping`);
+    if (state.restarting) throw new EntrantUnavailableError(`Entrant ${entrant.id} is already restarting`);
+
+    // Claimed before the first await: finishTurn must not drain a queued steer
+    // into the container while the restart is taking over its single writer.
+    state.restarting = true;
+    let killed = false;
+    try {
+      await this.settleTurn(state);
+      // A stop that landed while the wedged turn unwound owns the container now.
+      if (state.stopping) throw new EntrantUnavailableError(`Entrant ${entrant.id} is stopping`);
+      killed = true;
+      this.discardQueuedSteers(state, 'entrant restarted');
+      // Both belong to the session being abandoned: the id a resume would
+      // target, and the parser's half-read view of its stream.
+      state.sessionId = undefined;
+      this.parsers.delete(this.key(run.id, entrant.id));
+      state.degraded = false;
+      this.journal.append(run.id, entrant.id, 'entrant.restarted', { entrantId: entrant.id });
+      // Released before the launch. Holding it through beginTurn would let a
+      // turn that ends inside the launch reach finishTurn while the flag is
+      // still up, and that turn's status and queue drain would go missing.
+      state.restarting = false;
+      await this.beginTurn(state, openingPrompt, false);
+    } catch (error) {
+      state.restarting = false;
+      // The kill already happened, so there is no session to fall back on and
+      // finishTurn cannot report it — a launch that never started never reaches
+      // it. Without this the lane sits on the board as `working`, or as `idle`
+      // after a launch failure, with nothing running behind either.
+      if (killed && !state.stopping && !state.running) {
+        state.degraded = true;
+        this.setStatus(run.id, entrant.id, 'blocked');
+      }
+      throw error;
+    }
+  }
+
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {
     this.assertHarness(entrant);
     const key = this.key(run.id, entrant.id);
@@ -160,20 +224,8 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     if (state === undefined) return;
 
     state.stopping = true;
-    try {
-      this.dropQueuedSteers(state, 'entrant stopped');
-    } catch (error) {
-      // A journal failure must not abort the kill/teardown/revoke below.
-      this.logger.warn(`[${this.harnessName()}] failed to journal dropped steers: ${errorMessage(error)}`);
-    }
-    if (state.active !== undefined) {
-      try {
-        await state.active.kill();
-      } catch {
-        // Teardown below stops the container if the runner is already gone.
-      }
-    }
-    await state.turnTask;
+    this.discardQueuedSteers(state, 'entrant stopped');
+    await this.settleTurn(state);
     try {
       await state.container.teardown();
     } finally {
@@ -259,6 +311,13 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
         });
       }
       resolveInjected();
+      // A stop or restart that arrived while this turn was launching had nothing
+      // to kill; it does now, and it is still waiting on this task.
+      if (state.killRequested) {
+        void execution.kill().catch((error: unknown) => {
+          this.logger.warn(`[${this.harnessName()}] launch-race kill failed: ${errorMessage(error)}`);
+        });
+      }
 
       const timeoutMs = this.watchdogMs();
       if (timeoutMs !== undefined) {
@@ -341,9 +400,31 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     _container: EntrantContainer,
   ): Promise<void> {}
 
+  // The container takes one exec at a time, so anything that wants the next turn
+  // first kills what is in flight and waits for it to unwind.
+  private async settleTurn(state: EntrantRuntimeState): Promise<void> {
+    // Claimed before the kill so a turn whose exec has not landed yet still gets
+    // killed the moment it does. A container wedged inside exec() itself is
+    // beyond this — that lane needs a new container, not a new session.
+    state.killRequested = true;
+    try {
+      if (state.active !== undefined) {
+        try {
+          await state.active.kill();
+        } catch {
+          // The turn task settles either way; the caller decides what follows.
+        }
+      }
+      await state.turnTask;
+    } finally {
+      state.killRequested = false;
+    }
+  }
+
   private finishTurn(state: EntrantRuntimeState): void {
     state.running = false;
-    if (state.stopping) return;
+    // A restart is already holding the lane and starts its own turn next.
+    if (state.stopping || state.restarting) return;
     this.setStatus(state.run.id, state.entrant.id, state.degraded ? 'blocked' : 'idle');
     if (state.degraded) {
       this.dropQueuedSteers(state, 'entrant degraded');
@@ -358,6 +439,16 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
         this.appendError(state, `Queued steer dropped (${message}): ${next}`);
         if (!state.running && !state.stopping) this.dropQueuedSteers(state, message);
       });
+    }
+  }
+
+  // Teardown and restart both drop what is queued as housekeeping, so a journal
+  // failure here must not abort the work that follows.
+  private discardQueuedSteers(state: EntrantRuntimeState, reason: string): void {
+    try {
+      this.dropQueuedSteers(state, reason);
+    } catch (error) {
+      this.logger.warn(`[${this.harnessName()}] failed to journal dropped steers: ${errorMessage(error)}`);
     }
   }
 

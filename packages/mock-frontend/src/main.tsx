@@ -8,6 +8,7 @@ import type {
   EntrantSolve,
   EntrantSummary,
   HarnessId,
+  RestartResponse,
   RunSnapshot,
   RunState,
 } from '../../../contract/arena-types';
@@ -716,6 +717,14 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
     ),
     onSuccess: () => setText(''),
   });
+  // Last resort for a lane whose session went stale: the backend rebuilds the
+  // opening prompt, so this control sends no body (#49).
+  const restart = useMutation({
+    mutationFn: async () => fetchJson<RestartResponse>(
+      `/runs/${runId}/entrants/${entrant.id}/restart`,
+      { method: 'POST' },
+    ),
+  });
   const laneEntries = useMemo(
     () => (entrant ? entriesForSource(feed.entries, entrant.id) : []),
     [entrant, feed.entries],
@@ -810,8 +819,18 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
         >
           steer
         </button>
+        <button
+          className="btn restart-btn"
+          data-testid={`lane-restart-${entrant.id}`}
+          title="drop this agent's session and re-feed its opening prompt"
+          disabled={runState !== 'running' || restart.isPending}
+          onClick={() => restart.mutate()}
+        >
+          {restart.isPending ? 'restarting…' : 'restart'}
+        </button>
       </div>
       {steer.error instanceof Error ? <p className="error-line">{steer.error.message}</p> : null}
+      {restart.error instanceof Error ? <p className="error-line">{restart.error.message}</p> : null}
 
       <p className="feed-label">live feed</p>
       <ul className={`feed${laneEntries.length === 0 ? ' empty' : ''}`} data-testid={`lane-${entrant.id}`}>

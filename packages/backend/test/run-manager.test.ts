@@ -10,6 +10,7 @@ import { getWallet, seedTypedData } from '../src/chain/wallet.js';
 import { entrants } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import {
+  EntrantNotFoundError,
   InvalidTransitionError,
   LEGAL_TRANSITIONS,
   presetSubstrate,
@@ -23,6 +24,7 @@ const noopDriver: EntrantDriver = {
   async prepare() {},
   async start() {},
   async steer() { return 'injected'; },
+  async restart() {},
   async stop() {},
 };
 
@@ -500,6 +502,8 @@ class BarrierDriver implements EntrantDriver {
 
   async steer() { return 'injected' as const; }
 
+  async restart() {}
+
   async stop(_run: Parameters<EntrantDriver['stop']>[0], entrant: Parameters<EntrantDriver['stop']>[1]) {
     this.stops.push(entrant.id);
   }
@@ -563,6 +567,7 @@ describe('RunManager ready barrier', () => {
       },
       async start() {},
       async steer() { return 'injected'; },
+      async restart() {},
       async stop() {},
     };
     const manager = new RunManager(journal, driver);
@@ -825,6 +830,7 @@ describe('RunManager lifecycle cancellation', () => {
       async prepare() {},
       async start() {},
       async steer() { return 'injected'; },
+      async restart() {},
       async stop(_run, entrant) {
         stops.push(entrant.id);
         if (entrant.id === 'codex-1') throw stopError;
@@ -963,6 +969,29 @@ describe('RunManager broadcast', () => {
     },
   );
 
+  it('records a failed restart on the lane and keeps the error type', async () => {
+    const journal = new EventJournal(':memory:');
+    const driver: EntrantDriver = {
+      ...noopDriver,
+      async restart(_run, entrant) {
+        throw new EntrantUnavailableError(`Entrant ${entrant.id} is stopping`);
+      },
+    };
+    const manager = new RunManager(journal, driver);
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      await advance(manager, run.id, 'running');
+      await expect(manager.restart(run.id, 'codex-1'))
+        .rejects.toBeInstanceOf(EntrantUnavailableError);
+
+      const errors = journal.after(run.id, 0).filter((event) => event.type === 'entrant.error');
+      expect(errors.map((event) => event.payload.message))
+        .toEqual(['Restart failed: Entrant codex-1 is stopping']);
+    } finally {
+      journal.close();
+    }
+  });
+
   it('records a failed single steer on the lane and keeps the error type', async () => {
     const journal = new EventJournal(':memory:');
     const driver: EntrantDriver = {
@@ -984,4 +1013,77 @@ describe('RunManager broadcast', () => {
       journal.close();
     }
   });
+});
+
+describe('RunManager entrant restart', () => {
+  it('restarts one lane on its rebuilt opening prompt and leaves the field alone', async () => {
+    const journal = new EventJournal(':memory:');
+    const restarts: Array<{ entrantId: string; prompt: string }> = [];
+    const driver: EntrantDriver = {
+      ...noopDriver,
+      async restart(_run, entrant, openingPrompt) {
+        restarts.push({ entrantId: entrant.id, prompt: openingPrompt });
+      },
+    };
+    const manager = new RunManager(journal, driver, undefined, {
+      promptBuilder: (entrant) => `prompt for ${entrant.id}`,
+    });
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      await advance(manager, run.id, 'running');
+
+      await manager.restart(run.id, 'codex-1');
+
+      expect(restarts).toEqual([{ entrantId: 'codex-1', prompt: 'prompt for codex-1' }]);
+      // The run keeps racing: no state change, no error on either lane.
+      expect(manager.snapshot(run.id).state).toBe('running');
+      expect(journal.after(run.id, 0).filter((event) => event.type === 'entrant.error')).toEqual([]);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('rejects an unknown run and an unknown entrant', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, noopDriver);
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      await advance(manager, run.id, 'running');
+
+      await expect(manager.restart('missing-run', 'codex-1'))
+        .rejects.toBeInstanceOf(RunNotFoundError);
+      await expect(manager.restart(run.id, 'ghost-1'))
+        .rejects.toBeInstanceOf(EntrantNotFoundError);
+    } finally {
+      journal.close();
+    }
+  });
+
+  // Same gate as broadcast, for the same reason: outside `running` there is no
+  // live session to replace, and a driver call there would degrade the lane.
+  it.each(['created', 'preparing', 'awaiting_funding', 'ready', 'stopping', 'finished'] as const)(
+    'refuses to restart an entrant in a run in %s and never touches the driver',
+    async (state) => {
+      const journal = new EventJournal(':memory:');
+      const restarts: string[] = [];
+      const driver: EntrantDriver = {
+        ...noopDriver,
+        async restart(_run, entrant) {
+          restarts.push(entrant.id);
+        },
+      };
+      const manager = new RunManager(journal, driver);
+      try {
+        const { run } = await manager.create({ preset: 'fake-duel' });
+        await advance(manager, run.id, state);
+
+        await expect(manager.restart(run.id, 'codex-1'))
+          .rejects.toBeInstanceOf(InvalidTransitionError);
+        expect(restarts).toEqual([]);
+        expect(journal.after(run.id, 0).filter((event) => event.type === 'entrant.error')).toEqual([]);
+      } finally {
+        journal.close();
+      }
+    },
+  );
 });

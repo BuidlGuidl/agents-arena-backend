@@ -36,6 +36,10 @@ export class RegisteredEntrantDriver implements EntrantDriver {
     return this.driver(run).steer(run, entrant, text);
   }
 
+  async restart(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {
+    await this.driver(run).restart(run, entrant, openingPrompt);
+  }
+
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {
     await this.driver(run).stop(run, entrant);
   }

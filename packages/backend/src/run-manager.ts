@@ -551,15 +551,37 @@ export class RunManager {
 
   async steer(runId: string, entrantId: string, text: string): Promise<SteerDelivery> {
     const run = this.requireRun(runId);
-    const entrant = this.journal.database
-      .select()
-      .from(entrants)
-      .where(and(eq(entrants.runId, runId), eq(entrants.id, entrantId)))
-      .get();
-    if (entrant === undefined) {
-      throw new EntrantNotFoundError(`Entrant ${entrantId} does not exist in run ${runId}`);
-    }
+    const entrant = this.requireEntrant(runId, entrantId);
     return this.deliver(run, entrant, text, 'Steer');
+  }
+
+  // One lane, alone: a blocked or stale entrant gets a fresh session fed the
+  // same opening prompt, and the rest of the field keeps racing untouched.
+  //
+  // Only a running run may be restarted, for the reason a broadcast may not
+  // reach a run that has not started: before the opening turn there is no
+  // session to replace, and after the race the lane is torn down.
+  async restart(runId: string, entrantId: string): Promise<void> {
+    const run = this.requireRun(runId);
+    // Existence before state, as steer does: a name that was never on the roster
+    // is a 404 whatever the run is doing, and the docs promise that.
+    const entrant = this.requireEntrant(runId, entrantId);
+    if (run.state !== 'running') {
+      throw new InvalidTransitionError(
+        `Cannot restart entrant ${entrantId} in run ${runId} in state ${run.state}`,
+      );
+    }
+    // The prompt is rebuilt, not replayed: it is a pure function of the entrant,
+    // whose wallet address the seed already fixed, so it comes out identical.
+    try {
+      await this.driver.restart(run, entrant, this.promptBuilder(entrant));
+    } catch (error) {
+      this.journal.append(runId, entrant.id, 'entrant.error', {
+        entrantId: entrant.id,
+        message: `Restart failed: ${errorMessage(error)}`,
+      });
+      throw error;
+    }
   }
 
   // The director speaks once and every entrant still in the fight hears it. The
@@ -701,6 +723,18 @@ export class RunManager {
         active.state,
       );
     }
+  }
+
+  private requireEntrant(runId: string, entrantId: string): EntrantRecord {
+    const entrant = this.journal.database
+      .select()
+      .from(entrants)
+      .where(and(eq(entrants.runId, runId), eq(entrants.id, entrantId)))
+      .get();
+    if (entrant === undefined) {
+      throw new EntrantNotFoundError(`Entrant ${entrantId} does not exist in run ${runId}`);
+    }
+    return entrant;
   }
 
   private requireRun(runId: string): RunRecord {

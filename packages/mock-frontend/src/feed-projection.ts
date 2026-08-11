@@ -200,6 +200,8 @@ export function describeEvent(event: ArenaEvent): string {
       return `steered: ${event.payload.text}`;
     case 'entrant.prompt':
       return `task: ${event.payload.text}`;
+    case 'entrant.restarted':
+      return 'session restarted by the operator';
     case 'entrant.nudged':
       return `nudged (flags ${event.payload.flags}): ${event.payload.text}`;
     case 'director.broadcast':

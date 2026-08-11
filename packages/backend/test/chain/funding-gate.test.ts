@@ -10,7 +10,7 @@ import { RunManager } from '../../src/run-manager.js';
 const noopDriver: EntrantDriver = {
   async prepare() {},
   async start() {},
-  async steer() {},
+  async steer() { return 'injected'; },
   async stop() {},
 };
 

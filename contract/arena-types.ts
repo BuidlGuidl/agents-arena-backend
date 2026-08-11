@@ -161,6 +161,13 @@ export interface SteerRequest {
   text: string;
 }
 
+export type SteerDelivery = 'queued' | 'injected';
+
+export interface SteerResponse {
+  accepted: boolean;
+  status: SteerDelivery;
+}
+
 export interface BroadcastRequest {
   text: string;
 }
@@ -170,6 +177,8 @@ export interface BroadcastRequest {
 export interface BroadcastResponse {
   accepted: boolean;
   delivered: string[];
+  // queued names accepted steers still waiting behind a running turn because the journal records injection, not intent.
+  queued: string[];
   failed: { entrantId: string; message: string }[];
 }
 

@@ -30,7 +30,7 @@ const SECP256K1_N =
 const noopDriver: EntrantDriver = {
   async prepare() {},
   async start() {},
-  async steer() {},
+  async steer() { return 'injected'; },
   async stop() {},
 };
 
@@ -1350,6 +1350,7 @@ describe('fake run vertical slice', () => {
       payload: { text: 'Check storage slot zero.' },
     });
     expect(steerResponse.statusCode).toBe(202);
+    expect(steerResponse.json()).toEqual({ accepted: true, status: 'injected' });
     expect(server.journal.after(run.id, run.lastEventId).some((event) =>
       event.type === 'entrant.steered' && event.payload.text === 'Check storage slot zero.',
     )).toBe(true);
@@ -1446,6 +1447,7 @@ describe('director broadcast', () => {
     expect(broadcastResponse.json()).toEqual({
       accepted: true,
       delivered: ['codex-1', 'opencode-1'],
+      queued: [],
       failed: [],
     });
 
@@ -1457,6 +1459,44 @@ describe('director broadcast', () => {
     expect(since.filter((event) =>
       event.type === 'entrant.steered' && event.payload.text === 'Five minutes left, ship what you have.',
     ).map((event) => event.source)).toEqual(['codex-1', 'opencode-1']);
+  });
+
+  it('reports the queued subset when one entrant is mid-turn and another is idle', async () => {
+    const inFlight = new Set(['codex-1']);
+    const server = createServer({
+      dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
+      driverFactory: () => ({
+        ...noopDriver,
+        async steer(_run, entrant) {
+          return inFlight.has(entrant.id) ? 'queued' : 'injected';
+        },
+      }),
+    });
+    servers.push(server);
+
+    const createResponse = await server.app.inject({
+      method: 'POST',
+      url: '/runs',
+      headers: operatorHeaders,
+      payload: { preset: 'fake-duel', autoStart: true },
+    });
+    const { run } = createResponse.json() as { run: RunSnapshot };
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/broadcast`,
+      headers: operatorHeaders,
+      payload: { text: 'Ship what you have.' },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({
+      accepted: true,
+      delivered: ['codex-1', 'opencode-1'],
+      queued: ['codex-1'],
+      failed: [],
+    });
   });
 
   it('rejects an empty body, an unknown run, and a run that is not running', async () => {

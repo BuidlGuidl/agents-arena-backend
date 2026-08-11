@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 
-import type { EntrantStatus } from '../contract.js';
+import type { EntrantStatus, SteerDelivery } from '../contract.js';
 import { entrants } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
 import { costForTokens } from '../pricing.js';
@@ -136,7 +136,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     await this.beginTurn(state, openingPrompt, false);
   }
 
-  async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<void> {
+  async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<SteerDelivery> {
     this.assertHarness(entrant);
     const state = this.requireState(run.id, entrant.id);
     if (state.stopping) throw new EntrantUnavailableError(`Entrant ${entrant.id} is stopping`);
@@ -147,9 +147,10 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
 
     if (state.running) {
       state.queuedSteers.push(text);
-      return;
+      return 'queued';
     }
     await this.beginTurn(state, text, true);
+    return 'injected';
   }
 
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {
@@ -159,7 +160,12 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     if (state === undefined) return;
 
     state.stopping = true;
-    state.queuedSteers.splice(0);
+    try {
+      this.dropQueuedSteers(state, 'entrant stopped');
+    } catch (error) {
+      // A journal failure must not abort the kill/teardown/revoke below.
+      this.logger.warn(`[${this.harnessName()}] failed to journal dropped steers: ${errorMessage(error)}`);
+    }
     if (state.active !== undefined) {
       try {
         await state.active.kill();
@@ -340,15 +346,26 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     if (state.stopping) return;
     this.setStatus(state.run.id, state.entrant.id, state.degraded ? 'blocked' : 'idle');
     if (state.degraded) {
-      state.queuedSteers.splice(0);
+      this.dropQueuedSteers(state, 'entrant degraded');
       return;
     }
 
     const next = state.queuedSteers.shift();
     if (next !== undefined) {
       void this.beginTurn(state, next, true).catch((error: unknown) => {
-        this.logger.warn(`[${this.harnessName()}] queued steer failed: ${errorMessage(error)}`);
+        const message = errorMessage(error);
+        this.logger.warn(`[${this.harnessName()}] queued steer failed: ${message}`);
+        this.appendError(state, `Queued steer dropped (${message}): ${next}`);
+        if (!state.running && !state.stopping) this.dropQueuedSteers(state, message);
       });
+    }
+  }
+
+  private dropQueuedSteers(state: EntrantRuntimeState, reason: string): void {
+    // Drain before journaling: a mid-loop append failure must not leave
+    // already-journaled texts queued for a second drop.
+    for (const dropped of state.queuedSteers.splice(0)) {
+      this.appendError(state, `Queued steer dropped (${reason}): ${dropped}`);
     }
   }
 

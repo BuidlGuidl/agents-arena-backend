@@ -32,7 +32,7 @@ export class CodexDriver extends HarnessEntrantDriver {
   constructor(journal: EventJournal, options: CodexDriverOptions = {}) {
     super(journal, options);
     this.authPath = options.authPath ?? join(homedir(), '.codex', 'auth.json');
-    this.turnTimeout = options.turnWatchdogMs ?? 10 * 60 * 1_000;
+    this.turnTimeout = options.turnWatchdogMs ?? 20 * 60 * 1_000;
   }
 
   protected harnessName(): string {

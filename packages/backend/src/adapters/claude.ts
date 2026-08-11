@@ -22,7 +22,7 @@ export class ClaudeDriver extends HarnessEntrantDriver {
   constructor(journal: EventJournal, options: ClaudeDriverOptions = {}) {
     super(journal, options);
     this.oauthToken = options.oauthToken ?? process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    this.turnTimeout = options.turnWatchdogMs ?? 10 * 60 * 1_000;
+    this.turnTimeout = options.turnWatchdogMs ?? 20 * 60 * 1_000;
   }
 
   protected harnessName(): string {

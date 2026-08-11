@@ -29,7 +29,7 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
     super(journal, options);
     this.apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY;
     this.authPath = options.authPath ?? join(homedir(), '.local', 'share', 'opencode', 'auth.json');
-    this.turnTimeout = options.turnWatchdogMs ?? 10 * 60 * 1_000;
+    this.turnTimeout = options.turnWatchdogMs ?? 20 * 60 * 1_000;
   }
 
   protected harnessName(): string {

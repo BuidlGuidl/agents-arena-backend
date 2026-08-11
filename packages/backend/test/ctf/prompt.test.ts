@@ -34,7 +34,8 @@ describe('buildOpeningPrompt', () => {
     expect(prompt).toContain('/ctf/BRIEFING.md');
     expect(prompt).toContain('/ctf/contracts');
     expect(prompt).toContain('/ctf/deploy');
-    expect(prompt).toContain(profile.containerRpcUrl);
+    expect(prompt).toContain('ETH_RPC_URL');
+    expect(prompt).not.toContain(profile.containerRpcUrl);
     expect(prompt).toContain('localhost:8545');
     expect(prompt).not.toContain('Read each challenge contract with cast');
     expect(prompt).not.toContain('Your wallet address is');
@@ -80,6 +81,7 @@ describe('buildOpeningPrompt', () => {
     const prompt = buildOpeningPrompt(entrant, profile);
 
     expect(prompt).toContain(profile.briefingUrl);
+    expect(prompt).not.toContain(profile.containerRpcUrl);
     expect(prompt).not.toContain('/ctf');
     expect(prompt).not.toContain('localhost:8545');
     expect(prompt).not.toContain('Read each challenge contract with cast');

@@ -21,7 +21,9 @@ function briefingLines(profile: ChainProfile): readonly string[] {
 }
 
 function rpcLines(profile: ChainProfile): readonly string[] {
-  const line = `- The chain JSON-RPC is at ${profile.containerRpcUrl}. It is also set as ETH_RPC_URL, so cast uses it automatically.`;
+  // The URL itself stays out of the prompt, which is journalled verbatim and
+  // publicly readable: ARENA_RPC_URL can carry a keyed provider endpoint.
+  const line = '- The chain JSON-RPC endpoint is set as ETH_RPC_URL, so cast uses it automatically.';
   if (profile.briefingUrl !== undefined) {
     return [line];
   }

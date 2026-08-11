@@ -11,6 +11,7 @@ import type {
 } from '../runtime/container.js';
 import { createDockerContainer } from '../runtime/container.js';
 import { revokeAgentToken } from '../agent-auth.js';
+import { activeChainProfile } from '../chain/profile.js';
 import {
   challengeAddressIndex,
   currentChallenge,
@@ -86,7 +87,9 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
         ...containerOptions,
         challengePackDir: resolveChallengePack(containerOptions.runId),
       });
-    this.rpcUrl = options.rpcUrl ?? process.env.ARENA_RPC_URL ?? 'http://host.docker.internal:8545';
+    // ARENA_RPC_URL already flows into the active profile, so the profile's
+    // container URL is the only fallback needed here.
+    this.rpcUrl = options.rpcUrl ?? activeChainProfile.containerRpcUrl;
     // Containers reach the host the same way they reach the chain RPC.
     this.agentApiUrl = options.agentApiUrl
       ?? process.env.ARENA_AGENT_API_URL

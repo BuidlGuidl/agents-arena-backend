@@ -116,8 +116,19 @@ export function getChainProfile(name: string): ChainProfile {
   return profile;
 }
 
+// ARENA_RPC_URL replaces both endpoints so one variable keeps the backend
+// clients, the entrant containers, and the prompt on the same URL. chains.json
+// is committed, so a keyed provider URL can only live in the environment.
+export function applyRpcOverride(profile: ChainProfile, override: string | undefined): ChainProfile {
+  if (override === undefined || override.trim() === '') {
+    return profile;
+  }
+  return { ...profile, rpcUrl: override, containerRpcUrl: override };
+}
+
 // One process serves one chain, so the environment is read once here rather than
 // at each of the prompt builder, funding gate, container driver, and solve poller.
-export const activeChainProfile: ChainProfile = getChainProfile(
-  process.env.ARENA_CHAIN_PROFILE ?? 'local',
+export const activeChainProfile: ChainProfile = applyRpcOverride(
+  getChainProfile(process.env.ARENA_CHAIN_PROFILE ?? 'local'),
+  process.env.ARENA_RPC_URL,
 );

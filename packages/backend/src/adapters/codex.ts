@@ -16,6 +16,7 @@ import type { EntrantRecord, RunRecord } from './types.js';
 
 export interface CodexDriverOptions extends HarnessDriverOptions {
   authPath?: string;
+  turnWatchdogMs?: number;
 }
 
 // A real auth.json is a few KB; anything bigger is not a rotation.
@@ -23,6 +24,7 @@ const AUTH_JSON_MAX_BYTES = 64 * 1024;
 
 export class CodexDriver extends HarnessEntrantDriver {
   private readonly authPath: string;
+  private readonly turnTimeout: number;
   // What this run seeded into each container, so a container read can be told
   // apart from a rotation. Keyed like the runtime state: run and entrant.
   private readonly seededAuth = new Map<string, string>();
@@ -30,6 +32,7 @@ export class CodexDriver extends HarnessEntrantDriver {
   constructor(journal: EventJournal, options: CodexDriverOptions = {}) {
     super(journal, options);
     this.authPath = options.authPath ?? join(homedir(), '.codex', 'auth.json');
+    this.turnTimeout = options.turnWatchdogMs ?? 10 * 60 * 1_000;
   }
 
   protected harnessName(): string {
@@ -201,6 +204,10 @@ export class CodexDriver extends HarnessEntrantDriver {
 
   protected createParser(entrant: EntrantRecord): CodexEventParser {
     return new CodexEventParser(entrant.id, this.logger);
+  }
+
+  protected watchdogMs(): number {
+    return this.turnTimeout;
   }
 
   protected validateResumeSession(): boolean {

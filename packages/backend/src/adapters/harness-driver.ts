@@ -323,7 +323,10 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       if (timeoutMs !== undefined) {
         timer = setTimeout(() => {
           watchdogFired = true;
-          this.appendError(state, `Turn exceeded the ${timeoutMs}ms watchdog; killed its process group`);
+          this.appendError(
+            state,
+            `Watchdog: no output for ${formatWatchdogDuration(timeoutMs)}; killed the turn's process group`,
+          );
           void execution.kill().catch((error: unknown) => {
             this.logger.warn(`[${this.harnessName()}] watchdog kill failed: ${errorMessage(error)}`);
           });
@@ -332,6 +335,9 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       }
 
       for await (const output of execution) {
+        // Any output is a sign of life: push the watchdog deadline back. Lines
+        // drained after a kill must not resurrect an already-fired timer.
+        if (!watchdogFired) timer?.refresh();
         if (output.stream === 'err') {
           stderrTail.push(output.line);
           if (stderrTail.length > 8) stderrTail.shift();
@@ -564,6 +570,12 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     delete environment.OPENCODE_PORT;
     return environment;
   }
+}
+
+function formatWatchdogDuration(durationMs: number): string {
+  if (durationMs % 60_000 === 0) return `${durationMs / 60_000}m`;
+  if (durationMs % 1_000 === 0) return `${durationMs / 1_000}s`;
+  return `${durationMs}ms`;
 }
 
 function errorMessage(error: unknown): string {

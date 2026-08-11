@@ -223,7 +223,12 @@ async function setup(
     temporaryPaths.push(authDirectory);
     authPath = join(authDirectory, 'auth.json');
     await writeFile(authPath, testCodexAuth);
-    driver = new CodexDriver(journal, { authPath, containerFactory, ...addressOptions });
+    driver = new CodexDriver(journal, {
+      authPath,
+      containerFactory,
+      turnWatchdogMs: watchdogMs,
+      ...addressOptions,
+    });
   } else if (harness === 'opencode') {
     driver = new OpenCodeDriver(journal, {
       apiKey: testCredentials.opencode,
@@ -1219,11 +1224,59 @@ describe('adapter guardrails', () => {
       await waitFor(() => first.killCalls.length === 1);
       await waitFor(() => context.container.turns.length === 2);
       expect(context.journal.after(context.run.id, 0).some((event) =>
-        event.type === 'entrant.error' && event.payload.message.includes('watchdog'))).toBe(true);
+        event.type === 'entrant.error' && event.payload.message.includes('Watchdog'))).toBe(true);
       expect(context.journal.after(context.run.id, 0).some((event) =>
         event.type === 'entrant.steered' && event.payload.text === 'queued after timeout')).toBe(true);
 
       completeTurn('opencode', context.container.turns[1] as ControlledExecution, 'session-1');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('resets the turn watchdog when the harness emits output', async () => {
+    const context = await setup('opencode', 60);
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+
+      for (let index = 0; index < 6; index += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        turn.push(
+          index % 2 === 0
+            ? JSON.stringify({ type: 'step_start', sessionID: 'session-1', part: {} })
+            : `progress ${index}`,
+          index % 2 === 0 ? 'out' : 'err',
+        );
+      }
+
+      expect(turn.killCalls).toHaveLength(0);
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error')).toBe(false);
+
+      await waitFor(() => turn.killCalls.length === 1);
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' &&
+        event.payload.message === "Watchdog: no output for 60ms; killed the turn's process group"
+      )).toBe(true);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('kills a stuck Codex turn with its watchdog', async () => {
+    const context = await setup('codex', 20);
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+
+      await waitFor(() => turn.killCalls.length === 1);
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' &&
+        event.payload.message === "Watchdog: no output for 20ms; killed the turn's process group"
+      )).toBe(true);
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

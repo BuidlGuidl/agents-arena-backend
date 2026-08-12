@@ -121,7 +121,7 @@ const historyQuerySchema = z.object({
 export interface ServerOptions {
   /** Required: every mutating route rejects a request that does not carry it. */
   operatorToken: string;
-  /** Wallet login for the operator. Omit, or pass no addresses, to serve token-only. */
+  /** Operator allowlist for wallet login and seed signing. */
   siwe?: SiweLoginOptions;
   dbPath?: string;
   schedule?: Schedule;
@@ -153,6 +153,7 @@ export function createServer(options: ServerOptions): ArenaServer {
   const journal = new EventJournal(options.dbPath);
   const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(journal, options.schedule);
   const runManagerOptions: RunManagerOptions = {
+    operatorAddresses: options.siwe?.operatorAddresses ?? [],
     ...(options.solveWatchFactory === undefined
       ? {}
       : { solveWatch: options.solveWatchFactory(journal) }),

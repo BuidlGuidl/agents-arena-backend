@@ -4,7 +4,7 @@ frozen from the design session on 2026-07-22. locked decisions are in `docs/adr/
 
 ## goal
 
-one authoritative backend that runs a live race: one Codex entrant and one OpenCode entrant (Claude Code deferred, ADR-0008), in isolated Docker containers, solving the real ai-ctf repo on Base. the funder signs and funds through the waiting room before Austin releases the race; Austin can steer either agent mid-race. the browser sees a normalized, replayable event feed; the leaderboard is on-chain `FlagMinted` truth.
+one authoritative backend that runs a live race: one Codex entrant and one OpenCode entrant (Claude Code deferred, ADR-0008), in isolated Docker containers, solving the real ai-ctf repo on Base. an allowlisted operator signs the seed, and an operator funds through the waiting room before Austin releases the race; Austin can steer either agent mid-race. the browser sees a normalized, replayable event feed; the leaderboard is on-chain `FlagMinted` truth.
 
 ## success bars
 
@@ -20,7 +20,7 @@ one authoritative backend that runs a live race: one Codex entrant and one OpenC
 - **API contract as checked-in files** (`contract/API.md` + `contract/arena-types.ts`), copied by the frontend fork (ADR-0002).
 - **entrant = persistent steerable session**, not a one-shot process; Austin-steer and auto-nudge are one injection path (ADR-0003).
 - **transport = stdout JSON**; hooks deferred (ADR-0004).
-- **fresh wallet per entrant per run**; its private key comes from a verified funder seed signature and lives only in process memory, while SQLite stores the address. the funding gate only watches balances (ADR-0005, amended by ADR-0013 and ADR-0014).
+- **fresh wallet per entrant per run**; its private key comes from a verified operator seed signature and lives only in process memory, while SQLite stores the address. the funding gate only watches balances (ADR-0005, amended by ADR-0013, ADR-0014, and ADR-0019).
 - **agent self-registers its ERC-8004 identity**; the backend never writes to a registry (ADR-0006).
 - **dev substrate = ai-ctf local chain via a chain profile**; real Base only at rehearsal (ADR-0007).
 
@@ -39,7 +39,7 @@ TypeScript on Node, Fastify (HTTP + SSE), `dockerode` (containers), `viem` (chai
 - **harness adapter** — per-CLI: command, credential home, preflight, stdout parser, mapping to `ArenaEvent`, turn injection. Codex and OpenCode in v1; Claude later behind the same seam (ADR-0008).
 - **event journal** — SQLite, append-only, global `id`, per-source `seq`, one run-level SSE stream, `Last-Event-ID` replay, Docker-log dedup on restart.
 - **game-state adapter** — `viem` watches `FlagMinted`, maps wallet → entrant, projects score events (unique on `(runId, entrantAddress, challengeId)`, two confirmations), `Ponder` for reconciliation.
-- **wallet/funding** — verifies the funder signature, derives burner keys in memory, stores addresses only, watches balances, and drops keys at teardown. the funder can re-sign and re-derive offline to sweep leftovers.
+- **wallet/funding** — verifies the seed signer's operator membership, derives burner keys in memory, stores addresses only, watches balances, and drops keys at teardown. the seed signer can re-sign and re-derive offline to sweep leftovers.
 
 ## endpoints (contract)
 
@@ -47,7 +47,7 @@ TypeScript on Node, Fastify (HTTP + SSE), `dockerode` (containers), `viem` (chai
 |---|---|
 | `POST /runs` | create from a preset; accepts `autoStart` and an idempotency key |
 | `POST /runs/:id/start` | begin the signature, preparation, and funding flow; release a ready run |
-| `POST /runs/:id/seed` | accept the funder's EIP-191 seed signature while the run is in `awaiting_signature` |
+| `POST /runs/:id/seed` | accept an allowlisted operator's EIP-712 seed signature while the run is in `awaiting_signature` |
 | `POST /runs/:id/stop` | stop and clean up |
 | `POST /runs/:id/entrants/:eid/steer` | inject an Austin steer turn into one entrant |
 | `POST /runs/:id/broadcast` | fan one director message into every live entrant, recorded once on the feed |
@@ -77,7 +77,7 @@ OpenCode adapter: `opencode run --format json --auto -m <preset model>`, OpenRou
 **done:** the zero-touch local flow starts both; if either preflight fails, neither starts; two lanes stream side by side from one SSE connection.
 
 ### slice 5 — wallets + funding gate
-[update, 2026-07-30: the funder signs `agents-arena seed v1\nrun: <runId>` before preparation. derive each entrant key as `keccak256(signature bytes ‖ utf8 entrantId)`, keep keys in memory, and store only `entrants.address`. the gate watches balances on every profile. a local-only helper auto-funds; Base waits for a human.]
+[update, 2026-08-11: an allowlisted operator signs EIP-712 `Seed {runId}` typed data before preparation. derive each entrant key as `keccak256(signature bytes ‖ utf8 entrantId)`, keep keys in memory, store `runs.seededBy`, and store only `entrants.address`. the gate watches balances on every profile. a local-only helper auto-funds; Base waits for a human.]
 **done:** a run pauses for the signature, then for funding, and advances to ready; preflight confirms funded + flag-#1-not-minted. startup drops the old `wallets` table.
 
 ### slice 6 — FlagMinted watcher → scores

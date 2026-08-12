@@ -146,7 +146,6 @@ const profile: ChainProfile = {
   nftFlags,
   challenge1,
   identityRegistry: registry,
-  funderAddress: account.address,
   fundingThresholdWei: parseEther('0.05'),
 };
 

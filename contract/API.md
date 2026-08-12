@@ -22,7 +22,7 @@ Authorization: Bearer <ARENA_OPERATOR_TOKEN>
 
 A request carrying neither returns status `401` and `{"error":"Operator token required"}`.
 
-`ARENA_OPERATOR_TOKEN` is required — the backend refuses to start without it, so a deployment cannot leave the controls open by accident. Wallet login is optional and switches on only when `ARENA_OPERATOR_ADDRESSES` lists at least one address; with it unset the `/auth` routes answer `503` and the arena is token-only.
+`ARENA_OPERATOR_TOKEN` is required — the backend refuses to start without it, so a deployment cannot leave the controls open by accident. `ARENA_OPERATOR_ADDRESSES` authorizes wallet login and seed signing. With it unset, the `/auth` routes answer `503`, the arena is token-only, and only local auto-sign can seed a run.
 
 **For a frontend:** either credential works, and both keep the secret out of the browser. With the token, proxy the control calls through your own server — a route handler that holds `ARENA_OPERATOR_TOKEN` in its environment and adds the header. With wallet login, the cookie is `HttpOnly`, so page scripts cannot read it either. What you must not do is ship the token to the page and send it from there: that exposes it to any XSS and to anyone reading devtools over the operator's shoulder on a live stream. See ADR-0012.
 
@@ -128,7 +128,7 @@ An unknown preset or invalid roster returns status `400`.
 
 Returns `{"run": RunSnapshot}` — every run endpoint (create, get, start, seed, stop) wraps the snapshot in this same envelope, the `RunResponse` type in the contract file. A missing run returns status `404`.
 
-`chainId` is the active chain profile's chain ID. Clients use it for seed typed data and chain links instead of assuming Anvil's `31337`. `deadlineAt` is the display-only deadline set when the run enters `running`; it does not trigger a timer or state change.
+`chainId` is the active chain profile's chain ID. Clients use it for seed typed data and chain links instead of assuming Anvil's `31337`. `seededBy` is the recovered seed signer address and appears only after a successful seed. `deadlineAt` is the display-only deadline set when the run enters `running`; it does not trigger a timer or state change.
 
 Each entrant carries its confirmed solves in journal order, and `flags` equals `solves.length`, so a reload can repaint the board without replaying events.
 
@@ -177,14 +177,14 @@ The backend does not resume pre-terminal runs after a restart. Stop runs parked 
 
 ### `POST /runs/:id/seed`
 
-Accepts the funder's EIP-712 signature while the run is in `awaiting_signature`.
+Accepts an allowlisted operator's EIP-712 signature while the run is in `awaiting_signature`.
 The signature is the recovery secret for the run's funds and travels in the POST body. Production deployments must serve this route over TLS only, and reverse proxies must not log its request body.
 
 ```json
 {"signature":"0x..."}
 ```
 
-The funder signs this typed data. `chainId` is the active chain profile's chain ID; this example uses the local profile:
+The seed signer signs this typed data. `chainId` is the active chain profile's chain ID; this example uses the local profile:
 
 ```json
 {
@@ -222,9 +222,9 @@ The funder signs this typed data. `chainId` is the active chain profile's chain 
 }
 ```
 
-The domain has no `verifyingContract`. The backend verifies the signature against the active chain profile's `funderAddress`. It derives each entrant wallet in memory, stores each address on the entrant, and emits one `wallet.assigned` event per entrant. The signature and private keys never enter the event journal or database.
+The domain has no `verifyingContract`. The backend verifies that the recovered address is in `ARENA_OPERATOR_ADDRESSES`. It derives each entrant wallet in memory, stores the signer as `seededBy`, stores each address on the entrant, and emits one `wallet.assigned` event per entrant. The signature and private keys never enter the event journal or database. Local automatic signing bypasses the allowlist and records the local dev signer.
 
-A valid request returns status `202` with `{"run": RunSnapshot}`. A malformed or non-canonical signature returns status `400`. A canonical signature from another address returns status `403`. A run outside `awaiting_signature` returns status `409`.
+A valid request returns status `202` with `{"run": RunSnapshot}`. A malformed or non-canonical signature returns status `400`. A canonical signature from a non-operator address returns status `403`. A run outside `awaiting_signature` returns status `409`.
 
 ### `POST /runs/:id/stop`
 

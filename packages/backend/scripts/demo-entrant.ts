@@ -30,6 +30,7 @@ const run: RunRecord = {
   startedAt: now,
   deadlineAt: null,
   durationMs: null,
+  seededBy: null,
   idempotencyKey: null,
 };
 const entrant: EntrantRecord = {

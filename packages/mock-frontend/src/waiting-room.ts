@@ -42,7 +42,7 @@ export function seedErrorMessage(status: number): string {
     case 400:
       return 'the backend could not read that signature, or its encoding is not canonical (expects 0x + 130 hex chars, low-s, v 27/28).';
     case 403:
-      return 'signature rejected — it did not come from the wallet this profile funds with.';
+      return 'signature rejected — it did not come from an allowlisted operator wallet.';
     case 409:
       return 'this run is no longer waiting for a signature.';
     case 404:

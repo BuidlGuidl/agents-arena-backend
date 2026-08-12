@@ -28,6 +28,7 @@ import { roundUsd } from './pricing.js';
 import type { EventJournal } from './journal.js';
 import { dropCredentialSecrets } from './adapters/credential-secrets.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './adapters/types.js';
+import { normalizeOperatorAddresses } from './siwe.js';
 
 export const LEGAL_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> = {
   created: ['awaiting_signature', 'preparing', 'failed'],
@@ -128,6 +129,7 @@ export type SolveWatch = (
 export interface RunManagerOptions {
   prepareTimeoutMs?: number;
   fundingTimeoutMs?: number;
+  operatorAddresses?: readonly string[];
   solveWatch?: SolveWatch;
   promptBuilder?: OpeningPromptBuilder;
 }
@@ -175,6 +177,7 @@ export class RunManager {
   private readonly solveWatchControllers = new Map<string, AbortController>();
   private readonly prepareTimeoutMs: number;
   private readonly fundingTimeoutMs: number | undefined;
+  private readonly operatorAddresses: ReadonlySet<string>;
   private readonly solveWatch: SolveWatch;
   private readonly promptBuilder: OpeningPromptBuilder;
 
@@ -186,6 +189,7 @@ export class RunManager {
   ) {
     this.prepareTimeoutMs = options.prepareTimeoutMs ?? DEFAULT_PREPARE_TIMEOUT_MS;
     this.fundingTimeoutMs = options.fundingTimeoutMs ?? activeChainProfile.fundingTimeoutMs;
+    this.operatorAddresses = new Set(normalizeOperatorAddresses(options.operatorAddresses ?? []));
     this.solveWatch = options.solveWatch ?? passThroughSolveWatch;
     this.promptBuilder = options.promptBuilder ?? profilePromptBuilder;
     // snapshot() reads scores, which chainless presets never create otherwise.
@@ -220,6 +224,7 @@ export class RunManager {
         startedAt: null,
         deadlineAt: null,
         durationMs: input.durationMs ?? null,
+        seededBy: null,
         idempotencyKey: input.idempotencyKey ?? null,
         createdAt: now,
       }).run();
@@ -279,6 +284,7 @@ export class RunManager {
         state: run.state,
         preset: run.preset,
         chainId: activeChainProfile.chainId,
+        ...(run.seededBy === null ? {} : { seededBy: run.seededBy }),
         entrants: entrantSummaries,
         startedAt: run.startedAt,
         deadlineAt: run.deadlineAt,
@@ -309,6 +315,14 @@ export class RunManager {
   }
 
   async submitSeed(runId: string, signature: Hex): Promise<RunSnapshot> {
+    return this.submitSeedInternal(runId, signature, false);
+  }
+
+  private async submitSeedInternal(
+    runId: string,
+    signature: Hex,
+    bypassOperatorAllowlist: boolean,
+  ): Promise<RunSnapshot> {
     const run = this.requireRun(runId);
     const waiter = this.seedWaiters.get(runId);
     if (run.state === 'awaiting_signature' && waiter === undefined) {
@@ -341,7 +355,7 @@ export class RunManager {
       waiter.submitting = false;
       throw new SeedSignatureError('Seed signature is not authorized');
     }
-    if (recovered.toLowerCase() !== activeChainProfile.funderAddress.toLowerCase()) {
+    if (!bypassOperatorAllowlist && !this.operatorAddresses.has(recovered.toLowerCase())) {
       waiter.submitting = false;
       throw new SeedSignatureError('Seed signature is not authorized');
     }
@@ -366,6 +380,11 @@ export class RunManager {
 
     try {
       this.journal.transaction(() => {
+        this.journal.database
+          .update(runs)
+          .set({ seededBy: recovered })
+          .where(eq(runs.id, runId))
+          .run();
         for (const entrant of runEntrants) {
           const address = addresses.get(entrant.id);
           if (address === undefined) {
@@ -439,7 +458,7 @@ export class RunManager {
               const signature = await account.signTypedData(
                 seedTypedData(runId, activeChainProfile.chainId),
               );
-              await this.submitSeed(runId, signature);
+              await this.submitSeedInternal(runId, signature, true);
             }
             await withAbort(seedWaiter.promise, controller);
           } finally {
@@ -891,7 +910,7 @@ function createSeedWaiter(): SeedWaiter {
   return { promise, resolve, submitting: false };
 }
 
-function localAutoSignEnabled(): boolean {
+export function localAutoSignEnabled(): boolean {
   return activeChainProfile.name === 'local' && process.env.ARENA_AUTO_SIGN !== 'false';
 }
 

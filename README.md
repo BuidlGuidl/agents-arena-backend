@@ -15,8 +15,9 @@ Working today:
 
 Not wired yet:
 - Auto-nudge. An idle entrant that still has flags to win is not nudged.
-- The `base` profile addresses in `config/chains.json` are stale until the CTF contracts are redeployed. ADR-0009's startup cross-check throws until they are.
-- The `base` profile's `funderAddress` is the zero address, which rejects every seed signature. Before any base run, set it to the treasury wallet that will sign and fund — and that wallet must be a plain EOA: burner keys derive from its signature (ADR-0013), and a Safe or MPC signer cannot re-produce one to recover funds.
+- A Base mainnet profile. The old one carried stale contract addresses, so it is removed; re-add it from fresh deployment artifacts before the real race. `baseSepolia` is the live remote profile.
+
+Any address in `ARENA_OPERATOR_ADDRESSES` can sign a seed. Every listed address must be a plain EOA with deterministic signing because its signature is the recovery key (ADR-0013 and ADR-0019). By convention, whoever funds the run signs its seed.
 
 In any real deployment, serve `POST /runs/:id/seed` over TLS. Configure proxies not to log request bodies on that route because the signature is a bearer secret.
 
@@ -28,7 +29,7 @@ One process owns a run: lifecycle, containers, credentials, the event journal, a
 - **Ready barrier** — all entrants prepare and hold. The run releases them together on one recorded start time, so boot time never decides the race.
 - **Steer** — an operator injects a free-text turn into a live agent mid-race. An idle agent that still has flags to win is auto-nudged from on-chain truth. Both use one injection path.
 - **Journal** — every fact is one append-only row with a global `id` and a per-source `seq`. The feed is a projection; a reconnect replays it.
-- **Chain profile** — selects addresses, RPC, confirmation depth, funder address, funding threshold, and funding timeout for local or Base.
+- **Chain profile** — selects addresses, RPC, confirmation depth, funding threshold, and funding timeout for the active chain.
 
 Transport is each CLI's line-JSON stdout (`codex --json`, `opencode --format json`, `claude --output-format stream-json`), normalized into one `ArenaEvent` stream. SSE, not websockets — `Last-Event-ID` replay is native and the traffic is asymmetric (a steer is a plain POST).
 
@@ -201,14 +202,14 @@ Credentials come from the host: `codex` reads `~/.codex/auth.json`, `opencode` r
 
 `POST /runs/:id/start`:
 
-1. Move to `awaiting_signature`. The funder signs the run's EIP-712 `Seed {runId}` typed data under the active profile's chain ID and submits it to `POST /runs/:id/seed`. Local signs automatically unless `ARENA_AUTO_SIGN=false`.
-2. Verify that the EIP-712 signature recovers to the profile's `funderAddress`. Derive each entrant key in memory and store only its address.
-3. Prepare each entrant — build a fresh container, inject its in-memory key and RPC URL, seed its harness credentials, mount the challenge pack read-only at `/ctf` on a local chain (Base mounts nothing), and run preflight.
+1. Move to `awaiting_signature`. An allowlisted operator signs the run's EIP-712 `Seed {runId}` typed data under the active profile's chain ID and submits it to `POST /runs/:id/seed`. Local signs automatically unless `ARENA_AUTO_SIGN=false`.
+2. Verify that the recovered address is in `ARENA_OPERATOR_ADDRESSES`. Derive each entrant key in memory, store the signer as `seededBy`, and store only each entrant address.
+3. Prepare each entrant — build a fresh container, inject its in-memory key and RPC URL, seed its harness credentials, mount the challenge pack read-only at `/ctf` on a local chain (a remote profile with a `briefingUrl` mounts nothing), and run preflight.
 4. Move to `awaiting_funding`. The gate only watches balances; the operator funds the displayed addresses. On a local chain, `ARENA_LOCAL_FAUCET=true` funds them from anvil account 0 instead.
 5. Hold at the ready barrier until all entrants report ready. Record one start time and release them with their opening prompt.
 6. Parse each agent's stdout into `ArenaEvent`s, append them to the journal, and stream them to the browser.
 
-Keys are dropped at teardown and never enter SQLite. At race time, the funder must save the canonical seed signature because it is that run's recovery key. From `packages/backend`, `scripts/recover-keys.ts` re-derives the burner keys and can sweep their balances. If any preflight fails, the run fails and every container is torn down. No entrant starts.
+Keys are dropped at teardown and never enter SQLite. At race time, the seed signer must save the canonical signature because it is that run's recovery key. From `packages/backend`, `scripts/recover-keys.ts` re-derives the burner keys and can sweep their balances. If any preflight fails, the run fails and every container is torn down. No entrant starts.
 
 ## API
 
@@ -216,7 +217,7 @@ Keys are dropped at teardown and never enter SQLite. At race time, the funder mu
 |---|---|---|
 | POST | `/runs` | create from a preset; accepts `autoStart` and `idempotencyKey` |
 | POST | `/runs/:id/start` | begin the signature, preparation, funding, and ready flow; release a ready run |
-| POST | `/runs/:id/seed` | submit the funder's seed signature while the run awaits it |
+| POST | `/runs/:id/seed` | submit an allowlisted operator's seed signature while the run awaits it |
 | POST | `/runs/:id/stop` | stop and tear down |
 | POST | `/runs/:id/entrants/:eid/steer` | inject a turn into one live agent |
 | POST | `/runs/:id/entrants/:eid/restart` | give one stale or blocked agent a fresh session on its opening prompt |
@@ -227,4 +228,4 @@ Keys are dropped at teardown and never enter SQLite. At race time, the funder mu
 
 Control endpoints are operator-only. Every POST needs one of two credentials — `Authorization: Bearer $ARENA_OPERATOR_TOKEN` for scripts and server-side proxies, or the `arena_operator` session cookie the operator gets by signing in with his wallet — and answers `401` with neither, while the snapshot and the SSE feed stay open for spectators. The backend refuses to start when `ARENA_OPERATOR_TOKEN` is unset, so a deploy cannot leave the controls open.
 
-Wallet login is Sign-In with Ethereum and stays off until `ARENA_OPERATOR_ADDRESSES` lists the operator's address. When the address list is set, `ARENA_SIWE_DOMAINS` is required and must list the hostname the wallet shows. Whichever credential a frontend uses, the secret stays out of the page — see [ADR-0012](docs/adr/decisions-log.md). The API contract travels as checked-in files (`contract/API.md` + `contract/arena-types.ts`); the frontend fork copies the types.
+Wallet login is Sign-In with Ethereum and stays off until `ARENA_OPERATOR_ADDRESSES` lists the operator's address. The same allowlist authorizes seed signatures. When the address list is set, `ARENA_SIWE_DOMAINS` is required and must list the hostname the wallet shows. Whichever credential a frontend uses, the secret stays out of the page — see [ADR-0012](docs/adr/decisions-log.md). The API contract travels as checked-in files (`contract/API.md` + `contract/arena-types.ts`); the frontend fork copies the types.

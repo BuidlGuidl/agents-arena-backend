@@ -269,7 +269,6 @@ export function testProfile(rpcUrl: string, confirmations: number, nftFlags: Add
     nftFlags,
     challenge1: zero,
     identityRegistry: zero,
-    funderAddress: zero,
     fundingThresholdWei: 1n,
   };
 }

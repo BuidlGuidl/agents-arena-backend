@@ -4,13 +4,13 @@
 #   scripts/fund-drill.sh                 # reads scripts/.funding-request.json
 #   scripts/fund-drill.sh 0xADDR1 0xADDR2 # or pass addresses directly
 #
-# Overridable: ARENA_RPC, FUNDER_KEY, AMOUNT (e.g. AMOUNT=0.2ether).
+# Overridable: ARENA_RPC, AMOUNT (e.g. AMOUNT=0.2ether).
 set -euo pipefail
 
 RPC="${ARENA_RPC:-http://127.0.0.1:8545}"
-# Default dev account 0 from the standard "test test ... junk" mnemonic — the
-# funder the ai-ctf hardhat node (and anvil) both pre-fund with ~10000 ETH.
-FUNDER_KEY="${FUNDER_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
+# Dev account 0 from the standard "test test ... junk" mnemonic. The ai-ctf
+# Hardhat node and Anvil both give this account about 10000 ETH.
+DEV_PRIVATE_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 AMOUNT="${AMOUNT:-0.1ether}"
 REQ="$(cd "$(dirname "$0")" && pwd)/.funding-request.json"
 
@@ -31,10 +31,10 @@ fi
 
 if [ "${#ADDRS[@]}" -lt 1 ]; then echo "no addresses to fund" >&2; exit 1; fi
 
-echo "→ rpc=$RPC · amount=$AMOUNT · funder=dev#0"
+echo "→ rpc=$RPC · amount=$AMOUNT · payer=dev#0"
 for a in "${ADDRS[@]}"; do
   echo "  send $AMOUNT → $a"
-  cast send "$a" --value "$AMOUNT" --private-key "$FUNDER_KEY" --rpc-url "$RPC" >/dev/null
+  cast send "$a" --value "$AMOUNT" --private-key "$DEV_PRIVATE_KEY" --rpc-url "$RPC" >/dev/null
 done
 
 # Automine puts each send in its own block; advance one more so the last

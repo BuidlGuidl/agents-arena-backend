@@ -11,7 +11,6 @@ export interface ChainProfile {
   nftFlags: Address;
   challenge1: Address;
   identityRegistry: Address;
-  funderAddress: Address;
   fundingThresholdWei: bigint;
   fundingTimeoutMs?: number;
   // Set when the chain has a public briefing the entrant can fetch. Absent means
@@ -21,12 +20,11 @@ export interface ChainProfile {
 
 interface RawChainProfile extends Omit<
   ChainProfile,
-  'nftFlags' | 'challenge1' | 'identityRegistry' | 'funderAddress' | 'fundingThresholdWei'
+  'nftFlags' | 'challenge1' | 'identityRegistry' | 'fundingThresholdWei'
 > {
   nftFlags: string;
   challenge1: string;
   identityRegistry: string;
-  funderAddress: string;
   fundingThresholdEth: string;
 }
 
@@ -37,14 +35,6 @@ function parseAddress(value: string, field: string): Address {
     throw new Error(`Invalid ${field} address: ${value}`);
   }
   return getAddress(value);
-}
-
-function parseChecksummedAddress(value: string, field: string): Address {
-  const address = parseAddress(value, field);
-  if (address !== value) {
-    throw new Error(`Address ${field} must use its checksum: ${address}`);
-  }
-  return address;
 }
 
 function parseProfile(name: string, value: RawChainProfile): ChainProfile {
@@ -90,7 +80,6 @@ function parseProfile(name: string, value: RawChainProfile): ChainProfile {
     nftFlags: parseAddress(value.nftFlags, `${name}.nftFlags`),
     challenge1: parseAddress(value.challenge1, `${name}.challenge1`),
     identityRegistry: parseAddress(value.identityRegistry, `${name}.identityRegistry`),
-    funderAddress: parseChecksummedAddress(value.funderAddress, `${name}.funderAddress`),
     fundingThresholdWei,
     ...(value.fundingTimeoutMs === undefined
       ? {}

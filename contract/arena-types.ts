@@ -63,6 +63,8 @@ export interface RunSnapshot {
   // Chain the run's wallets and flag mints live on. Clients must read it from
   // here — not hardcode 31337 — for the seed signature and explorer links.
   chainId: number;
+  // Present after seeding. This operator holds the recovery capability for the run.
+  seededBy?: string;
   entrants: EntrantSummary[];
   startedAt: string | null;
   // Display only. The backend never stops a run at the deadline; the operator

@@ -1727,6 +1727,7 @@ describe('adapter construction errors', () => {
       startedAt: null,
       deadlineAt: null,
       durationMs: null,
+      seededBy: null,
       idempotencyKey: null,
     };
     const entrant: EntrantRecord = {
@@ -1763,6 +1764,7 @@ describe('adapter construction errors', () => {
       startedAt: null,
       deadlineAt: null,
       durationMs: null,
+      seededBy: null,
       idempotencyKey: null,
     };
     const entrant: EntrantRecord = {
@@ -1795,6 +1797,7 @@ describe('adapter construction errors', () => {
       startedAt: null,
       deadlineAt: null,
       durationMs: null,
+      seededBy: null,
       idempotencyKey: null,
     };
     const entrant: EntrantRecord = {
@@ -1830,6 +1833,7 @@ describe('adapter construction errors', () => {
       startedAt: null,
       deadlineAt: null,
       durationMs: null,
+      seededBy: null,
       idempotencyKey: null,
     };
     const entrant: EntrantRecord = {

@@ -27,7 +27,6 @@ const localProfile: ChainProfile = {
   nftFlags,
   challenge1,
   identityRegistry,
-  funderAddress: '0x0000000000000000000000000000000000000000',
   fundingThresholdWei: 1n,
 };
 

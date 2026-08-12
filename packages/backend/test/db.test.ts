@@ -14,7 +14,7 @@ afterEach(async () => {
 });
 
 describe('openArenaDatabase', () => {
-  it('adds duration_ms to an existing runs table', async () => {
+  it('adds duration_ms and seeded_by to an existing runs table', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'arena-db-test-'));
     temporaryPaths.push(directory);
     const path = join(directory, 'arena.db');
@@ -36,12 +36,21 @@ describe('openArenaDatabase', () => {
     const { sqlite } = openArenaDatabase(path);
     try {
       sqlite.prepare(
-        'INSERT INTO runs (id, state, preset, duration_ms, created_at) VALUES (?, ?, ?, ?, ?)',
-      ).run('run-1', 'created', 'fake-duel', 60_000, new Date().toISOString());
-      const row = sqlite.prepare('SELECT duration_ms FROM runs WHERE id = ?').get('run-1') as {
+        'INSERT INTO runs (id, state, preset, duration_ms, seeded_by, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(
+        'run-1',
+        'created',
+        'fake-duel',
+        60_000,
+        '0x0000000000000000000000000000000000000001',
+        new Date().toISOString(),
+      );
+      const row = sqlite.prepare('SELECT duration_ms, seeded_by FROM runs WHERE id = ?').get('run-1') as {
         duration_ms: number;
+        seeded_by: string;
       };
       expect(row.duration_ms).toBe(60_000);
+      expect(row.seeded_by).toBe('0x0000000000000000000000000000000000000001');
     } finally {
       sqlite.close();
     }

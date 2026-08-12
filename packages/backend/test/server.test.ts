@@ -1042,7 +1042,7 @@ describe('run rosters', () => {
 
     expect(response.statusCode).toBe(400);
     expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
-      .toBe('codex models must be one of: gpt-5.5, gpt-5.6-sol');
+      .toBe('codex models must be one of: gpt-5.5');
   });
 
   it('rejects a model allowed only for another harness', async () => {
@@ -1061,7 +1061,7 @@ describe('run rosters', () => {
 
     expect(response.statusCode).toBe(400);
     expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
-      .toBe('codex models must be one of: gpt-5.5, gpt-5.6-sol');
+      .toBe('codex models must be one of: gpt-5.5');
   });
 
   it('accepts effort for a Codex roster entrant and exposes it in the snapshot', async () => {
@@ -1074,7 +1074,7 @@ describe('run rosters', () => {
       headers: operatorHeaders,
       payload: {
         preset: 'fake-duel',
-        roster: [{ id: 'codex-main', harness: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh' }],
+        roster: [{ id: 'codex-main', harness: 'codex', model: 'gpt-5.5', effort: 'xhigh' }],
       },
     });
 
@@ -1084,7 +1084,7 @@ describe('run rosters', () => {
       expect.objectContaining({
         id: 'codex-main',
         harness: 'codex',
-        model: 'gpt-5.6-sol',
+        model: 'gpt-5.5',
         effort: 'xhigh',
       }),
     ]);

@@ -109,7 +109,7 @@ An optional `roster` replaces the preset entrants. It accepts 1–10 entries:
 
 Each `id` must match `^[a-z][a-z0-9-]*$`, contain at most 20 characters, and be unique within the roster. Docker names allow 63 characters; `arena-`, the 36-character run UUID, and their separator leave 20 characters for the entrant ID. The ID `run` is reserved for run-level feed events. `harness` must be `codex`, `opencode`, or `claude`. The `model` must appear in the selected harness's allowlist:
 
-- `codex`: `gpt-5.5`, `gpt-5.6-sol`
+- `codex`: `gpt-5.5`
 - `claude`: `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`
 - `opencode`: `openrouter/z-ai/glm-5.2`, `openrouter/moonshotai/kimi-k3`, `openrouter/deepseek/deepseek-v4-flash-0731`
 

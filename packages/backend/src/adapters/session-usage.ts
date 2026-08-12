@@ -6,33 +6,53 @@ type JsonObject = Record<string, unknown>;
 const SESSION_READ_TIMEOUT_MS = 30_000;
 const SESSION_READ_MAX_BYTES = 64 * 1024 * 1024;
 
-export async function readSessionJsonl(container: EntrantContainer, root: string): Promise<string[]> {
+interface SessionReadLimits {
+  timeoutMs?: number;
+  maxBytes?: number;
+}
+
+export async function readSessionJsonl(
+  container: EntrantContainer,
+  root: string,
+  limits: SessionReadLimits = {},
+): Promise<string[]> {
   const execution = await container.exec([
     'find', root, '-type', 'f', '-name', '*.jsonl', '-exec', 'cat', '{}', '+',
   ]);
-  let timedOut = false;
+  const timeoutMs = limits.timeoutMs ?? SESSION_READ_TIMEOUT_MS;
+  const maxBytes = limits.maxBytes ?? SESSION_READ_MAX_BYTES;
+  let rejectTimeout!: (error: Error) => void;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    rejectTimeout = reject;
+  });
   const timer = setTimeout(() => {
-    timedOut = true;
+    // Reject independently: a wedged runner may never acknowledge the kill or
+    // close the iterator, and usage recovery must not hold stop/teardown open.
+    rejectTimeout(new Error('session transcript read timed out'));
     void execution.kill().catch(() => undefined);
-  }, SESSION_READ_TIMEOUT_MS);
+  }, timeoutMs);
   timer.unref();
 
-  const lines: string[] = [];
-  let bytes = 0;
-  try {
+  const consume = async (): Promise<string[]> => {
+    const lines: string[] = [];
+    let bytes = 0;
     for await (const output of execution) {
       if (output.stream !== 'out') continue;
       bytes += Buffer.byteLength(output.line, 'utf8');
-      if (bytes > SESSION_READ_MAX_BYTES) {
-        await execution.kill().catch(() => undefined);
+      if (bytes > maxBytes) {
+        // Cleanup is best effort and must not delay the limit failure.
+        void execution.kill().catch(() => undefined);
         throw new Error('session transcripts exceed the 64 MiB recovery limit');
       }
       lines.push(output.line);
     }
     const code = await execution.exit;
-    if (timedOut) throw new Error('session transcript read timed out');
     if (code !== 0) throw new Error(`session transcript read exited with code ${String(code)}`);
     return lines;
+  };
+
+  try {
+    return await Promise.race([consume(), timeout]);
   } finally {
     clearTimeout(timer);
   }

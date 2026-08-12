@@ -14,7 +14,10 @@ import {
 } from '../src/adapters/credential-secrets.js';
 import { DockerEntrantDriver } from '../src/adapters/docker.js';
 import { recordCurrentChallenge } from '../src/ctf/challenge-tracker.js';
-import type { HarnessDriverOptions } from '../src/adapters/harness-driver.js';
+import {
+  formatWatchdogDuration,
+  type HarnessDriverOptions,
+} from '../src/adapters/harness-driver.js';
 import { FakeDriver } from '../src/adapters/fake.js';
 import { OpenCodeDriver, scrubOpenCodeEnvironment } from '../src/adapters/opencode.js';
 import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
@@ -56,12 +59,14 @@ const testCodexAuth = JSON.stringify({
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(temporaryPaths.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
 class ControlledExecution implements RuntimeExecution {
   readonly exit: Promise<number | null>;
   readonly killCalls: string[] = [];
+  killFailure: Error | undefined;
   private readonly values: RuntimeLine[] = [];
   private readonly waiters: Array<(result: IteratorResult<RuntimeLine>) => void> = [];
   private resolveExit!: (code: number | null) => void;
@@ -93,6 +98,7 @@ class ControlledExecution implements RuntimeExecution {
 
   async kill(): Promise<void> {
     this.killCalls.push('kill');
+    if (this.killFailure !== undefined) throw this.killFailure;
     this.finish(null);
   }
 
@@ -111,9 +117,11 @@ class ControlledExecution implements RuntimeExecution {
 class ControlledContainer implements EntrantContainer {
   readonly calls: Array<{ argv: string[]; env?: Record<string, string> }> = [];
   readonly turns: ControlledExecution[] = [];
+  readonly authReads: ControlledExecution[] = [];
   authFileContent: string | undefined;
   tornDown = false;
   failNextLaunch = false;
+  hangAuthRead = false;
   private active: ControlledExecution | undefined;
   private launchGate: Promise<void> | undefined;
 
@@ -151,7 +159,10 @@ class ControlledContainer implements EntrantContainer {
       this.turns.push(execution);
     } else if (argv[0] === 'cat' && argv[1] === '/creds/codex/auth.json') {
       // The auth sync-back reads the container's file this way on teardown.
-      if (this.authFileContent === undefined) {
+      this.authReads.push(execution);
+      if (this.hangAuthRead) {
+        // Leave the execution open until the test releases or tears it down.
+      } else if (this.authFileContent === undefined) {
         execution.finish(1);
       } else {
         for (const line of this.authFileContent.split('\n')) execution.push(line);
@@ -170,6 +181,15 @@ class ControlledContainer implements EntrantContainer {
   }
 }
 
+class TimerProbeDriver extends OpenCodeDriver {
+  timerValues(run: RunRecord): { watchdogMs: number | undefined; turnCapMs: number | undefined } {
+    return {
+      watchdogMs: this.watchdogMs(),
+      turnCapMs: this.turnCapMs(run),
+    };
+  }
+}
+
 async function setup(
   harness: TestHarness,
   watchdogMs = 10 * 60 * 1_000,
@@ -177,6 +197,7 @@ async function setup(
   model?: string,
   effort?: EntrantRecord['effort'],
   challengeAddresses?: HarnessDriverOptions['challengeAddresses'],
+  timerOptions: Pick<HarnessDriverOptions, 'turnMaxMs' | 'logger'> = {},
 ): Promise<{
   journal: EventJournal;
   driver: EntrantDriver;
@@ -223,13 +244,20 @@ async function setup(
     temporaryPaths.push(authDirectory);
     authPath = join(authDirectory, 'auth.json');
     await writeFile(authPath, testCodexAuth);
-    driver = new CodexDriver(journal, { authPath, containerFactory, ...addressOptions });
+    driver = new CodexDriver(journal, {
+      authPath,
+      containerFactory,
+      turnWatchdogMs: watchdogMs,
+      ...addressOptions,
+      ...timerOptions,
+    });
   } else if (harness === 'opencode') {
     driver = new OpenCodeDriver(journal, {
       apiKey: testCredentials.opencode,
       containerFactory,
       turnWatchdogMs: watchdogMs,
       ...addressOptions,
+      ...timerOptions,
     });
   } else {
     driver = new ClaudeDriver(journal, {
@@ -237,6 +265,7 @@ async function setup(
       containerFactory,
       turnWatchdogMs: watchdogMs,
       ...addressOptions,
+      ...timerOptions,
     });
   }
   await driver.prepare(run, entrant);
@@ -250,7 +279,7 @@ async function setup(
 }
 
 async function waitFor(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  for (let attempt = 0; attempt < 2_000; attempt += 1) {
     if (check()) return;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
@@ -312,15 +341,21 @@ describe.each(['codex', 'opencode', 'claude'] as const)('%s steer rejection', (h
     const context = await setup(harness);
     const sessionId = harness === 'codex' ? 'thread-1' : `${harness}-session-1`;
     try {
-      await expect(context.driver.steer(context.run, context.entrant, 'too early'))
+      const rejection = context.driver.steer(context.run, context.entrant, 'too early');
+      await expect(rejection)
+        .rejects.toThrow(
+          `Entrant ${context.entrant.id} cannot take a turn before the harness reports a session ID; ` +
+          'restart the lane to resend the opening prompt',
+        );
+      await expect(rejection)
         .rejects.toBeInstanceOf(EntrantUnavailableError);
       expect(context.container.turns).toHaveLength(0);
-      // The caller records the miss on the lane; the driver stays silent.
       expect(context.journal.after(context.run.id, 0)
         .filter((event) => event.type === 'entrant.error')).toHaveLength(0);
+      expect(context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.status').at(-1)?.payload.status).toBe('idle');
 
-      // The early miss must not poison the entrant: once the opening turn
-      // reports a session, a steer goes through.
+      // The rejection must not claim the lane or degrade it.
       await context.driver.start(context.run, context.entrant, 'opening');
       completeTurn(harness, context.container.turns[0] as ControlledExecution, sessionId);
       await context.driver.steer(context.run, context.entrant, 'after start');
@@ -373,8 +408,8 @@ describe.each(['codex', 'opencode', 'claude'] as const)('%s steer queue', (harne
 
 // The route answered 'queued' for these steers, so a silent drop would leave a
 // consumer reconciling against entrant.steered waiting forever.
-describe('dropped queued steers', () => {
-  it('journals a queued steer whose drain fails to start a turn', async () => {
+describe('queued steer drain', () => {
+  it('drops a queued steer when the opening turn ends without a session ID', async () => {
     const context = await setup('codex');
     try {
       await context.driver.start(context.run, context.entrant, 'opening');
@@ -391,44 +426,14 @@ describe('dropped queued steers', () => {
       opening.finish(0);
 
       await waitFor(() => context.journal.after(context.run.id, 0).some((event) =>
-        event.type === 'entrant.error' && event.payload.message.includes('ghost steer')));
+        event.type === 'entrant.error' && event.payload.message.includes('Queued steer dropped')));
       expect(context.container.turns).toHaveLength(1);
       expect(context.journal.after(context.run.id, 0).filter((event) =>
         event.type === 'entrant.steered')).toHaveLength(0);
-    } finally {
-      await context.driver.stop(context.run, context.entrant);
-      context.journal.close();
-    }
-  });
-
-  it('journals every queued steer when a sessionless drain cannot start', async () => {
-    const context = await setup('codex');
-    try {
-      await context.driver.start(context.run, context.entrant, 'opening');
-      await expect(context.driver.steer(context.run, context.entrant, 'first ghost steer'))
-        .resolves.toBe('queued');
-      await expect(context.driver.steer(context.run, context.entrant, 'second ghost steer'))
-        .resolves.toBe('queued');
-
-      const opening = context.container.turns[0] as ControlledExecution;
-      opening.push(JSON.stringify({
-        type: 'turn.completed',
-        usage: { input_tokens: 10, output_tokens: 2 },
-      }));
-      opening.finish(0);
-
-      await waitFor(() => context.journal.after(context.run.id, 0).some((event) =>
-        event.type === 'entrant.error' && event.payload.message.includes('second ghost steer')));
-      const errors = context.journal.after(context.run.id, 0)
-        .filter((event) => event.type === 'entrant.error')
-        .filter((event) => event.payload.message.includes('Queued steer dropped'));
-      expect(errors.map((event) => event.payload.message)).toEqual([
-        expect.stringContaining('first ghost steer'),
-        expect.stringContaining('second ghost steer'),
-      ]);
-      expect(context.container.turns).toHaveLength(1);
-      expect(context.journal.after(context.run.id, 0).filter((event) =>
-        event.type === 'entrant.steered')).toHaveLength(0);
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' &&
+        event.payload.message.includes('restart the lane to resend the opening prompt') &&
+        event.payload.message.includes('ghost steer'))).toBe(true);
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();
@@ -1008,6 +1013,46 @@ describe('codex auth rotation', () => {
       context.journal.close();
     }
   });
+
+  it('times out a wedged turn-boundary auth read without failing the turn', async () => {
+    vi.useFakeTimers();
+    const warnings: string[] = [];
+    const context = await setup(
+      'codex',
+      undefined,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      { logger: { info() {}, warn: (message) => warnings.push(message) } },
+    );
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      context.container.hangAuthRead = true;
+      completeTurn('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+      for (let attempt = 0; attempt < 10; attempt += 1) await Promise.resolve();
+      expect(context.container.calls.some((call) => call.argv[0] === 'cat')).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(context.container.authReads[0]?.killCalls).toEqual(['kill']);
+      expect(context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.status').at(-1)?.payload.status).toBe('idle');
+      expect(warnings).toContain(
+        '[codex] rotated-auth read timed out after 30s; killed it and skipped rotation for this turn',
+      );
+
+      context.container.hangAuthRead = false;
+      await expect(context.driver.steer(context.run, context.entrant, 'after auth timeout'))
+        .resolves.toBe('injected');
+      expect(context.container.turns).toHaveLength(2);
+      completeTurn('codex', context.container.turns[1] as ControlledExecution, 'thread-1');
+    } finally {
+      context.container.hangAuthRead = false;
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
 });
 
 describe('adapter guardrails', () => {
@@ -1209,7 +1254,7 @@ describe('adapter guardrails', () => {
   });
 
   it('kills a stuck OpenCode turn and releases its queued steer', async () => {
-    const context = await setup('opencode', 20);
+    const context = await setup('opencode', 200);
     try {
       await context.driver.start(context.run, context.entrant, 'opening');
       const first = context.container.turns[0] as ControlledExecution;
@@ -1219,11 +1264,336 @@ describe('adapter guardrails', () => {
       await waitFor(() => first.killCalls.length === 1);
       await waitFor(() => context.container.turns.length === 2);
       expect(context.journal.after(context.run.id, 0).some((event) =>
-        event.type === 'entrant.error' && event.payload.message.includes('watchdog'))).toBe(true);
+        event.type === 'entrant.error' && event.payload.message.includes('Watchdog'))).toBe(true);
       expect(context.journal.after(context.run.id, 0).some((event) =>
         event.type === 'entrant.steered' && event.payload.text === 'queued after timeout')).toBe(true);
 
       completeTurn('opencode', context.container.turns[1] as ControlledExecution, 'session-1');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('resets the turn watchdog when the harness emits parsed progress', async () => {
+    const context = await setup('opencode', 500);
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+
+      for (let index = 0; index < 6; index += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        turn.push(JSON.stringify({
+          type: 'text',
+          sessionID: 'session-1',
+          part: { text: `progress ${index}` },
+        }));
+      }
+
+      expect(turn.killCalls).toHaveLength(0);
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error')).toBe(false);
+
+      await waitFor(() => turn.killCalls.length === 1);
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' &&
+        event.payload.message === "Watchdog: no output for 500ms; killed the turn's process group"
+      )).toBe(true);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('does not refresh the turn watchdog for repeated known-session heartbeat noise', async () => {
+    const context = await setup('opencode', 200);
+    let heartbeat: NodeJS.Timeout | undefined;
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.push(JSON.stringify({ type: 'step_start', sessionID: 'session-1', part: {} }));
+      heartbeat = setInterval(() => turn.push(JSON.stringify({
+        type: 'server.heartbeat',
+        sessionID: 'session-1',
+        part: {},
+      })), 40);
+
+      await waitFor(() => turn.killCalls.length === 1);
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' &&
+        event.payload.message === "Watchdog: no output for 200ms; killed the turn's process group"
+      )).toBe(true);
+    } finally {
+      if (heartbeat !== undefined) clearInterval(heartbeat);
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('kills a turn despite steady stderr chatter', async () => {
+    const context = await setup('opencode', 200);
+    let chatter: NodeJS.Timeout | undefined;
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      chatter = setInterval(() => turn.push('still noisy', 'err'), 20);
+
+      await waitFor(() => turn.killCalls.length === 1);
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' &&
+        event.payload.message === "Watchdog: no output for 200ms; killed the turn's process group"
+      )).toBe(true);
+    } finally {
+      if (chatter !== undefined) clearInterval(chatter);
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('kills a turn at its absolute cap despite steady parsed progress', async () => {
+    const context = await setup(
+      'opencode',
+      500,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      { turnMaxMs: 200 },
+    );
+    let progress: NodeJS.Timeout | undefined;
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      progress = setInterval(() => turn.push(JSON.stringify({
+        type: 'text',
+        sessionID: 'session-1',
+        part: { text: 'still working' },
+      })), 20);
+
+      await waitFor(() => turn.killCalls.length === 1);
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' &&
+        event.payload.message ===
+          "Watchdog: turn ran past the 200ms cap; killed the turn's process group"
+      )).toBe(true);
+    } finally {
+      if (progress !== undefined) clearInterval(progress);
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('keeps the inactivity watchdog armed while a completed turn drains', async () => {
+    const warnings: string[] = [];
+    const context = await setup(
+      'opencode',
+      200,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      { logger: { info() {}, warn: (message) => warnings.push(message) } },
+    );
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.push(JSON.stringify({
+        type: 'step_finish',
+        sessionID: 'session-1',
+        part: { reason: 'stop', tokens: { input: 10, output: 2 } },
+      }));
+
+      await waitFor(() => turn.killCalls.length === 1);
+      expect(warnings.some((message) => message.includes(
+        "Watchdog: no output for 200ms; killed the turn's process group",
+      ))).toBe(true);
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' && event.payload.message.includes('Watchdog'))).toBe(false);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('keeps the absolute cap armed while a completed turn drains', async () => {
+    const warnings: string[] = [];
+    const context = await setup(
+      'opencode',
+      500,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      {
+        turnMaxMs: 200,
+        logger: { info() {}, warn: (message) => warnings.push(message) },
+      },
+    );
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.push(JSON.stringify({
+        type: 'step_finish',
+        sessionID: 'session-1',
+        part: { reason: 'stop', tokens: { input: 10, output: 2 } },
+      }));
+
+      await waitFor(() => turn.killCalls.length === 1);
+      expect(warnings.some((message) => message.includes(
+        "Watchdog: turn ran past the 200ms cap; killed the turn's process group",
+      ))).toBe(true);
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' && event.payload.message.includes('Watchdog'))).toBe(false);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('leaves a watchdog-killed resume turn idle when it reports no session ID', async () => {
+    const context = await setup('codex', 200);
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      completeTurn('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.status').at(-1)?.payload.status === 'idle');
+
+      await context.driver.steer(context.run, context.entrant, 'resume');
+      const resume = context.container.turns[1] as ControlledExecution;
+      await waitFor(() => resume.killCalls.length === 1);
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.status').at(-1)?.payload.status === 'idle');
+
+      const events = context.journal.after(context.run.id, 0);
+      expect(events.some((event) => event.type === 'entrant.status' &&
+        event.payload.status === 'blocked')).toBe(false);
+      expect(events.some((event) => event.type === 'entrant.error' &&
+        event.payload.message.includes('returned no thread ID'))).toBe(false);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('kills a stuck Codex turn with its watchdog', async () => {
+    const context = await setup('codex', 200);
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+
+      await waitFor(() => turn.killCalls.length === 1);
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' &&
+        event.payload.message === "Watchdog: no output for 200ms; killed the turn's process group"
+      )).toBe(true);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('journals a rejected inactivity-watchdog kill', async () => {
+    const context = await setup('opencode', 200);
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.killFailure = new Error('process group is gone');
+
+      await waitFor(() => context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' &&
+        event.payload.message === 'Watchdog kill failed: process group is gone'));
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' &&
+        event.payload.message.includes('no output for 200ms'))).toBe(true);
+      turn.finish(null);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('journals a rejected absolute-cap kill', async () => {
+    const context = await setup(
+      'opencode',
+      500,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      { turnMaxMs: 200 },
+    );
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.killFailure = new Error('process group is gone');
+      turn.push(JSON.stringify({
+        type: 'text',
+        sessionID: 'session-1',
+        part: { text: 'progress' },
+      }));
+
+      await waitFor(() => context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' &&
+        event.payload.message === 'Watchdog kill failed: process group is gone'));
+      expect(context.journal.after(context.run.id, 0).some((event) =>
+        event.type === 'entrant.error' &&
+        event.payload.message.includes('ran past the 200ms cap'))).toBe(true);
+      turn.finish(null);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('formats production watchdog durations', () => {
+    expect(formatWatchdogDuration(20 * 60 * 1_000)).toBe('20m');
+    expect(formatWatchdogDuration(2 * 60 * 60 * 1_000)).toBe('2h');
+  });
+
+  it('derives timer durations from options and the run', async () => {
+    const context = await setup('opencode');
+    try {
+      const shortRun = { ...context.run, durationMs: 1_234 };
+      const noDurationRun = { ...context.run, durationMs: null };
+
+      expect(new TimerProbeDriver(context.journal, { turnMaxMs: 321 })
+        .timerValues(shortRun).turnCapMs).toBe(321);
+      expect(new TimerProbeDriver(context.journal)
+        .timerValues(shortRun).turnCapMs).toBe(1_234 + 10 * 60 * 1_000);
+      expect(new TimerProbeDriver(context.journal)
+        .timerValues(noDurationRun).turnCapMs).toBe(2 * 60 * 60 * 1_000);
+
+      for (const durationMs of [0, -1]) {
+        expect(new TimerProbeDriver(context.journal, {
+          turnWatchdogMs: durationMs,
+          turnMaxMs: durationMs,
+        }).timerValues(shortRun)).toEqual({ watchdogMs: undefined, turnCapMs: undefined });
+      }
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('disables both turn timers when their configured durations are zero', async () => {
+    vi.useFakeTimers();
+    const context = await setup(
+      'opencode',
+      0,
+      false,
+      undefined,
+      undefined,
+      undefined,
+      { turnMaxMs: 0 },
+    );
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+
+      await vi.advanceTimersByTimeAsync(3 * 60 * 60 * 1_000);
+
+      expect(turn.killCalls).toHaveLength(0);
+      completeTurn('opencode', turn, 'session-1');
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

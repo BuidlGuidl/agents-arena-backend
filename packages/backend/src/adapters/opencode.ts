@@ -17,19 +17,16 @@ import type { EntrantRecord, RunRecord } from './types.js';
 export interface OpenCodeDriverOptions extends HarnessDriverOptions {
   apiKey?: string;
   authPath?: string;
-  turnWatchdogMs?: number;
 }
 
 export class OpenCodeDriver extends HarnessEntrantDriver {
   private readonly apiKey: string | undefined;
   private readonly authPath: string;
-  private readonly turnTimeout: number;
 
   constructor(journal: EventJournal, options: OpenCodeDriverOptions = {}) {
     super(journal, options);
     this.apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY;
     this.authPath = options.authPath ?? join(homedir(), '.local', 'share', 'opencode', 'auth.json');
-    this.turnTimeout = options.turnWatchdogMs ?? 10 * 60 * 1_000;
   }
 
   protected harnessName(): string {
@@ -99,9 +96,6 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
     return new OpenCodeEventParser(entrant.id, this.logger);
   }
 
-  protected watchdogMs(): number {
-    return this.turnTimeout;
-  }
 }
 
 export function scrubOpenCodeEnvironment(environment: Record<string, string>): Record<string, string> {

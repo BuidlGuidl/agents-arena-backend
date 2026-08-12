@@ -12,17 +12,14 @@ import type { EntrantRecord, RunRecord } from './types.js';
 
 export interface ClaudeDriverOptions extends HarnessDriverOptions {
   oauthToken?: string;
-  turnWatchdogMs?: number;
 }
 
 export class ClaudeDriver extends HarnessEntrantDriver {
   private readonly oauthToken: string | undefined;
-  private readonly turnTimeout: number;
 
   constructor(journal: EventJournal, options: ClaudeDriverOptions = {}) {
     super(journal, options);
     this.oauthToken = options.oauthToken ?? process.env.CLAUDE_CODE_OAUTH_TOKEN;
-    this.turnTimeout = options.turnWatchdogMs ?? 10 * 60 * 1_000;
   }
 
   protected harnessName(): string {
@@ -101,10 +98,6 @@ export class ClaudeDriver extends HarnessEntrantDriver {
 
   protected createParser(entrant: EntrantRecord): ClaudeEventParser {
     return new ClaudeEventParser(entrant.id, entrant.model, this.logger);
-  }
-
-  protected watchdogMs(): number {
-    return this.turnTimeout;
   }
 
   protected validateResumeSession(): boolean {

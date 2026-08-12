@@ -20,6 +20,7 @@ export interface CodexDriverOptions extends HarnessDriverOptions {
 
 // A real auth.json is a few KB; anything bigger is not a rotation.
 const AUTH_JSON_MAX_BYTES = 64 * 1024;
+const TURN_AUTH_READ_TIMEOUT_MS = 30_000;
 
 export class CodexDriver extends HarnessEntrantDriver {
   private readonly authPath: string;
@@ -105,7 +106,7 @@ export class CodexDriver extends HarnessEntrantDriver {
     const seeded = this.seededAuth.get(authKey(run.id, entrant.id));
     if (seeded === undefined) return;
     try {
-      const parsed = await this.readRotatedAuth(container, seeded);
+      const parsed = await this.readRotatedAuth(container, seeded, TURN_AUTH_READ_TIMEOUT_MS);
       if (parsed === undefined) return;
       registerCredentialSecrets(run.id, stringLeaves(parsed.value));
       this.journal.scrubStoredSecrets(run.id);
@@ -120,7 +121,7 @@ export class CodexDriver extends HarnessEntrantDriver {
   // longer matches what this run seeded belongs to a newer login and must win.
   private async syncAuthBack(runId: string, container: EntrantContainer, seededAuth: string): Promise<void> {
     try {
-      const rotated = await this.readRotatedAuth(container, seededAuth);
+      const rotated = await this.readRotatedAuth(container, seededAuth, TURN_AUTH_READ_TIMEOUT_MS);
       if (rotated === undefined) return;
       // The rotation minted a fresh token; scrub it like the seeded one so a late
       // event that echoes it cannot reach the feed.
@@ -147,11 +148,35 @@ export class CodexDriver extends HarnessEntrantDriver {
   private async readRotatedAuth(
     container: EntrantContainer,
     seededAuth: string,
+    timeoutMs?: number,
   ): Promise<{ raw: string; value: unknown } | undefined> {
     const execution = await container.exec(['cat', '/creds/codex/auth.json']);
     const lines: string[] = [];
-    for await (const output of execution) {
-      if (output.stream === 'out') lines.push(output.line);
+    let timedOut = false;
+    let timer: NodeJS.Timeout | undefined;
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        void execution.kill().catch((error: unknown) => {
+          this.logger.warn(`[codex] timed-out rotated-auth read kill failed: ${errorText(error)}`);
+        });
+      }, timeoutMs);
+      timer.unref();
+    }
+    try {
+      for await (const output of execution) {
+        if (output.stream === 'out') lines.push(output.line);
+      }
+    } catch (error) {
+      if (!timedOut) throw error;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    if (timedOut) {
+      this.logger.warn(
+        '[codex] rotated-auth read timed out after 30s; killed it and skipped rotation for this turn',
+      );
+      return undefined;
     }
     if (await execution.exit !== 0) return undefined;
     const raw = lines.join('\n');

@@ -27,6 +27,8 @@ export interface HarnessDriverOptions {
   containerFactory?: ContainerFactory;
   rpcUrl?: string;
   logger?: ParserLogger;
+  turnWatchdogMs?: number;
+  turnMaxMs?: number;
   // Returns the assembled challenge pack directory for a run, mounted read-only
   // into every entrant container. Throwing here fails prepare, which is how a
   // missing ai-ctf checkout surfaces (ADR-0009).
@@ -75,7 +77,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
 
   protected constructor(
     protected readonly journal: EventJournal,
-    options: HarnessDriverOptions = {},
+    protected readonly options: HarnessDriverOptions = {},
   ) {
     const factory = options.containerFactory ?? createDockerContainer;
     const resolveChallengePack = options.resolveChallengePack;
@@ -251,7 +253,18 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   protected abstract createParser(entrant: EntrantRecord): HarnessLineParser;
 
   protected watchdogMs(): number | undefined {
-    return undefined;
+    const durationMs = this.options.turnWatchdogMs ?? 20 * 60 * 1_000;
+    return durationMs <= 0 ? undefined : durationMs;
+  }
+
+  protected turnCapMs(run: RunRecord): number | undefined {
+    if (this.options.turnMaxMs !== undefined) {
+      return this.options.turnMaxMs <= 0 ? undefined : this.options.turnMaxMs;
+    }
+    if (typeof run.durationMs === 'number' && run.durationMs > 0) {
+      return run.durationMs + 10 * 60 * 1_000;
+    }
+    return 2 * 60 * 60 * 1_000;
   }
 
   protected validateResumeSession(): boolean {
@@ -264,7 +277,8 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     // steers normally once the opening turn reports a session.
     if (resume && state.sessionId === undefined) {
       throw new EntrantUnavailableError(
-        `Entrant ${state.entrant.id} cannot take a turn before the harness reports a session ID`,
+        `Entrant ${state.entrant.id} cannot take a turn before the harness reports a session ID; ` +
+          'restart the lane to resend the opening prompt',
       );
     }
 
@@ -296,7 +310,8 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     let sawSession = false;
     let watchdogFired = false;
     let launchFailed = false;
-    let timer: NodeJS.Timeout | undefined;
+    let inactivityTimer: NodeJS.Timeout | undefined;
+    let turnCapTimer: NodeJS.Timeout | undefined;
     const stderrTail: string[] = [];
 
     try {
@@ -324,14 +339,35 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
 
       const timeoutMs = this.watchdogMs();
       if (timeoutMs !== undefined) {
-        timer = setTimeout(() => {
+        inactivityTimer = setTimeout(() => {
+          if (watchdogFired) return;
           watchdogFired = true;
-          this.appendError(state, `Turn exceeded the ${timeoutMs}ms watchdog; killed its process group`);
+          const message =
+            `Watchdog: no output for ${formatWatchdogDuration(timeoutMs)}; killed the turn's process group`;
+          if (sawTurnEnd) this.logger.warn(`[${this.harnessName()}] ${message}`);
+          else this.appendError(state, message);
           void execution.kill().catch((error: unknown) => {
-            this.logger.warn(`[${this.harnessName()}] watchdog kill failed: ${errorMessage(error)}`);
+            this.appendError(state, `Watchdog kill failed: ${errorMessage(error)}`);
           });
         }, timeoutMs);
-        timer.unref();
+        inactivityTimer.unref();
+      }
+
+      const turnCapMs = this.turnCapMs(state.run);
+      if (turnCapMs !== undefined) {
+        turnCapTimer = setTimeout(() => {
+          if (watchdogFired) return;
+          watchdogFired = true;
+          const message =
+            `Watchdog: turn ran past the ${formatWatchdogDuration(turnCapMs)} cap; ` +
+            "killed the turn's process group";
+          if (sawTurnEnd) this.logger.warn(`[${this.harnessName()}] ${message}`);
+          else this.appendError(state, message);
+          void execution.kill().catch((error: unknown) => {
+            this.appendError(state, `Watchdog kill failed: ${errorMessage(error)}`);
+          });
+        }, turnCapMs);
+        turnCapTimer.unref();
       }
 
       for await (const output of execution) {
@@ -342,15 +378,13 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
         }
 
         const parsed = this.parserFor(state).parse(output.line);
+        if (!watchdogFired && (parsed.events.length > 0 || parsed.turnEnded === true ||
+            (parsed.sessionId !== undefined && state.sessionId === undefined))) {
+          inactivityTimer?.refresh();
+        }
         for (const event of parsed.events) this.appendParsed(state, event);
         if (parsed.turnEnded === true) {
           sawTurnEnd = true;
-          // Disarm the watchdog once the turn actually ends. A slow process close
-          // after a real turn-end must not trip a false "exceeded watchdog" kill.
-          if (timer !== undefined) {
-            clearTimeout(timer);
-            timer = undefined;
-          }
         }
         if (parsed.sessionId !== undefined) {
           sawSession = true;
@@ -368,7 +402,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       }
 
       const code = await execution.exit;
-      if (resume && this.validateResumeSession() && !sawSession && !state.degraded) {
+      if (resume && this.validateResumeSession() && !sawSession && !state.degraded && !watchdogFired) {
         this.markDegraded(state, `Resume for thread ${expectedSessionId as string} returned no thread ID`);
       }
       if (!sawTurnEnd && !watchdogFired) {
@@ -388,7 +422,8 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       this.appendError(state, `Harness turn failed: ${normalized.message}`);
       if (launchFailed) rejectInjected(normalized);
     } finally {
-      if (timer !== undefined) clearTimeout(timer);
+      if (inactivityTimer !== undefined) clearTimeout(inactivityTimer);
+      if (turnCapTimer !== undefined) clearTimeout(turnCapTimer);
       state.active = undefined;
       if (!launchFailed) resolveInjected();
       this.finishTurn(state);
@@ -567,6 +602,13 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     delete environment.OPENCODE_PORT;
     return environment;
   }
+}
+
+export function formatWatchdogDuration(durationMs: number): string {
+  if (durationMs % 3_600_000 === 0) return `${durationMs / 3_600_000}h`;
+  if (durationMs % 60_000 === 0) return `${durationMs / 60_000}m`;
+  if (durationMs % 1_000 === 0) return `${durationMs / 1_000}s`;
+  return `${durationMs}ms`;
 }
 
 function errorMessage(error: unknown): string {

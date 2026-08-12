@@ -118,7 +118,9 @@ class ControlledContainer implements EntrantContainer {
   readonly calls: Array<{ argv: string[]; env?: Record<string, string> }> = [];
   readonly turns: ControlledExecution[] = [];
   readonly authReads: ControlledExecution[] = [];
+  readonly sessionReads: ControlledExecution[] = [];
   authFileContent: string | undefined;
+  sessionFileContent: string | undefined;
   tornDown = false;
   failNextLaunch = false;
   hangAuthRead = false;
@@ -166,6 +168,14 @@ class ControlledContainer implements EntrantContainer {
         execution.finish(1);
       } else {
         for (const line of this.authFileContent.split('\n')) execution.push(line);
+        execution.finish(0);
+      }
+    } else if (argv[0] === 'find' && (argv[1] === '/creds/codex' || argv[1] === '/creds/claude')) {
+      this.sessionReads.push(execution);
+      if (this.sessionFileContent === undefined) {
+        execution.finish(0);
+      } else {
+        for (const line of this.sessionFileContent.split('\n')) execution.push(line);
         execution.finish(0);
       }
     } else {
@@ -751,6 +761,124 @@ describe('parser isolation', () => {
       await driver.stop(first.run, first.entrant);
       await driver.stop(second.run, second.entrant);
       journal.close();
+    }
+  });
+});
+
+describe('interrupted turn usage recovery', () => {
+  it('journals Codex cumulative session usage before stop tears the container down', async () => {
+    const context = await setup('codex', undefined, false, 'gpt-5-codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      openSession('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+      context.container.sessionFileContent = JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            total_token_usage: {
+              input_tokens: 12_000,
+              cached_input_tokens: 8_000,
+              output_tokens: 500,
+            },
+          },
+        },
+      });
+
+      await context.driver.stop(context.run, context.entrant);
+
+      const usage = context.journal.after(context.run.id, 0).filter((event) => event.type === 'usage');
+      expect(usage).toHaveLength(1);
+      expect(usage[0]?.payload).toMatchObject({
+        inputTokens: 12_000,
+        outputTokens: 500,
+        cachedInputTokens: 8_000,
+      });
+      expect(context.container.sessionReads).toHaveLength(1);
+      expect(context.container.tornDown).toBe(true);
+    } finally {
+      context.journal.close();
+    }
+  });
+
+  it('advances the Codex cumulative baseline before the interrupted session resumes', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      openSession('codex', context.container.turns[0] as ControlledExecution, 'thread-1');
+      context.container.sessionFileContent = JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: { total_token_usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 10 } },
+        },
+      });
+
+      (context.container.turns[0] as ControlledExecution).finish(1);
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'usage').length === 1);
+      await context.driver.steer(context.run, context.entrant, 'continue');
+      const resumed = context.container.turns[1] as ControlledExecution;
+      resumed.push(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
+      resumed.push(JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 150, cached_input_tokens: 60, output_tokens: 15 },
+      }));
+      resumed.finish(0);
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'usage').length === 2);
+
+      const usage = context.journal.after(context.run.id, 0).filter((event) => event.type === 'usage');
+      expect(usage.map((event) => event.payload)).toMatchObject([
+        { inputTokens: 100, outputTokens: 10, cachedInputTokens: 40 },
+        { inputTokens: 50, outputTokens: 5, cachedInputTokens: 20 },
+      ]);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('sums Claude transcript messages before stop tears the container down', async () => {
+    const context = await setup('claude');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      openSession('claude', context.container.turns[0] as ControlledExecution, 'claude-session-1');
+      context.container.sessionFileContent = [
+        {
+          type: 'assistant',
+          message: {
+            id: 'message-1',
+            usage: {
+              input_tokens: 20,
+              cache_creation_input_tokens: 30,
+              cache_read_input_tokens: 40,
+              output_tokens: 5,
+            },
+          },
+        },
+        {
+          type: 'assistant',
+          message: {
+            id: 'message-2',
+            usage: { input_tokens: 10, cache_read_input_tokens: 50, output_tokens: 7 },
+          },
+        },
+      ].map((line) => JSON.stringify(line)).join('\n');
+
+      await context.driver.stop(context.run, context.entrant);
+
+      const usage = context.journal.after(context.run.id, 0).filter((event) => event.type === 'usage');
+      expect(usage).toHaveLength(1);
+      expect(usage[0]?.payload).toMatchObject({
+        inputTokens: 150,
+        outputTokens: 12,
+        cachedInputTokens: 90,
+      });
+      expect(context.container.sessionReads).toHaveLength(1);
+      expect(context.container.tornDown).toBe(true);
+    } finally {
+      context.journal.close();
     }
   });
 });

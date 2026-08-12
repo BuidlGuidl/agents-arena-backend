@@ -4,6 +4,7 @@ import type { EntrantContainer } from '../runtime/container.js';
 import { getWallet } from '../chain/wallet.js';
 import { ClaudeEventParser } from './claude-parser.js';
 import { registerCredentialSecrets } from './credential-secrets.js';
+import { claudeSessionUsage, readSessionJsonl } from './session-usage.js';
 import {
   HarnessEntrantDriver,
   type HarnessDriverOptions,
@@ -98,6 +99,15 @@ export class ClaudeDriver extends HarnessEntrantDriver {
 
   protected createParser(entrant: EntrantRecord): ClaudeEventParser {
     return new ClaudeEventParser(entrant.id, entrant.model, this.logger);
+  }
+
+  protected override async recoveredUsage(
+    _run: RunRecord,
+    _entrant: EntrantRecord,
+    container: EntrantContainer,
+    _sessionId: string | undefined,
+  ) {
+    return claudeSessionUsage(await readSessionJsonl(container, '/creds/claude'));
   }
 
   protected validateResumeSession(): boolean {

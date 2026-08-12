@@ -21,7 +21,13 @@ import {
 } from '../ctf/challenge-tracker.js';
 import type { ChallengePackAccess, ChallengePackResolver } from '../ctf/resolve.js';
 import { EntrantUnavailableError, type EntrantDriver, type EntrantRecord, type RunRecord } from './types.js';
-import type { HarnessLineParser, ParsedArenaEvent, ParserLogger } from './parser-types.js';
+import type {
+  HarnessLineParser,
+  ParsedArenaEvent,
+  ParserLogger,
+  RecoveredUsage,
+  UsageTotals,
+} from './parser-types.js';
 
 export interface HarnessDriverOptions {
   containerFactory?: ContainerFactory;
@@ -59,6 +65,7 @@ interface EntrantRuntimeState {
   sessionId: string | undefined;
   active: RuntimeExecution | undefined;
   turnTask: Promise<void> | undefined;
+  usage: UsageTotals;
   // Lazy: built on the first tool.call, when the pack addresses already exist.
   addressIndex?: ReadonlyMap<string, number>;
 }
@@ -127,6 +134,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       sessionId: undefined,
       active: undefined,
       turnTask: undefined,
+      usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
     };
     this.states.set(key, state);
 
@@ -415,6 +423,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       // Container execs are single-writer, so housekeeping that needs the
       // container must run here — the turn still owns it, the next queued
       // steer has not started.
+      if (!sawTurnEnd) await this.recoverInterruptedUsage(state);
       await this.afterTurn(state.run, state.entrant, state.container);
     } catch (error) {
       launchFailed = state.active === undefined;
@@ -437,6 +446,42 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     _entrant: EntrantRecord,
     _container: EntrantContainer,
   ): Promise<void> {}
+
+  // Harnesses whose CLI only reports usage at a natural turn boundary can read
+  // their durable session transcript after a killed process has unwound.
+  protected async recoveredUsage(
+    _run: RunRecord,
+    _entrant: EntrantRecord,
+    _container: EntrantContainer,
+    _sessionId: string | undefined,
+  ): Promise<RecoveredUsage | undefined> {
+    return undefined;
+  }
+
+  private async recoverInterruptedUsage(state: EntrantRuntimeState): Promise<void> {
+    try {
+      const recovered = await this.recoveredUsage(
+        state.run,
+        state.entrant,
+        state.container,
+        state.sessionId,
+      );
+      if (recovered === undefined) return;
+      const { totals } = recovered;
+      this.parserFor(state).reconcileUsage?.(recovered.parserTotals ?? totals);
+      const payload = {
+        entrantId: state.entrant.id,
+        inputTokens: Math.max(0, totals.inputTokens - state.usage.inputTokens),
+        outputTokens: Math.max(0, totals.outputTokens - state.usage.outputTokens),
+        cachedInputTokens: Math.max(0, totals.cachedInputTokens - state.usage.cachedInputTokens),
+        costUsd: null,
+      };
+      if (payload.inputTokens + payload.outputTokens + payload.cachedInputTokens === 0) return;
+      this.appendParsed(state, { type: 'usage', payload });
+    } catch (error) {
+      this.logger.warn(`[${this.harnessName()}] session usage recovery failed: ${errorMessage(error)}`);
+    }
+  }
 
   // The container takes one exec at a time, so anything that wants the next turn
   // first kills what is in flight and waits for it to unwind.
@@ -521,15 +566,23 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       case 'tool.result': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'entrant.error': this.journal.append(runId, entrantId, event.type, event.payload); break;
       // A harness that prices its own turns wins; otherwise the rate table fills in.
-      case 'usage': this.journal.append(runId, entrantId, event.type, {
-        ...event.payload,
-        costUsd: event.payload.costUsd ?? costForTokens(
-          state.entrant.model,
-          event.payload.inputTokens,
-          event.payload.outputTokens,
-          event.payload.cachedInputTokens,
-        ),
-      }); break;
+      case 'usage': {
+        state.usage = {
+          inputTokens: state.usage.inputTokens + event.payload.inputTokens,
+          outputTokens: state.usage.outputTokens + event.payload.outputTokens,
+          cachedInputTokens: state.usage.cachedInputTokens + event.payload.cachedInputTokens,
+        };
+        this.journal.append(runId, entrantId, event.type, {
+          ...event.payload,
+          costUsd: event.payload.costUsd ?? costForTokens(
+            state.entrant.model,
+            event.payload.inputTokens,
+            event.payload.outputTokens,
+            event.payload.cachedInputTokens,
+          ),
+        });
+        break;
+      }
       default: this.logger.warn(`[${this.harnessName()}] parser returned unsupported event ${event.type}`);
     }
   }

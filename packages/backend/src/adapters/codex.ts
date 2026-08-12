@@ -8,6 +8,7 @@ import type { EntrantContainer } from '../runtime/container.js';
 import { getWallet } from '../chain/wallet.js';
 import { CodexEventParser } from './codex-parser.js';
 import { registerCredentialSecrets } from './credential-secrets.js';
+import { codexSessionUsage, readSessionJsonl } from './session-usage.js';
 import {
   HarnessEntrantDriver,
   type HarnessDriverOptions,
@@ -226,6 +227,15 @@ export class CodexDriver extends HarnessEntrantDriver {
 
   protected createParser(entrant: EntrantRecord): CodexEventParser {
     return new CodexEventParser(entrant.id, this.logger);
+  }
+
+  protected override async recoveredUsage(
+    _run: RunRecord,
+    _entrant: EntrantRecord,
+    container: EntrantContainer,
+    sessionId: string | undefined,
+  ) {
+    return codexSessionUsage(await readSessionJsonl(container, '/creds/codex'), sessionId);
   }
 
   protected validateResumeSession(): boolean {

@@ -1,12 +1,8 @@
-import type { ParsedArenaEvent, ParsedHarnessLine, ParserLogger } from './parser-types.js';
+import type { ParsedArenaEvent, ParsedHarnessLine, ParserLogger, UsageTotals } from './parser-types.js';
 
 type JsonObject = Record<string, unknown>;
 
-interface SessionTotals {
-  inputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-}
+type SessionTotals = UsageTotals;
 
 const NO_TOTALS: SessionTotals = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
 
@@ -165,6 +161,10 @@ export class CodexEventParser {
 
     this.recordUnknown(`${type}/${itemType}`);
     return { events: [] };
+  }
+
+  reconcileUsage(totals: UsageTotals): void {
+    this.reported = totals;
   }
 
   // A running total only grows. A smaller number means this stream is not

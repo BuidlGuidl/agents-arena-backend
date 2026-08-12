@@ -12,19 +12,6 @@
     "fundingTimeoutMs": 900000,
     "addressNote": "Derived from the localhost deploy order and the default Hardhat deployer. Transactions before later deployments affect their nonces."
   },
-  "base": {
-    "name": "base",
-    "rpcUrl": "https://mainnet.base.org",
-    "containerRpcUrl": "https://mainnet.base.org",
-    "chainId": 8453,
-    "confirmations": 5,
-    "nftFlags": "0xD60C911a17594d8683213047ADF5Ad34b95dE01e",
-    "challenge1": "0x173ce2Ff3b4C765C57F207067e90f244972939ce",
-    "identityRegistry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
-    "fundingThresholdEth": "0.005",
-    "briefingUrl": "https://ai-ctf-buidlguidl-com-nextjs.vercel.app/",
-    "addressNote": "Addresses match the production Base deployment artifacts."
-  },
   "baseSepolia": {
     "name": "baseSepolia",
     "rpcUrl": "https://sepolia.base.org",

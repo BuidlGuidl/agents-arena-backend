@@ -7,7 +7,7 @@ import { createSolveWatch } from './chain/solve-poller.js';
 import { resolveListenHost } from './config.js';
 import { removeArenaResources } from './runtime/reconcile.js';
 import { createServer } from './server.js';
-import type { FundingGate } from './run-manager.js';
+import { localAutoSignEnabled, type FundingGate } from './run-manager.js';
 import { InvalidOperatorAddressError, MissingSiweDomainError, parseCsvList } from './siwe.js';
 
 const port = Number(process.env.PORT ?? 4177);
@@ -34,9 +34,7 @@ const siwe = {
 };
 
 // Local with auto-sign on is the one shape that seeds itself without an allowlist.
-const autoSignCoversSeeding =
-  activeChainProfile.name === 'local' && process.env.ARENA_AUTO_SIGN !== 'false';
-if (!autoSignCoversSeeding && operatorAddresses.length === 0) {
+if (!localAutoSignEnabled() && operatorAddresses.length === 0) {
   console.warn(
     'ARENA_OPERATOR_ADDRESSES is empty; no address can sign a seed, so runs will hold in awaiting_signature.',
   );

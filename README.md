@@ -15,7 +15,7 @@ Working today:
 
 Not wired yet:
 - Auto-nudge. An idle entrant that still has flags to win is not nudged.
-- The `base` profile addresses in `config/chains.json` are stale until the CTF contracts are redeployed. ADR-0009's startup cross-check throws until they are.
+- A Base mainnet profile. The old one carried stale contract addresses, so it is removed; re-add it from fresh deployment artifacts before the real race. `baseSepolia` is the live remote profile.
 
 Any address in `ARENA_OPERATOR_ADDRESSES` can sign a seed. Every listed address must be a plain EOA with deterministic signing because its signature is the recovery key (ADR-0013 and ADR-0019). By convention, whoever funds the run signs its seed.
 
@@ -29,7 +29,7 @@ One process owns a run: lifecycle, containers, credentials, the event journal, a
 - **Ready barrier** — all entrants prepare and hold. The run releases them together on one recorded start time, so boot time never decides the race.
 - **Steer** — an operator injects a free-text turn into a live agent mid-race. An idle agent that still has flags to win is auto-nudged from on-chain truth. Both use one injection path.
 - **Journal** — every fact is one append-only row with a global `id` and a per-source `seq`. The feed is a projection; a reconnect replays it.
-- **Chain profile** — selects addresses, RPC, confirmation depth, funding threshold, and funding timeout for local or Base.
+- **Chain profile** — selects addresses, RPC, confirmation depth, funding threshold, and funding timeout for the active chain.
 
 Transport is each CLI's line-JSON stdout (`codex --json`, `opencode --format json`, `claude --output-format stream-json`), normalized into one `ArenaEvent` stream. SSE, not websockets — `Last-Event-ID` replay is native and the traffic is asymmetric (a steer is a plain POST).
 
@@ -204,7 +204,7 @@ Credentials come from the host: `codex` reads `~/.codex/auth.json`, `opencode` r
 
 1. Move to `awaiting_signature`. An allowlisted operator signs the run's EIP-712 `Seed {runId}` typed data under the active profile's chain ID and submits it to `POST /runs/:id/seed`. Local signs automatically unless `ARENA_AUTO_SIGN=false`.
 2. Verify that the recovered address is in `ARENA_OPERATOR_ADDRESSES`. Derive each entrant key in memory, store the signer as `seededBy`, and store only each entrant address.
-3. Prepare each entrant — build a fresh container, inject its in-memory key and RPC URL, seed its harness credentials, mount the challenge pack read-only at `/ctf` on a local chain (Base mounts nothing), and run preflight.
+3. Prepare each entrant — build a fresh container, inject its in-memory key and RPC URL, seed its harness credentials, mount the challenge pack read-only at `/ctf` on a local chain (a remote profile with a `briefingUrl` mounts nothing), and run preflight.
 4. Move to `awaiting_funding`. The gate only watches balances; the operator funds the displayed addresses. On a local chain, `ARENA_LOCAL_FAUCET=true` funds them from anvil account 0 instead.
 5. Hold at the ready barrier until all entrants report ready. Record one start time and release them with their opening prompt.
 6. Parse each agent's stdout into `ArenaEvent`s, append them to the journal, and stream them to the browser.

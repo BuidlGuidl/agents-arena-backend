@@ -910,7 +910,7 @@ function createSeedWaiter(): SeedWaiter {
   return { promise, resolve, submitting: false };
 }
 
-function localAutoSignEnabled(): boolean {
+export function localAutoSignEnabled(): boolean {
   return activeChainProfile.name === 'local' && process.env.ARENA_AUTO_SIGN !== 'false';
 }
 

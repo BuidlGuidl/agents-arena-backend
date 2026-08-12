@@ -85,8 +85,8 @@ the deploy script. The opening prompt points the entrant at that pack. Prepare
 fails if `AI_CTF_REPO` is unset, or if the deployed addresses disagree with the
 active chain profile — redeploy the chain and restart the run if that happens.
 
-On the `base` chain profile no pack is mounted. The prompt points the entrant at
-the public CTF site instead. An allowlisted operator must sign the seed typed data.
+On a remote chain profile (`baseSepolia`) no pack is mounted. The prompt points
+the entrant at the public CTF site instead. An allowlisted operator must sign the seed typed data.
 Anyone can fund the displayed addresses; by convention, whoever funds signs.
 The gate never sends funds. See ADR-0009, ADR-0014, and ADR-0019.
 

@@ -84,9 +84,9 @@ export function codexSessionUsage(
   }
   if (sessions.size === 0) return undefined;
   const totals = [...sessions.values()].reduce<UsageTotals>(sumUsage, emptyUsage());
-  const parserTotals = activeSessionId === undefined
-    ? (sessions.size === 1 ? sessions.values().next().value as UsageTotals : undefined)
-    : sessions.get(activeSessionId) ?? (sessions.size === 1 ? sessions.values().next().value as UsageTotals : undefined);
+  const active = activeSessionId === undefined ? undefined : sessions.get(activeSessionId);
+  const single = sessions.size === 1 ? sessions.values().next().value : undefined;
+  const parserTotals = active ?? single;
   return { totals, ...(parserTotals === undefined ? {} : { parserTotals }) };
 }
 

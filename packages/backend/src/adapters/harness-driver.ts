@@ -469,6 +469,16 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
       if (recovered === undefined) return;
       const { totals } = recovered;
       this.parserFor(state).reconcileUsage?.(recovered.parserTotals ?? totals);
+      // A transcript total below the journaled total means the two accountings
+      // have drifted apart; the clamp keeps the journal sane, the warning keeps
+      // the drift visible.
+      if (totals.inputTokens < state.usage.inputTokens
+        || totals.outputTokens < state.usage.outputTokens
+        || totals.cachedInputTokens < state.usage.cachedInputTokens) {
+        this.logger.warn(
+          `[${this.harnessName()}] recovered session usage is below journaled usage; clamping to zero`,
+        );
+      }
       const payload = {
         entrantId: state.entrant.id,
         inputTokens: Math.max(0, totals.inputTokens - state.usage.inputTokens),

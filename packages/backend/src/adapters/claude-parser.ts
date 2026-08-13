@@ -134,7 +134,8 @@ export class ClaudeEventParser {
   }
 
   private result(value: JsonObject): ParsedHarnessLine {
-    // Claude reports usage only on the result line, so a watchdog-killed turn has no usage event.
+    // Claude reports usage only on the result line; a killed turn's usage is
+    // recovered from the session transcript instead (session-usage.ts).
     this.toolNames.clear();
     const usage = objectValue(value.usage);
     const cachedInputTokens = numberValue(usage?.cache_read_input_tokens);

@@ -14,13 +14,14 @@ export class RegisteredEntrantDriver implements EntrantDriver {
   constructor(journal: EventJournal, schedule?: Schedule) {
     this.fake = new FakeDriver(journal, schedule);
     // Same profile the funding gate and the opening prompt read. A profile with
-    // a briefing URL resolves to undefined and mounts nothing (ADR-0009).
+    // a briefing URL has no resolver and mounts nothing (ADR-0009).
     const pack = createChallengePackResolver(activeChainProfile);
     this.docker = new DockerEntrantDriver(
       journal,
-      pack === undefined
-        ? {}
-        : { resolveChallengePack: pack.resolve, challengeAddresses: pack.addressesFor },
+      {
+        ...(pack.resolve === undefined ? {} : { resolveChallengePack: pack.resolve }),
+        challengeAddresses: pack.addressesFor,
+      },
     );
   }
 

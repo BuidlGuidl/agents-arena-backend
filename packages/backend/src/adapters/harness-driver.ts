@@ -39,8 +39,8 @@ export interface HarnessDriverOptions {
   // into every entrant container. Throwing here fails prepare, which is how a
   // missing ai-ctf checkout surfaces (ADR-0009).
   resolveChallengePack?: ChallengePackResolver;
-  // The pack's deployed addresses, for the current-challenge heuristic. Absent
-  // on briefing-URL profiles, where only name matching applies.
+  // The deployed addresses, from a pack or profile config, for the
+  // current-challenge heuristic.
   challengeAddresses?: ChallengePackAccess['addressesFor'];
   // The backend base URL as seen from inside an entrant container, for the
   // agent-facing routes (POST /agent/progress).

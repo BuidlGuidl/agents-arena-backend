@@ -13,6 +13,7 @@ export interface ChainProfile {
   identityRegistry: Address;
   fundingThresholdWei: bigint;
   fundingTimeoutMs?: number;
+  challengeAddresses?: Readonly<Record<string, Address>>;
   // Set when the chain has a public briefing the entrant can fetch. Absent means
   // the arena mounts a challenge pack instead (ADR-0009).
   briefingUrl?: string;
@@ -20,12 +21,13 @@ export interface ChainProfile {
 
 interface RawChainProfile extends Omit<
   ChainProfile,
-  'nftFlags' | 'challenge1' | 'identityRegistry' | 'fundingThresholdWei'
+  'nftFlags' | 'challenge1' | 'identityRegistry' | 'fundingThresholdWei' | 'challengeAddresses'
 > {
   nftFlags: string;
   challenge1: string;
   identityRegistry: string;
   fundingThresholdEth: string;
+  challengeAddresses?: Readonly<Record<string, string>>;
 }
 
 const configUrl = new URL('../../config/chains.json', import.meta.url);
@@ -71,20 +73,44 @@ function parseProfile(name: string, value: RawChainProfile): ChainProfile {
     throw new Error(`Empty briefingUrl for profile ${name}; remove the key to use a challenge pack`);
   }
 
+  const nftFlags = parseAddress(value.nftFlags, `${name}.nftFlags`);
+  const challenge1 = parseAddress(value.challenge1, `${name}.challenge1`);
+  const challengeAddresses = value.challengeAddresses === undefined
+    ? undefined
+    : Object.fromEntries(Object.entries(value.challengeAddresses).map(([contractName, address]) => [
+      contractName,
+      parseAddress(address, `${name}.challengeAddresses.${contractName}`),
+    ]));
+  if (challengeAddresses !== undefined) {
+    const expected: ReadonlyArray<readonly [string, Address]> = [
+      ['Challenge1', challenge1],
+      ['NFTFlags', nftFlags],
+    ];
+    for (const [contractName, address] of expected) {
+      const actual = challengeAddresses[contractName];
+      if (actual !== address) {
+        throw new Error(
+          `Profile ${name} challengeAddresses.${contractName} is ${String(actual)}, but the profile expects ${address}`,
+        );
+      }
+    }
+  }
+
   return {
     name,
     rpcUrl: value.rpcUrl,
     containerRpcUrl: value.containerRpcUrl,
     chainId: value.chainId,
     confirmations: value.confirmations,
-    nftFlags: parseAddress(value.nftFlags, `${name}.nftFlags`),
-    challenge1: parseAddress(value.challenge1, `${name}.challenge1`),
+    nftFlags,
+    challenge1,
     identityRegistry: parseAddress(value.identityRegistry, `${name}.identityRegistry`),
     fundingThresholdWei,
     ...(value.fundingTimeoutMs === undefined
       ? {}
       : { fundingTimeoutMs: value.fundingTimeoutMs }),
     ...(value.briefingUrl === undefined ? {} : { briefingUrl: value.briefingUrl }),
+    ...(challengeAddresses === undefined ? {} : { challengeAddresses }),
   };
 }
 

@@ -11,6 +11,7 @@ import type { ChallengePack } from '../../src/ctf/pack.js';
 import {
   assertPackMatchesProfile,
   createChallengePackResolver,
+  type ChallengePackAccess,
 } from '../../src/ctf/resolve.js';
 
 const nftFlags = getAddress('0x8A791620dd6260079BF849Dc5567aDC3F2FdC318');
@@ -39,6 +40,14 @@ const fixturePack: ChallengePack = {
   },
 };
 
+function createLocalPackAccess(): ChallengePackAccess & {
+  resolve: NonNullable<ChallengePackAccess['resolve']>;
+} {
+  const access = createChallengePackResolver(localProfile);
+  if (access.resolve === undefined) throw new Error('Expected a local challenge pack resolver');
+  return { ...access, resolve: access.resolve };
+}
+
 describe('createChallengePackResolver', () => {
   let previousAiCtfRepo: string | undefined;
   const generatedPaths: string[] = [];
@@ -58,15 +67,34 @@ describe('createChallengePackResolver', () => {
     }
   });
 
-  it('returns undefined for a profile with a briefing URL', () => {
-    expect(createChallengePackResolver({
+  it('returns configured addresses without a pack resolver for a profile with a briefing URL', () => {
+    const challengeAddresses = {
+      Challenge1: challenge1,
+      Challenge5: getAddress('0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512'),
+      NFTFlags: nftFlags,
+    };
+    const access = createChallengePackResolver({
       ...localProfile,
       briefingUrl: 'https://ctf.example.test/briefing',
-    })).toBeUndefined();
+      challengeAddresses,
+    });
+
+    expect(access.resolve).toBeUndefined();
+    expect(access.addressesFor('any-run')).toBe(challengeAddresses);
+  });
+
+  it('returns no addresses when a briefing profile has no configured map', () => {
+    const access = createChallengePackResolver({
+      ...localProfile,
+      briefingUrl: 'https://ctf.example.test/briefing',
+    });
+
+    expect(access.resolve).toBeUndefined();
+    expect(access.addressesFor('any-run')).toBeUndefined();
   });
 
   it('returns pack access for a profile without a briefing URL', () => {
-    expect(createChallengePackResolver(localProfile)?.resolve).toBeTypeOf('function');
+    expect(createChallengePackResolver(localProfile).resolve).toBeTypeOf('function');
   });
 
   it.each(['unset', 'empty'] as const)(
@@ -77,8 +105,7 @@ describe('createChallengePackResolver', () => {
       } else {
         process.env.AI_CTF_REPO = '';
       }
-      const pack = createChallengePackResolver(localProfile);
-      if (pack === undefined) throw new Error('Expected a local challenge pack resolver');
+      const pack = createLocalPackAccess();
 
       expect(() => pack.resolve('run-without-repo')).toThrow('AI_CTF_REPO');
     },
@@ -86,8 +113,7 @@ describe('createChallengePackResolver', () => {
 
   it('assembles and caches a pack from the existing fixture tree', () => {
     process.env.AI_CTF_REPO = fixtureDir;
-    const pack = createChallengePackResolver(localProfile);
-    if (pack === undefined) throw new Error('Expected a local challenge pack resolver');
+    const pack = createLocalPackAccess();
     const runId = `resolver-${randomUUID()}`;
 
     const firstPath = pack.resolve(runId);
@@ -100,8 +126,7 @@ describe('createChallengePackResolver', () => {
 
   it('reports a resolved run\'s addresses and none for an unresolved run', () => {
     process.env.AI_CTF_REPO = fixtureDir;
-    const pack = createChallengePackResolver(localProfile);
-    if (pack === undefined) throw new Error('Expected a local challenge pack resolver');
+    const pack = createLocalPackAccess();
     const runId = `addresses-${randomUUID()}`;
 
     expect(pack.addressesFor(runId)).toBeUndefined();
@@ -111,8 +136,7 @@ describe('createChallengePackResolver', () => {
 
   it('removes the oldest packs once the retention bound is passed', () => {
     process.env.AI_CTF_REPO = fixtureDir;
-    const pack = createChallengePackResolver(localProfile);
-    if (pack === undefined) throw new Error('Expected a local challenge pack resolver');
+    const pack = createLocalPackAccess();
 
     const paths = Array.from({ length: 10 }, (_, index) => pack.resolve(`retain-${index}`));
     generatedPaths.push(...paths);

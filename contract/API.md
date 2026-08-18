@@ -111,7 +111,7 @@ Each `id` must match `^[a-z][a-z0-9-]*$`, contain at most 20 characters, and be 
 
 - `codex`: `gpt-5.5`
 - `claude`: `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`
-- `opencode`: `openrouter/z-ai/glm-5.2`, `openrouter/moonshotai/kimi-k3`, `openrouter/deepseek/deepseek-v4-flash-0731`
+- `opencode`: `openrouter/z-ai/glm-5.2`, `openrouter/moonshotai/kimi-k3`, `openrouter/deepseek/deepseek-v4-pro-0813`, `openrouter/qwen/qwen3.8-27b`
 
 All three harnesses accept the optional `effort` field. Codex and Claude accept `low`, `medium`, `high`, `xhigh`, or `max`. OpenCode accepts `low`, `medium`, or `high` because OpenRouter supports only those effort levels.
 

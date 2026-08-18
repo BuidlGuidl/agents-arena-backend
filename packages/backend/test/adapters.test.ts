@@ -28,7 +28,9 @@ import {
   type RunRecord,
 } from '../src/adapters/types.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
+import { getChainProfile } from '../src/chain/profile.js';
 import { deriveEntrantKeys, getWallet, seedTypedData } from '../src/chain/wallet.js';
+import { createChallengePackResolver } from '../src/ctf/resolve.js';
 import { entrants, events as eventRows, runs } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import { RunManager } from '../src/run-manager.js';
@@ -985,6 +987,44 @@ describe('current challenge heuristic', () => {
         { entrantId: context.entrant.id, challengeId: 3, via: 'command', evidence: 'Challenge3' },
         { entrantId: context.entrant.id, challengeId: 5, via: 'command', evidence: challenge5 },
       ]);
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('uses a briefing profile address without mounting a challenge pack', async () => {
+    const profile = getChainProfile('baseSepolia');
+    const pack = createChallengePackResolver(profile);
+    const challengeAddress = profile.challengeAddresses?.Challenge5;
+    if (challengeAddress === undefined) throw new Error('Expected a configured Challenge5 address');
+    const context = await setup(
+      'codex',
+      undefined,
+      false,
+      undefined,
+      undefined,
+      pack.addressesFor,
+    );
+    try {
+      expect(pack.resolve).toBeUndefined();
+      expect(context.containerOptions.challengePackDir).toBeUndefined();
+
+      await context.driver.start(context.run, context.entrant, 'opening');
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.push(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
+      turn.push(commandLine('item_1', `cast call ${challengeAddress} "locked()"`));
+      turn.finish(0);
+
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .some((event) => event.type === 'entrant.challenge'));
+      const guess = context.journal.after(context.run.id, 0)
+        .find((event) => event.type === 'entrant.challenge');
+      expect(guess?.payload).toMatchObject({
+        challengeId: 5,
+        via: 'command',
+        evidence: challengeAddress,
+      });
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

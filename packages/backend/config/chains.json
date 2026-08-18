@@ -45,5 +45,39 @@
       "NFTFlags": "0x2667573cEfDe02fb72070b49581de9713BE6f659"
     },
     "addressNote": "Addresses, including the challengeAddresses map, match the baseSepolia deployment artifacts on ai.ctf.buidlguidl.com. The identity registry is the ERC-8004 testnet deployment, which differs from the mainnet address."
+  },
+  "base": {
+    "name": "base",
+    "rpcUrl": "https://mainnet.base.org",
+    "containerRpcUrl": "https://mainnet.base.org",
+    "chainId": 8453,
+    "confirmations": 2,
+    "nftFlags": "0x2667573cEfDe02fb72070b49581de9713BE6f659",
+    "challenge1": "0xbEa17B21E80851b1D730d85aF3D685A86BC75E46",
+    "identityRegistry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+    "fundingThresholdEth": "0.005",
+    "briefingUrl": "https://ai.ctf.buidlguidl.com/",
+    "challengeAddresses": {
+      "Challenge1": "0xbEa17B21E80851b1D730d85aF3D685A86BC75E46",
+      "Challenge2": "0x3F69c23b03E99447BaA1777D51BCbA0FeD6C51fE",
+      "Challenge3": "0xE1102AD9bb39A0C32Cb703769778BA21A6e4A9CF",
+      "Challenge4": "0x8c9BE7B019D547Db2c298eCc25DdF7B0b0538129",
+      "Challenge5": "0x183178A93BfA52A5A59663b732cA8F8395deaef7",
+      "Challenge6": "0xF0a408A2E15E8637a490E89fC038203b3Df0F6c4",
+      "Challenge7": "0x4776be3D46FDC058d006360b5075545333e84111",
+      "Challenge8": "0x95890Ceb318B2f778947BAeb50e562b22b37ddB2",
+      "Challenge9": "0x7C274BDE5Eb1b2cd0eFB1033e50F8951AD65fbB1",
+      "Challenge10": "0x635C8338995Be242738F9e948a893a1646fC2EDc",
+      "Challenge11": "0x5fc0672f87080894c0eEC13155B0687C38436606",
+      "Challenge12": "0xc7C7DA46EF10FE9F02625A9295CaB508aA154f2d",
+      "Challenge12Dungeon": "0xbc8fd532E419A375FB7bCC203A94006e90f62A91",
+      "Challenge12GoldToken": "0xa7695fDd7a50d60f287B33a88F78DdC117df7632",
+      "Challenge12HeroNFT": "0xB0E5C7D59f82C3B3527B2c0dF465F75D03448a75",
+      "Challenge12Inventory": "0xdE25bddE8EfDF429584d7c52e5A86CBb83aBce96",
+      "Challenge12Quest": "0x17E440D978b946dC7dc776118728aAD9Cc885753",
+      "Challenge12Victory": "0x7bCe6aE3f82a832bf312E218Ef5ef50ECa21441c",
+      "NFTFlags": "0x2667573cEfDe02fb72070b49581de9713BE6f659"
+    },
+    "addressNote": "Addresses, including the challengeAddresses map, match the base deployment artifacts in BuidlGuidl/ai.ctf.buidlguidl.com#40. The identity registry is the ERC-8004 mainnet deployment, read from Challenge1's constructor args."
   }
 }

@@ -672,6 +672,88 @@ describe('SSE event delivery', () => {
   });
 });
 
+describe('run list', () => {
+  function listSetup() {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    return server;
+  }
+
+  // Hand-inserted rows pin distinct createdAt values around the created run;
+  // the empty ones prove a run without entrants still lists with a zero count.
+  function insertBareRuns(server: ArenaServer) {
+    server.journal.database.insert(runs).values([
+      {
+        id: 'older',
+        state: 'finished',
+        preset: 'fake-duel',
+        startedAt: '2020-01-01T00:01:00.000Z',
+        createdAt: '2020-01-01T00:00:00.000Z',
+      },
+      {
+        id: 'newest',
+        state: 'failed',
+        preset: 'fake-duel',
+        createdAt: '2099-01-01T00:00:00.000Z',
+      },
+    ]).run();
+  }
+
+  it('answers an empty db with an empty list', async () => {
+    const server = listSetup();
+    const response = await server.app.inject({ method: 'GET', url: '/runs' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ runs: [] });
+  });
+
+  it('lists runs newest first with entrant counts', async () => {
+    const server = listSetup();
+    const { run } = await server.manager.create({ preset: 'fake-duel' });
+    insertBareRuns(server);
+
+    const response = await server.app.inject({ method: 'GET', url: '/runs' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ runs: [
+      {
+        id: 'newest',
+        state: 'failed',
+        createdAt: '2099-01-01T00:00:00.000Z',
+        startedAt: null,
+        agentCount: 0,
+      },
+      {
+        id: run.id,
+        state: 'created',
+        createdAt: expect.any(String),
+        startedAt: null,
+        agentCount: 2,
+      },
+      {
+        id: 'older',
+        state: 'finished',
+        createdAt: '2020-01-01T00:00:00.000Z',
+        startedAt: '2020-01-01T00:01:00.000Z',
+        agentCount: 0,
+      },
+    ] });
+  });
+
+  it('honours the limit and rejects an invalid one', async () => {
+    const server = listSetup();
+    insertBareRuns(server);
+
+    const limited = await server.app.inject({ method: 'GET', url: '/runs?limit=1' });
+    expect(limited.statusCode).toBe(200);
+    expect(limited.json().runs.map((item: { id: string }) => item.id)).toEqual(['newest']);
+
+    for (const bad of ['0', '201', '-1', 'abc', '1.5']) {
+      const response = await server.app.inject({ method: 'GET', url: `/runs?limit=${bad}` });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({ error: 'Invalid limit query value' });
+    }
+  });
+});
+
 describe('single active run guard', () => {
   it('rejects create with the active run identity', async () => {
     const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });

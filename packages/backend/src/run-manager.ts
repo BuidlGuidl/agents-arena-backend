@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { and, asc, count, eq, inArray, max, ne, notInArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, max, ne, notInArray, sql } from 'drizzle-orm';
 import { recoverTypedDataAddress, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -9,6 +9,7 @@ import type {
   EntrantSolve,
   EntrantSummary,
   RosterEntry,
+  RunListItem,
   RunSnapshot,
   RunState,
   SteerDelivery,
@@ -291,6 +292,25 @@ export class RunManager {
         lastEventId: lastEvent?.id ?? 0,
       };
     });
+  }
+
+  // One query with an entrant count join. The expensive parts — solves, usage,
+  // scores — stay on snapshot(), so the list is cheap at any run count.
+  list(limit: number): RunListItem[] {
+    return this.journal.database
+      .select({
+        id: runs.id,
+        state: runs.state,
+        createdAt: runs.createdAt,
+        startedAt: runs.startedAt,
+        agentCount: count(entrants.runId),
+      })
+      .from(runs)
+      .leftJoin(entrants, eq(entrants.runId, runs.id))
+      .groupBy(runs.id)
+      .orderBy(desc(runs.createdAt))
+      .limit(limit)
+      .all();
   }
 
   transition(runId: string, nextState: RunState, reason?: string): RunRecord {

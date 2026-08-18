@@ -164,6 +164,20 @@ export interface RunResponse {
 
 export type CreateRunResponse = RunResponse;
 
+// GET /runs list item. Deliberately thin — finish time, winner, and scores
+// live on GET /runs/:id — so the list stays one cheap query.
+export interface RunListItem {
+  id: string;
+  state: RunState;
+  createdAt: string;
+  startedAt: string | null;
+  agentCount: number;
+}
+
+export interface RunListResponse {
+  runs: RunListItem[];
+}
+
 export interface SteerRequest {
   text: string;
 }

@@ -13,6 +13,7 @@ import {
   type CreateRunRequest,
   type RestartResponse,
   type RosterEntry,
+  type RunListResponse,
   type SteerResponse,
 } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
@@ -111,6 +112,9 @@ const decimalIntegerSchema = z.string()
   .regex(/^\d+$/)
   .transform(Number)
   .refine(Number.isSafeInteger);
+const runsQuerySchema = z.object({
+  limit: decimalIntegerSchema.pipe(z.number().int().min(1).max(200)).default('50'),
+});
 const historyQuerySchema = z.object({
   limit: decimalIntegerSchema.pipe(z.number().int().min(1).max(200)).default('50'),
   before: decimalIntegerSchema.pipe(z.number().int().min(1)).optional(),
@@ -278,6 +282,15 @@ export function createServer(options: ServerOptions): ArenaServer {
     };
     const result = await manager.create(input);
     return reply.status(result.created ? 201 : 200).send({ run: result.run });
+  });
+
+  app.get('/runs', async (request, reply) => {
+    const queryResult = runsQuerySchema.safeParse(request.query);
+    if (!queryResult.success) {
+      return reply.status(400).send({ error: 'Invalid limit query value' });
+    }
+    const response: RunListResponse = { runs: manager.list(queryResult.data.limit) };
+    return response;
   });
 
   app.get('/runs/:id', async (request) => {

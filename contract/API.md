@@ -124,6 +124,16 @@ The chainless `fake-duel` preset skips wallet seeding. The `docker-duel` preset 
 
 An unknown preset or invalid roster returns status `400`.
 
+### `GET /runs`
+
+Returns `{"runs": RunListItem[]}` with the newest runs first by `createdAt`. Each item carries `id`, `state`, `createdAt`, `startedAt`, and `agentCount` — the number of entrants. The list is deliberately thin: finish time, winner, scores, and events live on `GET /runs/:id`.
+
+The optional `limit` query accepts an integer from 1 to 200 and defaults to 50. An invalid `limit` returns status `400`.
+
+```json
+{"runs":[{"id":"...","state":"finished","createdAt":"2026-08-05T10:00:00.000Z","startedAt":"2026-08-05T10:01:00.000Z","agentCount":2}]}
+```
+
 ### `GET /runs/:id`
 
 Returns `{"run": RunSnapshot}` — every run endpoint (create, get, start, seed, stop) wraps the snapshot in this same envelope, the `RunResponse` type in the contract file. A missing run returns status `404`.

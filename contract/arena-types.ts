@@ -22,7 +22,8 @@ export const ROSTER_MODELS: Readonly<Record<HarnessId, readonly string[]>> = {
   opencode: [
     'openrouter/z-ai/glm-5.2',
     'openrouter/moonshotai/kimi-k3',
-    'openrouter/deepseek/deepseek-v4-flash-0731',
+    'openrouter/deepseek/deepseek-v4-pro-0813',
+    'openrouter/qwen/qwen3.8-27b',
   ],
 };
 

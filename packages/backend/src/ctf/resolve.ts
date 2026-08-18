@@ -9,10 +9,10 @@ import { assembleChallengePack, type ChallengePack } from './pack.js';
 
 export type ChallengePackResolver = (runId: string) => string;
 
-// The pack directory feeds the container mount; the addresses feed the
-// current-challenge heuristic. Both come from the same assembly.
+// The optional pack directory feeds the container mount. The addresses feed
+// the current-challenge heuristic from either assembly or profile config.
 export interface ChallengePackAccess {
-  resolve: ChallengePackResolver;
+  resolve?: ChallengePackResolver;
   addressesFor(runId: string): Readonly<Record<string, Address>> | undefined;
 }
 
@@ -53,12 +53,14 @@ export function assertPackMatchesProfile(pack: ChallengePack, profile: ChainProf
 }
 
 // A profile with a briefingUrl sends the entrant to the public site, so it needs
-// no pack (ADR-0009).
+// no pack (ADR-0009). Its configured addresses still feed progress tracking.
 export function createChallengePackResolver(
   profile: ChainProfile,
-): ChallengePackAccess | undefined {
+): ChallengePackAccess {
   if (profile.briefingUrl !== undefined) {
-    return undefined;
+    return {
+      addressesFor: () => profile.challengeAddresses,
+    };
   }
 
   const built = new Map<string, ChallengePack>();

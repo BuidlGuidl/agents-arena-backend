@@ -23,6 +23,27 @@
     "identityRegistry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
     "fundingThresholdEth": "0.005",
     "briefingUrl": "https://ai-ctf-buidlguidl-com-nextjs-git-base-sepo-169d4a-buidlguidldao.vercel.app/",
-    "addressNote": "Addresses match the baseSepolia deployment artifacts on ai.ctf.buidlguidl.com. The identity registry is the ERC-8004 testnet deployment, which differs from the mainnet address."
+    "challengeAddresses": {
+      "Challenge1": "0xbEa17B21E80851b1D730d85aF3D685A86BC75E46",
+      "Challenge2": "0x3F69c23b03E99447BaA1777D51BCbA0FeD6C51fE",
+      "Challenge3": "0xE1102AD9bb39A0C32Cb703769778BA21A6e4A9CF",
+      "Challenge4": "0x8c9BE7B019D547Db2c298eCc25DdF7B0b0538129",
+      "Challenge5": "0x183178A93BfA52A5A59663b732cA8F8395deaef7",
+      "Challenge6": "0xF0a408A2E15E8637a490E89fC038203b3Df0F6c4",
+      "Challenge7": "0x4776be3D46FDC058d006360b5075545333e84111",
+      "Challenge8": "0xF7D99e54c491AAF72a19A1F503367CD5ECf18E9a",
+      "Challenge9": "0x31f16BF47F1F2c6A535544fb841BC3e8F69C6F1B",
+      "Challenge10": "0x635C8338995Be242738F9e948a893a1646fC2EDc",
+      "Challenge11": "0x5fc0672f87080894c0eEC13155B0687C38436606",
+      "Challenge12": "0x95890Ceb318B2f778947BAeb50e562b22b37ddB2",
+      "Challenge12Dungeon": "0x3b1f4fA005c379FdC9E12EdC56a5ccf4b5572A1E",
+      "Challenge12GoldToken": "0xF9B8c2EEbc901635E6C93fea640322D718eC5A11",
+      "Challenge12HeroNFT": "0x36719CD26D4ec7808Cb2e94Bc80aA191211c097F",
+      "Challenge12Inventory": "0xBB8F7aA4f49C673CE0c5014Cc928b88F0B093a4A",
+      "Challenge12Quest": "0xafF951c35cdf4a4243c66B240aE19b8c53F8B7B8",
+      "Challenge12Victory": "0x53821f38fE7D4b93F3E125ECDc5C8da92330671e",
+      "NFTFlags": "0x2667573cEfDe02fb72070b49581de9713BE6f659"
+    },
+    "addressNote": "Addresses, including the challengeAddresses map, match the baseSepolia deployment artifacts on ai.ctf.buidlguidl.com. The identity registry is the ERC-8004 testnet deployment, which differs from the mainnet address."
   }
 }

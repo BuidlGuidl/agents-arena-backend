@@ -61,6 +61,28 @@ describe('buildOpeningPrompt', () => {
     expect(prompt).toContain('Bearer $ARENA_AGENT_TOKEN');
   });
 
+  // Open-source entrants gave up mid-race and idled for operator hints
+  // (ai.ctf#39), so the prompt must keep commanding persistence.
+  it('commands the agent to keep going until every flag is held', () => {
+    const profile: ChainProfile = {
+      name: 'local-test',
+      rpcUrl: 'http://127.0.0.1:8545',
+      containerRpcUrl: 'http://host.docker.internal:9545',
+      chainId: 31337,
+      confirmations: 1,
+      nftFlags: '0x0000000000000000000000000000000000000001',
+      challenge1: '0x0000000000000000000000000000000000000002',
+      identityRegistry: '0x0000000000000000000000000000000000000003',
+      fundingThresholdWei: 1n,
+    };
+
+    const prompt = buildOpeningPrompt(entrant, profile);
+
+    expect(prompt).toContain('Do not stop until your address holds all 12 flags.');
+    expect(prompt).toContain('Every challenge is solvable.');
+    expect(prompt).toContain('No one will answer questions during the race.');
+  });
+
   it('uses the public briefing without local mount instructions', () => {
     const profile: ChainProfile = {
       name: 'public-test',

@@ -415,7 +415,9 @@ describe('RunManager solve watch', () => {
   it('starts one watch after funding and before the entrants start', async () => {
     const { journal, manager, order, signals } = watchedManager();
     try {
-      await manager.create({ preset: 'docker-arena', autoStart: true });
+      const { run } = await manager.create({ preset: 'docker-arena', autoStart: true });
+      expect(order).toEqual(['funding']);
+      await manager.start(run.id);
 
       expect(order).toEqual([
         'funding',
@@ -435,6 +437,7 @@ describe('RunManager solve watch', () => {
     const { journal, manager, signals } = watchedManager();
     try {
       const { run } = await manager.create({ preset: 'docker-duel', autoStart: true });
+      await manager.start(run.id);
       expect(signals[0]?.aborted).toBe(false);
 
       await manager.stop(run.id);
@@ -459,6 +462,8 @@ describe('RunManager solve watch', () => {
     });
     try {
       const { run } = await manager.create({ preset: 'docker-duel' });
+      // The first call only parks the run at `ready`; the race is the second one.
+      await manager.start(run.id);
       await expect(manager.start(run.id)).rejects.toThrow('entrant refused to start');
 
       expect(signals[0]?.aborted).toBe(true);
@@ -472,6 +477,7 @@ describe('RunManager solve watch', () => {
     const manager = new RunManager(journal, noopDriver);
     try {
       const { run } = await manager.create({ preset: 'docker-duel', autoStart: true });
+      await manager.start(run.id);
       expect(manager.snapshot(run.id).state).toBe('running');
     } finally {
       journal.close();
@@ -636,6 +642,44 @@ describe('RunManager ready barrier', () => {
     });
   });
 
+  it('parks a docker run at ready and races only on the operator\'s second call', async () => {
+    const journal = new EventJournal(':memory:');
+    const starts: string[] = [];
+    const driver: EntrantDriver = {
+      ...noopDriver,
+      async start(_run, entrant) {
+        starts.push(entrant.id);
+      },
+    };
+    const manager = new RunManager(journal, driver);
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel' });
+
+      const parked = await manager.start(run.id);
+      expect(parked.state).toBe('ready');
+      expect(parked.startedAt).toBeNull();
+      expect(starts).toEqual([]);
+
+      const started = await manager.start(run.id);
+      expect(started.state).toBe('running');
+      expect(started.startedAt).not.toBeNull();
+      expect(starts.sort()).toEqual(['codex-1', 'opencode-1']);
+    } finally {
+      journal.close();
+    }
+  });
+
+  it('runs a chainless preset straight through, with nothing to fund and nobody watching', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, noopDriver);
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      expect((await manager.start(run.id)).state).toBe('running');
+    } finally {
+      journal.close();
+    }
+  });
+
   it('shares one in-flight start between concurrent callers', async () => {
     const journal = new EventJournal(':memory:');
     const driver = new BarrierDriver();
@@ -654,7 +698,10 @@ describe('RunManager ready barrier', () => {
       expect(secondResult).toEqual(firstResult);
       expect(driver.prepares.sort()).toEqual(['codex-1', 'opencode-1']);
       expect(driver.stops).toEqual([]);
-      expect(manager.snapshot(run.id).state).toBe('running');
+      expect(manager.snapshot(run.id).state).toBe('ready');
+      expect(driver.starts).toEqual([]);
+
+      expect((await manager.start(run.id)).state).toBe('running');
 
       await expect(manager.start(run.id)).rejects.toThrow(InvalidTransitionError);
       expect(driver.stops).toEqual([]);
@@ -678,7 +725,11 @@ describe('RunManager ready barrier', () => {
       expect(driver.starts).toEqual([]);
 
       driver.prepareControls.get('opencode-1')?.resolve();
-      const started = await starting;
+      const ready = await starting;
+      expect(ready.state).toBe('ready');
+      expect(driver.starts).toEqual([]);
+
+      const started = await manager.start(run.id);
       expect(started.state).toBe('running');
       expect(started.startedAt).not.toBeNull();
       expect(driver.starts).toHaveLength(2);

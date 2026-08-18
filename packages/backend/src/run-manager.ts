@@ -510,6 +510,12 @@ export class RunManager {
           controller,
         );
         run = this.transition(runId, 'ready');
+        // The director starts the race, not the last wallet to be topped up.
+        // Funding is theirs to drive by hand, so the run parks here and a second
+        // POST /runs/:id/start takes it to `running` — the deadline, the opening
+        // prompts and the countdown all hang off that moment. Chainless presets
+        // have nothing to fund and nobody watching, so they run straight through.
+        if (presetSubstrate(run.preset) === 'docker') return this.snapshot(runId);
       }
       if (run.state !== 'ready') {
         throw new InvalidTransitionError(`Cannot start run ${runId} from ${run.state}`);

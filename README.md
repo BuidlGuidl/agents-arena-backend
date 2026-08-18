@@ -148,6 +148,10 @@ curl -X POST http://127.0.0.1:4177/runs \
   -H "authorization: Bearer $ARENA_OPERATOR_TOKEN" \
   -d '{"preset":"docker-duel","autoStart":true}'
 
+# a docker run stops at `ready` with its wallets funded — start it again to race
+curl -X POST http://127.0.0.1:4177/runs/<id>/start \
+  -H "authorization: Bearer $ARENA_OPERATOR_TOKEN"
+
 curl -N http://127.0.0.1:4177/runs/<id>/events # SSE, no token needed
 ```
 

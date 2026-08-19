@@ -863,7 +863,8 @@ describe('seed endpoint', () => {
 
       expect(response.statusCode).toBe(201);
       const { run } = response.json() as { run: RunSnapshot };
-      expect(run.state).toBe('running');
+      // Prepared and funded, waiting on the operator's go.
+      expect(run.state).toBe('ready');
       expect(run.seededBy).toBe(LOCAL_DEV_OPERATOR.address);
       const stored = server.journal.database
         .select({ seededBy: runs.seededBy })
@@ -1044,7 +1045,7 @@ describe('seed endpoint', () => {
       expect(seeded.entrants.map((entrant) => entrant.address)).toEqual(
         entrantIds.map((entrantId) => expected.get(entrantId)),
       );
-      await waitForState(server, run.id, 'running');
+      await waitForState(server, run.id, 'ready');
       await server.manager.stop(run.id);
     });
   });
@@ -1070,7 +1071,7 @@ describe('seed endpoint', () => {
         headers: operatorHeaders,
         payload: { signature },
       });
-      await waitForState(server, run.id, 'running');
+      await waitForState(server, run.id, 'ready');
 
       expect(response.statusCode).toBe(202);
       const seeded = (response.json() as { run: RunSnapshot }).run;

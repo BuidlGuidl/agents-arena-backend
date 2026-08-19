@@ -172,16 +172,22 @@ The agent-facing announce route. Authenticated by the per-entrant bearer token t
 
 ### `POST /runs/:id/start`
 
-Starts the run and returns `{"run": RunSnapshot}`. With local automatic signing, the request waits until the run reaches `running`. Without automatic signing, it returns after the run enters `awaiting_signature`. The run advances asynchronously after seed submission and funding. A run already at `ready` starts without preparation.
+Starts the run and returns `{"run": RunSnapshot}`. **A docker run needs this route twice.** The first call prepares and funds it and leaves it at `ready`; the second takes it to `running`, and that second call is what sets `startedAt` and the deadline and feeds the entrants their opening prompts. Funding is a step the operator drives by hand, so the race waits for them rather than for the last wallet to be topped up.
+
+With local automatic signing, the first call waits until the run reaches `ready`. Without automatic signing, it returns after the run enters `awaiting_signature` and the run advances asynchronously — through seed submission and funding — to `ready`. The second call returns once the run is `running`; the entrants' first turns are still spinning up behind it.
+
+Chainless presets have nothing to fund, so their single start call runs straight through to `running`.
+
+A run parked at `ready` holds the single active-run slot until it is started or stopped. `POST /runs/:id/stop` is legal there and ends it `failed` with an operator-stop reason.
 
 The `docker-duel` lifecycle is:
 
 ```text
-created → awaiting_signature → preparing → awaiting_funding → ready → running → stopping → finished
+created → awaiting_signature → preparing → awaiting_funding → ready →[start]→ running → stopping → finished
 ```
 
 Every nonterminal state can also advance to `failed`.
-The chainless `fake-duel` preset moves from `created` to `preparing` and skips `awaiting_signature`.
+The chainless `fake-duel` preset moves from `created` to `preparing`, skips `awaiting_signature`, and does not stop at `ready`.
 
 The backend does not resume pre-terminal runs after a restart. Stop runs parked in `awaiting_signature` or another pre-terminal state, then create a new run.
 

@@ -383,6 +383,19 @@ create_run() {
     fail_with_fix 'The create-run response did not contain an id.' \
       "curl -sS http://127.0.0.1:$BACKEND_PORT/runs"
 
+  # Creating a docker run only prepares and funds it — it parks at `ready` and
+  # waits for the go the director gives by hand. The fake substrate has nothing
+  # to fund and races on its own.
+  case "$preset" in
+    docker-*)
+      curl --fail --silent --show-error --output /dev/null \
+        --request POST "http://127.0.0.1:$BACKEND_PORT/runs/$run_id/start" \
+        --header "authorization: Bearer $token" || \
+        fail_with_fix "The backend refused to start run $run_id." \
+          "tail -n 80 \"$BACKEND_LOG\""
+      ;;
+  esac
+
   printf 'Run ID: %s\n' "$run_id"
   printf 'SSE: curl -N http://127.0.0.1:%s/runs/%s/events\n' "$BACKEND_PORT" "$run_id"
   # An absolute path to this script, so the line pastes into any cwd. The command

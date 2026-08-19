@@ -433,6 +433,10 @@ export class RunManager {
   }
 
   start(runId: string): Promise<RunSnapshot> {
+    // TODO: a go sent while the first phase is still preparing joins it here and
+    // is lost — the caller gets a 200 and the run parks at `ready` with nobody
+    // left to advance it. Give the go its own route (or 409 while a start is in
+    // flight) so timing cannot change what this call means.
     const existing = this.inFlightStarts.get(runId);
     if (existing !== undefined) return existing;
 
@@ -510,6 +514,12 @@ export class RunManager {
           controller,
         );
         run = this.transition(runId, 'ready');
+        // The director starts the race, not the last wallet to be topped up.
+        // Funding is theirs to drive by hand, so the run parks here and a second
+        // POST /runs/:id/start takes it to `running` — the deadline, the opening
+        // prompts and the countdown all hang off that moment. Chainless presets
+        // have nothing to fund and nobody watching, so they run straight through.
+        if (presetSubstrate(run.preset) === 'docker') return this.snapshot(runId);
       }
       if (run.state !== 'ready') {
         throw new InvalidTransitionError(`Cannot start run ${runId} from ${run.state}`);

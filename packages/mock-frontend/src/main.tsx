@@ -111,6 +111,18 @@ function App() {
       cache.setQueryData(['run', run.id], run);
     },
   });
+  // A docker run parks at `ready` with its wallets funded and waits to be sent
+  // off — the same second start the arena frontend's GO button makes.
+  const startRun = useMutation({
+    mutationFn: async () => fetchJson<{ run: RunSnapshot }>(`/runs/${runId}/start`, { method: 'POST' }),
+    onSuccess: ({ run: started }) => {
+      // TODO: when SSE has already advanced lastEventId past this response, the
+      // response's startedAt/deadlineAt are dropped and projection never fills
+      // them — the run shows running with no clock. Merge the timestamps in.
+      cache.setQueryData<RunSnapshot>(['run', started.id], (current) =>
+        current !== undefined && current.lastEventId > started.lastEventId ? current : started);
+    },
+  });
   const stopRun = useMutation({
     mutationFn: async () => fetchJson<{ run: RunSnapshot }>(`/runs/${runId}/stop`, { method: 'POST' }),
     onSuccess: ({ run: stopped }) => {
@@ -223,6 +235,16 @@ function App() {
         >
           {createRun.isPending ? 'starting…' : 'start race'}
         </button>
+        {run !== null && run.state === 'ready' ? (
+          <button
+            className="btn start"
+            data-testid="go-run"
+            disabled={startRun.isPending}
+            onClick={() => startRun.mutate()}
+          >
+            {startRun.isPending ? 'going…' : 'go'}
+          </button>
+        ) : null}
         {run !== null && run.state !== 'finished' && run.state !== 'failed' ? (
           <button
             className="btn ghost"
@@ -248,6 +270,7 @@ function App() {
       ) : null}
 
       {createRun.error instanceof Error ? <p className="error-line">{createRun.error.message}</p> : null}
+      {startRun.error instanceof Error ? <p className="error-line">{startRun.error.message}</p> : null}
       {stopRun.error instanceof Error ? <p className="error-line">{stopRun.error.message}</p> : null}
 
       {run !== null ? (

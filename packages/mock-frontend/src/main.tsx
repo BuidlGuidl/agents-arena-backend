@@ -116,6 +116,9 @@ function App() {
   const startRun = useMutation({
     mutationFn: async () => fetchJson<{ run: RunSnapshot }>(`/runs/${runId}/start`, { method: 'POST' }),
     onSuccess: ({ run: started }) => {
+      // TODO: when SSE has already advanced lastEventId past this response, the
+      // response's startedAt/deadlineAt are dropped and projection never fills
+      // them — the run shows running with no clock. Merge the timestamps in.
       cache.setQueryData<RunSnapshot>(['run', started.id], (current) =>
         current !== undefined && current.lastEventId > started.lastEventId ? current : started);
     },

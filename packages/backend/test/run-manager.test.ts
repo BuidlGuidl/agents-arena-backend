@@ -772,6 +772,8 @@ describe('RunManager lifecycle cancellation', () => {
     const manager = new RunManager(journal, noopDriver);
     try {
       const { run } = await manager.create({ preset: 'docker-duel', autoStart: true });
+      await manager.start(run.id);
+      expect(manager.snapshot(run.id).state).toBe('running');
       expect(getWallet(run.id, 'codex-1')).not.toBeNull();
 
       await manager.stop(run.id);
@@ -895,6 +897,8 @@ describe('RunManager lifecycle cancellation', () => {
     try {
       const { run } = await manager.create({ preset: 'docker-duel' });
       await manager.start(run.id);
+      await manager.start(run.id);
+      expect(manager.snapshot(run.id).state).toBe('running');
 
       const outcome = await manager.stop(run.id).then(
         () => ({ ok: true as const }),

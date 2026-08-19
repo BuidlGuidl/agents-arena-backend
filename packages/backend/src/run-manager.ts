@@ -433,6 +433,10 @@ export class RunManager {
   }
 
   start(runId: string): Promise<RunSnapshot> {
+    // TODO: a go sent while the first phase is still preparing joins it here and
+    // is lost — the caller gets a 200 and the run parks at `ready` with nobody
+    // left to advance it. Give the go its own route (or 409 while a start is in
+    // flight) so timing cannot change what this call means.
     const existing = this.inFlightStarts.get(runId);
     if (existing !== undefined) return existing;
 

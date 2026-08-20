@@ -323,3 +323,17 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 **Trade-off:** recovery custody follows the signer, not the money. whoever signs can re-derive the burner keys and sweep leftovers; nobody else can — including the treasury that funded the run, if someone else signed. accepted: an operator is already trusted with the whole arena, and `seededBy` makes the recovery-key holder auditable. the convention, stated in the README, is that whoever funds signs.
 
 **Consequence:** ADR-0013's plain-EOA, deterministic-signing constraint now applies to every address in `ARENA_OPERATOR_ADDRESSES` — a Safe or MPC operator's signature verifies fine and silently breaks recovery, and the backend cannot detect that at sign time. it is a documentation rule; the out-of-band backstop (save the canonical signature at race time) remains the recommended practice. `seededBy` is a stored address, not key material — the signature itself stays unjournaled and unechoed. only the successful signer's address is exposed; a rejected attempt still leaks nothing.
+
+---
+
+## ADR-0020 — the entrant's challenge report is authoritative
+
+**Status:** accepted (2026-08-20)
+
+**Decision:** a self-report can replace any current challenge. backend guesses only fill an empty or solved target. guesses carry `via: command` or `message`; self-reports carry `via: self`.
+
+**Why:** production journals showed a 60–95 second blank after a solve: the target stayed on the solved challenge, the agents narrated the switch in prose that nothing read, and the curl came a minute later. latest-wins guesses also flipped one entrant's target 32 times in one run.
+
+**Trade-off:** a stale self-report blocks guesses until that target is solved or the entrant reports a switch.
+
+**Consequence:** the tracker keeps each entrant's target and solved ids in memory. nothing invents a target: a blank after a solve lasts until the agent names the next challenge.

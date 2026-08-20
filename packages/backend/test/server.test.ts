@@ -132,12 +132,10 @@ describe('agent self-announce', () => {
     }
   });
 
-  it('dedupes against the command heuristic, not its own last value', async () => {
+  it('claims a matching guess without journalling it again', async () => {
     const { server, runId, token } = await announceSetup();
     try {
-      // The heuristic already moved the shared current to 5; the agent
-      // announcing 5 now adds nothing.
-      recordCurrentChallenge(runId, 'codex-1', 5);
+      recordCurrentChallenge(runId, 'codex-1', 5, 'command');
       const repeat = await server.app.inject({
         method: 'POST',
         url: '/agent/progress',

@@ -56,7 +56,7 @@
     "challenge1": "0xbEa17B21E80851b1D730d85aF3D685A86BC75E46",
     "identityRegistry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
     "fundingThresholdEth": "0.005",
-    "briefingUrl": "https://ai.ctf.buidlguidl.com/",
+    "briefingUrl": "https://ai-ctf-buidlguidl-com-nextjs.vercel.app/",
     "challengeAddresses": {
       "Challenge1": "0xbEa17B21E80851b1D730d85aF3D685A86BC75E46",
       "Challenge2": "0x3F69c23b03E99447BaA1777D51BCbA0FeD6C51fE",

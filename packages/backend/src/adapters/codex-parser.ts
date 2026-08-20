@@ -223,6 +223,13 @@ function genericToolDetail(item: JsonObject): string {
     const detail = stringValue(item[field]);
     if (detail !== undefined) return detail.slice(0, 2_000);
   }
+  // file_change items list their paths under changes[], not at the top level.
+  if (Array.isArray(item.changes)) {
+    const paths = item.changes
+      .map((change) => stringValue(objectValue(change)?.path))
+      .filter((path): path is string => path !== undefined);
+    if (paths.length > 0) return paths.join(' ').slice(0, 2_000);
+  }
   return '';
 }
 

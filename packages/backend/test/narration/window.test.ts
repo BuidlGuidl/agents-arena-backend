@@ -273,7 +273,7 @@ describe('buildNarrationWindow', () => {
     expect(built.input.prompt).not.toContain('x'.repeat(301));
     expect(built.input.prompt).toContain('says:');
     expect(built.input.prompt).toContain('shell → running:');
-    expect(built.input.prompt).toContain('broadcast (1 entrants):');
+    expect(built.input.prompt).toContain('broadcast from the director:');
     expect(built.input.prompt).toContain('error:');
   });
 

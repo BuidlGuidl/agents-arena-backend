@@ -224,9 +224,11 @@ function systemPrompt(titles: Readonly<Record<number, string>>): string {
     'Challenges:',
     challenges,
     '',
-    'You get one agent\'s recent moves. Call it "it". Say what it is doing like one human telling another across the room:',
-    'simple words, no jargon, one or two short sentences, present tense.',
-    'Name the challenge number when you know it. Don\'t repeat the agent\'s name, elapsed time, or status.',
+    'You get one agent\'s recent moves. Every line is about that same agent, so never name it and never use',
+    'a pronoun for it: start with the verb. "Reading Challenge9.sol after a failed cast call."',
+    'Say plainly what it is doing, one or two short sentences, present tense. Describe the actual commands',
+    'and files. No metaphors, no figures of speech, no drama, no jargon.',
+    'Name the challenge number when you know it. Don\'t repeat the elapsed time or status.',
     'If nothing changed, say what it is waiting on.',
   ].join('\n');
 }

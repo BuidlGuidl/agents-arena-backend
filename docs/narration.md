@@ -53,10 +53,11 @@ opencode lane mid-command produces nothing; the max bound is what keeps it alive
 ## what the model sees
 
 System prompt: the race in one line, the 12 challenge names from the pack, then the voice:
-say what the agent is doing like one human telling another across the room, simple words, no
-jargon, one or two short sentences, present tense; name the challenge number when known;
-don't repeat the name, elapsed time, or status; if nothing changed, say what it is waiting
-on. The client caps output at 80 tokens and keeps the first two sentences as a backstop.
+every line is about the same agent, so no name and no pronoun, start with the verb; say
+plainly what it is doing, one or two short sentences, present tense, the actual commands
+and files; no metaphors, no drama, no jargon; name the challenge number when known; don't
+repeat elapsed time or status; if nothing changed, say what it is waiting on. The call runs
+at temperature 0.3, output capped at 80 tokens, first two sentences kept as a backstop.
 
 User turn, built from the journal (full payloads, not the 4000-char wire cap):
 

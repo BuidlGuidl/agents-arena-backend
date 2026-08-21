@@ -20,6 +20,8 @@ export function createOpenRouterNarrator(options: OpenRouterNarratorOptions): Na
       system: input.system,
       prompt: input.prompt,
       maxOutputTokens: 80,
+      // Description, not creativity: low temperature cuts the colour commentary.
+      temperature: 0.3,
       abortSignal: signal,
     });
     const text = firstSentences(result.text.trim(), 2);

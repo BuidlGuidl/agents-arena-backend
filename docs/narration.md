@@ -52,11 +52,11 @@ opencode lane mid-command produces nothing; the max bound is what keeps it alive
 
 ## what the model sees
 
-System prompt: the arena in two sentences, the 12 challenge names from the challenge
-pack, the output rules (one or two sentences, 30 words max, lead with the action, no
-hedges, don't repeat the name/elapsed/status, name the challenge number when known, never
-guess at a solve, one sentence on what it is waiting on when nothing changed). The client
-caps output at 80 tokens and keeps the first two sentences as a backstop.
+System prompt: the race in one line, the 12 challenge names from the pack, then the voice:
+say what the agent is doing like one human telling another across the room, simple words, no
+jargon, one or two short sentences, present tense; name the challenge number when known;
+don't repeat the name, elapsed time, or status; if nothing changed, say what it is waiting
+on. The client caps output at 80 tokens and keeps the first two sentences as a backstop.
 
 User turn, built from the journal (full payloads, not the 4000-char wire cap):
 

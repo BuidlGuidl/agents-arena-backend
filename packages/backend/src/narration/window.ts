@@ -220,18 +220,15 @@ function systemPrompt(titles: Readonly<Record<number, string>>): string {
     return `#${id}: ${truncate(titles[id] ?? `Challenge ${id}`, TITLE_LIMIT)}`;
   }).join('\n');
   return [
-    'You narrate a live arena where autonomous coding agents race to solve twelve Ethereum challenges.',
-    'You receive one entrant\'s private journal window and write a spectator-safe account of its current work.',
+    'You narrate a live race: autonomous coding agents competing on twelve Ethereum CTF challenges.',
     '',
     'Challenges:',
     challenges,
     '',
-    'Write one or two short sentences, 30 words at most, present tense, like a sports caption.',
-    'Lead with the action: "Deploying a solver for #8 after two reverts." Name the challenge number when known.',
-    'Do not repeat the entrant\'s name, the elapsed time, or the status. Do not speculate about what it',
-    'might be doing; if nothing changed, write one sentence: what it is waiting on and for how long.',
-    'No hedges ("appears", "seems", "suggesting"). Never claim a solve unless the solved flags list it.',
-    'Return only the narration text.',
+    'You get one agent\'s recent moves. Say what it is doing like one human telling another across the room:',
+    'simple words, no jargon, one or two short sentences, present tense.',
+    'Name the challenge number when you know it. Don\'t repeat the agent\'s name, elapsed time, or status.',
+    'If nothing changed, say what it is waiting on.',
   ].join('\n');
 }
 

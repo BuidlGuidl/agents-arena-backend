@@ -95,7 +95,6 @@ export function buildNarrationWindow(options: NarrationWindowOptions): Narration
     : Math.max(0, Math.floor((nowMs - Date.parse(options.run.startedAt)) / 1_000));
 
   const contextLines = [
-    `Entrant: ${detail(options.entrant.id)} (${detail(options.entrant.harness)}, ${detail(options.entrant.model)})`,
     `Status: ${status}`,
     `Elapsed run time: ${elapsedSeconds}s`,
     challenge === undefined
@@ -225,7 +224,7 @@ function systemPrompt(titles: Readonly<Record<number, string>>): string {
     'Challenges:',
     challenges,
     '',
-    'You get one agent\'s recent moves. Say what it is doing like one human telling another across the room:',
+    'You get one agent\'s recent moves. Call it "it". Say what it is doing like one human telling another across the room:',
     'simple words, no jargon, one or two short sentences, present tense.',
     'Name the challenge number when you know it. Don\'t repeat the agent\'s name, elapsed time, or status.',
     'If nothing changed, say what it is waiting on.',
@@ -260,7 +259,7 @@ function describeEvent(event: ArenaEvent): string {
     case 'entrant.prompt': return `task: ${detail(event.payload.text)}`;
     case 'entrant.restarted': return 'session restarted by the operator';
     case 'entrant.nudged': return `nudged (flags ${event.payload.flags}): ${detail(event.payload.text)}`;
-    case 'director.broadcast': return `broadcast (${event.payload.targetEntrantIds.length} entrants): ${detail(event.payload.text)}`;
+    case 'director.broadcast': return `broadcast from the director: ${detail(event.payload.text)}`;
     case 'wallet.assigned': return `wallet ${detail(event.payload.address)}`;
     case 'funding.balance': return `balance ${detail(event.payload.wei)} wei${event.payload.funded ? ' (funded)' : ''}`;
     case 'score.flag': return `flag challenge ${event.payload.challengeId} token ${detail(event.payload.tokenId)} (${detail(event.payload.txHash)})`;

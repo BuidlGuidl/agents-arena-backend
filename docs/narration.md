@@ -57,7 +57,7 @@ every line is about the same agent, so no name and no pronoun, start with the ve
 plainly what it is doing, one or two short sentences, present tense, the actual commands
 and files; no metaphors, no drama, no jargon; name the challenge number when known; don't
 repeat elapsed time or status; if nothing changed, say what it is waiting on. The call runs
-at temperature 0.3, output capped at 80 tokens, first two sentences kept as a backstop.
+at temperature 0.3, output capped at 80 tokens. The text is journaled as returned, no post-processing.
 
 User turn, built from the journal (full payloads, not the 4000-char wire cap):
 

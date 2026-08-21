@@ -42,6 +42,22 @@ export function projectSnapshot(current: RunSnapshot | undefined, event: ArenaEv
         : entrant),
     };
   }
+  if (event.type === 'entrant.narration') {
+    return {
+      ...current,
+      lastEventId: event.id,
+      entrants: current.entrants.map((entrant) => entrant.id === event.payload.entrantId
+        ? {
+          ...entrant,
+          narration: {
+            text: event.payload.text,
+            ts: event.ts,
+            basedOnEventId: event.payload.basedOnEventId,
+          },
+        }
+        : entrant),
+    };
+  }
   if (event.type === 'usage') {
     const { entrantId, inputTokens, outputTokens, costUsd } = event.payload;
     return {

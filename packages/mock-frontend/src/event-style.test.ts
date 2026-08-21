@@ -56,6 +56,15 @@ describe('styleForEvent', () => {
     expect(styleForEvent(balance)).toEqual({ tone: 'chain', tag: 'chain' });
   });
 
+  it('tags narration as a narrated message', () => {
+    const narration: ArenaEvent = {
+      ...base,
+      type: 'entrant.narration',
+      payload: { entrantId: 'codex-1', text: 'Working.', basedOnEventId: 4 },
+    };
+    expect(styleForEvent(narration)).toEqual({ tone: 'message', tag: 'narr' });
+  });
+
   it('falls back to a system tone for a type the UI does not know', () => {
     const unknown = { ...base, type: 'future.type', payload: {} } as unknown as ArenaEvent;
     expect(styleForEvent(unknown)).toEqual({ tone: 'system', tag: 'evt' });

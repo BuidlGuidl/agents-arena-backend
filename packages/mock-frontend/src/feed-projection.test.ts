@@ -389,7 +389,7 @@ describe('event → lane routing', () => {
   });
 });
 
-describe('describeEvent — all 17 contract types render', () => {
+describe('describeEvent — every contract type renders', () => {
   const base = { id: 1, runId: 'run-1', source: 'codex-1', seq: 1, ts: 'now' };
   const samples: ArenaEvent[] = [
     { ...base, source: RUN_SOURCE, type: 'run.state', payload: { state: 'running' } },
@@ -407,13 +407,14 @@ describe('describeEvent — all 17 contract types render', () => {
     { ...base, type: 'funding.balance', payload: { entrantId: 'codex-1', address: '0xabc', wei: '100', funded: true } },
     { ...base, type: 'score.flag', payload: { entrantId: 'codex-1', challengeId: 1, txHash: '0xtx', tokenId: '7' } },
     { ...base, type: 'entrant.challenge', payload: { entrantId: 'codex-1', challengeId: 5, via: 'self', evidence: 'announced' } },
+    { ...base, type: 'entrant.narration', payload: { entrantId: 'codex-1', text: 'Testing challenge #5.', basedOnEventId: 4 } },
     { ...base, type: 'entrant.error', payload: { entrantId: 'codex-1', message: 'boom' } },
     { ...base, source: RUN_SOURCE, type: 'run.error', payload: { message: 'fatal' } },
     { ...base, type: 'usage', payload: { entrantId: 'codex-1', inputTokens: 10, outputTokens: 5, cachedInputTokens: 4, costUsd: 0.001 } },
   ];
 
   it('covers every contract event type', () => {
-    expect(samples).toHaveLength(18);
+    expect(samples).toHaveLength(19);
   });
 
   // Rows journalled before the guesser existed carry no via — they were all

@@ -128,6 +128,24 @@ describe('projectSnapshot', () => {
     expect(projectSnapshot(once, next)?.entrants[0]?.currentChallengeId).toBe(11);
   });
 
+  it('replaces the latest narration for an entrant', () => {
+    const event: ArenaEvent = {
+      id: 5,
+      runId: 'run-1',
+      source: 'codex-1',
+      seq: 2,
+      ts: '2026-07-22T00:00:03.000Z',
+      type: 'entrant.narration',
+      payload: { entrantId: 'codex-1', text: 'Testing challenge #3.', basedOnEventId: 4 },
+    };
+
+    expect(projectSnapshot(snapshot, event)?.entrants[0]?.narration).toEqual({
+      text: 'Testing challenge #3.',
+      ts: event.ts,
+      basedOnEventId: 4,
+    });
+  });
+
   it('projects score.flag events into flags and solves', () => {
     const event: ArenaEvent = {
       id: 4,

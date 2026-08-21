@@ -5,7 +5,6 @@ import type { EntrantDriver, EntrantRecord, RunRecord } from '../../src/adapters
 import { recordSolve } from '../../src/chain/storage.js';
 import { entrants, runs } from '../../src/db/schema.js';
 import { EventJournal } from '../../src/journal.js';
-import { firstSentences } from '../../src/narration/openrouter.js';
 import { buildNarrationWindow } from '../../src/narration/window.js';
 import { RunManager } from '../../src/run-manager.js';
 
@@ -312,17 +311,3 @@ describe('buildNarrationWindow', () => {
   });
 });
 
-describe('firstSentences', () => {
-  it('keeps the first two sentences and drops the rest', () => {
-    expect(firstSentences('Holds the #1 flag. Running forge tests. Now idle. More.', 2))
-      .toBe('Holds the #1 flag. Running forge tests.');
-  });
-  it('does not split on a period inside a filename', () => {
-    expect(firstSentences('Reading Challenge12.sol to understand the setup. Examining deploy.ts next. Then more.', 2))
-      .toBe('Reading Challenge12.sol to understand the setup. Examining deploy.ts next.');
-  });
-  it('returns a short or unterminated text unchanged', () => {
-    expect(firstSentences('Waiting on forge test for 104s', 2)).toBe('Waiting on forge test for 104s');
-    expect(firstSentences('Deploying #8.', 2)).toBe('Deploying #8.');
-  });
-});

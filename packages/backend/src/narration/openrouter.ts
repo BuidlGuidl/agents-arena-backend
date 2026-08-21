@@ -24,15 +24,8 @@ export function createOpenRouterNarrator(options: OpenRouterNarratorOptions): Na
       temperature: 0.3,
       abortSignal: signal,
     });
-    const text = firstSentences(result.text.trim(), 2);
+    const text = result.text.trim();
     if (text.length === 0) throw new Error('OpenRouter returned empty narration text');
     return text;
   };
-}
-
-// The prompt asks for at most two sentences; this is the backstop when the model runs long.
-export function firstSentences(text: string, count: number): string {
-  // A sentence ends at .!? followed by whitespace, so "Challenge12.sol" stays whole.
-  const parts = text.split(/(?<=[.!?])\s+/);
-  return parts.slice(0, count).join(' ').trim();
 }

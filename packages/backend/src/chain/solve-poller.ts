@@ -13,6 +13,7 @@ import type { EntrantRecord, RunRecord } from '../adapters/types.js';
 import type { ArenaDatabase } from '../db/index.js';
 import { entrants, scores } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
+import { recordCurrentChallenge, takePendingGuess } from '../ctf/challenge-tracker.js';
 import { presetSubstrate, type SolveWatch } from '../run-manager.js';
 import { flagMintedEvent, nftFlagsAbi } from './abi.js';
 import { activeChainProfile, getChainProfile, type ChainProfile } from './profile.js';
@@ -356,7 +357,7 @@ export class SolvePoller {
   }
 
   private record(capture: Capture): boolean {
-    return recordSolve(this.database, this.options.journal, {
+    const recorded = recordSolve(this.database, this.options.journal, {
       runId: this.options.runId,
       entrantId: capture.entrantId,
       entrantAddress: capture.address,
@@ -365,6 +366,26 @@ export class SolvePoller {
       txHash: capture.txHash,
       blockNumber: toSqliteInteger(capture.blockNumber),
     });
+    if (!recorded) return false;
+
+    // The agent named the next challenge before the chain confirmed this one.
+    // Apply that pending guess once the score row makes the solve visible.
+    const pending = takePendingGuess(this.options.runId, capture.entrantId);
+    if (pending !== undefined) {
+      this.options.journal.append(this.options.runId, 'chain:flags', 'entrant.challenge', {
+        entrantId: capture.entrantId,
+        challengeId: pending.challengeId,
+        via: pending.via,
+        evidence: pending.evidence,
+      });
+      recordCurrentChallenge(
+        this.options.runId,
+        capture.entrantId,
+        pending.challengeId,
+        pending.via,
+      );
+    }
+    return true;
   }
 }
 

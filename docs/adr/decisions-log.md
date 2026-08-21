@@ -330,10 +330,10 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 
 **Status:** accepted (2026-08-20)
 
-**Decision:** a self-report can replace any current challenge. backend guesses only fill an empty or solved target. guesses carry `via: command` or `message`; self-reports carry `via: self`.
+**Decision:** a self-report can replace any current challenge. a command or message guess can replace an empty, solved, or guessed target, but never a live self-report. the latest refused guess is kept pending and takes over when the self-reported challenge is solved. guesses carry `via: command` or `message`; self-reports carry `via: self`. solved ids come from the scores table and are ignored during matching.
 
 **Why:** production journals showed a 60–95 second blank after a solve: the target stayed on the solved challenge, the agents narrated the switch in prose that nothing read, and the curl came a minute later. latest-wins guesses also flipped one entrant's target 32 times in one run.
 
-**Trade-off:** a stale self-report blocks guesses until that target is solved or the entrant reports a switch.
+**Trade-off:** a stale self-report blocks guesses until that target is solved or the entrant reports a switch. one pending guess per entrant adds short-lived tracker state, and a newer refused guess replaces the older one.
 
-**Consequence:** the tracker keeps each entrant's target and solved ids in memory. nothing invents a target: a blank after a solve lasts until the agent names the next challenge.
+**Consequence:** the tracker keeps each entrant's target and pending guess in memory, while the scores table owns solved ids. when the chain records a solve, the poller journals and applies the pending guess if it is still unsolved.

@@ -7,9 +7,10 @@ export interface ChallengeGuess {
 
 export type ChallengeVia = 'self' | 'command' | 'message';
 
-interface ChallengeTarget {
+interface Target {
   challengeId: number;
   via: ChallengeVia;
+  pendingGuess?: ChallengeGuess & { via: ChallengeVia };
 }
 
 // "Challenge5", "Challenge12.sol", "challenge 3" — the forms commands take when
@@ -69,56 +70,69 @@ export function matchChallengeInProse(
   ignore: ReadonlySet<number> = EMPTY,
 ): ChallengeGuess | undefined {
   let guess: ChallengeGuess | undefined;
-  for (const sentence of text.split(/(?<=[.!?\n])\s+/)) {
+  for (const sentence of text.slice(-2_000).split(/(?<=[.!?])\s+|\n+/)) {
     guess = matchChallenge(sentence, addressIndex, ignore) ?? guess;
   }
   return guess;
 }
 
-const targetByEntrant = new Map<string, ChallengeTarget>();
-const solvedByEntrant = new Map<string, Set<number>>();
+const targetByEntrant = new Map<string, Target>();
+let solvedLookup = (_runId: string, _entrantId: string): ReadonlySet<number> => EMPTY;
 
 function entrantKey(runId: string, entrantId: string): string {
   return `${runId}:${entrantId}`;
 }
 
-export function currentChallenge(runId: string, entrantId: string): number | undefined {
-  return targetByEntrant.get(entrantKey(runId, entrantId))?.challengeId;
+export function useSolvedLookup(
+  lookup: (runId: string, entrantId: string) => ReadonlySet<number>,
+): void {
+  solvedLookup = lookup;
 }
 
-// The agent's own report always wins. A guess may only fill a target that is
-// empty or already solved, so guesses stop flickering the value under a live
-// report. A self-report that names the current guess claims it without a new
-// journal row.
+export function solvedChallenges(runId: string, entrantId: string): ReadonlySet<number> {
+  return solvedLookup(runId, entrantId);
+}
+
+// The agent's report always wins. A guess may replace an empty, solved, or
+// guessed target, but never a live self-report. A refused guess is kept pending until
+// the self-reported challenge is solved.
 export function mayMove(
   runId: string,
   entrantId: string,
   challengeId: number,
   via: ChallengeVia,
 ): boolean {
-  const key = entrantKey(runId, entrantId);
-  const target = targetByEntrant.get(key);
-  if (target?.challengeId === challengeId) {
-    if (via === 'self' && target.via !== 'self') {
-      targetByEntrant.set(key, { challengeId, via });
-    }
-    return false;
-  }
+  const target = targetByEntrant.get(entrantKey(runId, entrantId));
+  if (target?.challengeId === challengeId && (via !== 'self' || target.via === 'self')) return false;
   if (via === 'self') return true;
-  return target === undefined || solvedByEntrant.get(key)?.has(target.challengeId) === true;
+  return target === undefined
+    || solvedChallenges(runId, entrantId).has(target.challengeId)
+    || target.via !== 'self';
 }
 
-export function solvedChallenges(runId: string, entrantId: string): ReadonlySet<number> {
-  return solvedByEntrant.get(entrantKey(runId, entrantId)) ?? EMPTY;
+export function savePendingGuess(
+  runId: string,
+  entrantId: string,
+  guess: ChallengeGuess,
+  via: ChallengeVia,
+): void {
+  const target = targetByEntrant.get(entrantKey(runId, entrantId));
+  // A guess naming the current target is a no-op, not a refusal: the solve tx
+  // for Challenge 11 must not overwrite the pending "starting 12".
+  if (target !== undefined && target.challengeId !== guess.challengeId) target.pendingGuess = { ...guess, via };
 }
 
-// A solved challenge is ignored by the matchers, and a target left on it
-// counts as empty, so the next guess may fill it.
-export function markSolved(runId: string, entrantId: string, challengeId: number): void {
-  const key = entrantKey(runId, entrantId);
-  const solved = solvedByEntrant.get(key) ?? new Set<number>();
-  solved.add(challengeId);
-  solvedByEntrant.set(key, solved);
+export function takePendingGuess(
+  runId: string,
+  entrantId: string,
+): (ChallengeGuess & { via: ChallengeVia }) | undefined {
+  const target = targetByEntrant.get(entrantKey(runId, entrantId));
+  if (target?.pendingGuess === undefined) return undefined;
+  const solved = solvedChallenges(runId, entrantId);
+  if (!solved.has(target.challengeId) || solved.has(target.pendingGuess.challengeId)) return undefined;
+  const pending = target.pendingGuess;
+  delete target.pendingGuess;
+  return pending;
 }
 
 // Callers journal first and record after, so an append that throws leaves the
@@ -133,7 +147,5 @@ export function recordCurrentChallenge(
 }
 
 export function dropCurrentChallenge(runId: string, entrantId: string): void {
-  const key = entrantKey(runId, entrantId);
-  targetByEntrant.delete(key);
-  solvedByEntrant.delete(key);
+  targetByEntrant.delete(entrantKey(runId, entrantId));
 }

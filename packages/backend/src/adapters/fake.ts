@@ -4,6 +4,7 @@ import { recordSolve } from '../chain/storage.js';
 import type { EntrantStatus, SteerDelivery } from '../contract.js';
 import { entrants } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
+import { dropCurrentChallenge } from '../ctf/challenge-tracker.js';
 import { costForTokens } from '../pricing.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
 
@@ -128,6 +129,7 @@ export class FakeDriver implements EntrantDriver {
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {
     // No generation left to match, so the script goes quiet for good.
     this.generations.delete(this.key(run.id, entrant.id));
+    dropCurrentChallenge(run.id, entrant.id);
     this.setStatus(run.id, entrant.id, 'done');
   }
 

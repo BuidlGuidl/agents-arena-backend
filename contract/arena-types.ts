@@ -51,8 +51,8 @@ export interface EntrantSummary {
   // USD across the turns that carried a cost; null when none did. Display only —
   // harnesses on a subscription login report tokens without a price.
   costUsd: number | null;
-  // The agent's announcement is authoritative. Backend guesses from commands
-  // and prose only fill an empty or already-solved value.
+  // The agent's report is authoritative. Guesses replace empty, solved, or guessed
+  // targets; a guess blocked by a live self-report stays pending until that solve.
   currentChallengeId: number | null;
 }
 
@@ -103,8 +103,8 @@ export type ArenaEvent =
   | (ArenaEventBase & { type: 'wallet.assigned'; payload: { entrantId: string; address: string } })
   | (ArenaEventBase & { type: 'funding.balance'; payload: { entrantId: string; address: string; wei: string; funded: boolean } })
   | (ArenaEventBase & { type: 'score.flag'; payload: { entrantId: string; challengeId: number; txHash: string; tokenId: string } })
-  // `via: 'self'` is authoritative. The other values label fill-only guesses
-  // from commands or prose.
+  // `via: 'self'` is authoritative. Command and prose guesses replace empty,
+  // solved, or guessed targets; a blocked guess stays pending until the solve.
   // Optional because rows journalled before the guesser existed carry neither;
   // every one of those was an announcement, so readers treat absence as 'self'.
   | (ArenaEventBase & { type: 'entrant.challenge'; payload: { entrantId: string; challengeId: number; via?: 'self' | 'command' | 'message'; evidence?: string } })

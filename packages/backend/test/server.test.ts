@@ -132,7 +132,7 @@ describe('agent self-announce', () => {
     }
   });
 
-  it('claims a matching guess without journalling it again', async () => {
+  it('journals a matching guess again when the agent self-reports it', async () => {
     const { server, runId, token } = await announceSetup();
     try {
       recordCurrentChallenge(runId, 'codex-1', 5, 'command');
@@ -143,8 +143,10 @@ describe('agent self-announce', () => {
         payload: { challengeId: 5 },
       });
       expect(repeat.statusCode).toBe(200);
-      expect(repeat.json()).toEqual({ ok: true, changed: false });
-      expect(progressEvents(server, runId)).toEqual([]);
+      expect(repeat.json()).toEqual({ ok: true, changed: true });
+      expect(progressEvents(server, runId).map((event) => event.payload)).toEqual([
+        { entrantId: 'codex-1', challengeId: 5, via: 'self', evidence: 'announced' },
+      ]);
     } finally {
       dropCurrentChallenge(runId, 'codex-1');
       revokeAgentToken(runId, 'codex-1');

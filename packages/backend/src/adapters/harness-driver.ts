@@ -15,6 +15,7 @@ import { activeChainProfile } from '../chain/profile.js';
 import {
   challengeAddressIndex,
   dropCurrentChallenge,
+  savePendingGuess,
   mayMove,
   matchChallenge,
   matchChallengeInProse,
@@ -615,7 +616,10 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     const entrantId = state.entrant.id;
     const guess = matcher(detail, state.addressIndex, solvedChallenges(runId, entrantId));
     if (guess === undefined) return;
-    if (!mayMove(runId, entrantId, guess.challengeId, via)) return;
+    if (!mayMove(runId, entrantId, guess.challengeId, via)) {
+      savePendingGuess(runId, entrantId, guess, via);
+      return;
+    }
     this.journal.append(runId, entrantId, 'entrant.challenge', {
       entrantId,
       challengeId: guess.challengeId,

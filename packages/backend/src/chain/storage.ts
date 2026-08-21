@@ -1,7 +1,6 @@
 import { sql } from 'drizzle-orm';
 
 import type { ArenaDatabase } from '../db/index.js';
-import { markSolved } from '../ctf/challenge-tracker.js';
 import { scores } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
 
@@ -77,7 +76,7 @@ export function recordSolve(
   solve: SolveInput,
 ): boolean {
   ensureChainTables(database);
-  const recorded = database.transaction((transaction) => {
+  return database.transaction((transaction) => {
     const inserted = transaction
       .insert(scores)
       .values({
@@ -106,6 +105,4 @@ export function recordSolve(
     });
     return true;
   });
-  if (recorded) markSolved(solve.runId, solve.entrantId, solve.challengeId);
-  return recorded;
 }

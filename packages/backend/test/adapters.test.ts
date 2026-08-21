@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { and, eq } from 'drizzle-orm';
 import { privateKeyToAccount } from 'viem/accounts';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ClaudeDriver } from '../src/adapters/claude.js';
 import { CodexDriver } from '../src/adapters/codex.js';
@@ -15,7 +15,8 @@ import {
 import { DockerEntrantDriver } from '../src/adapters/docker.js';
 import {
   recordCurrentChallenge,
-  markSolved as recordTrackedSolve,
+  takePendingGuess,
+  useSolvedLookup,
 } from '../src/ctf/challenge-tracker.js';
 import {
   formatWatchdogDuration,
@@ -46,6 +47,7 @@ import type {
 } from '../src/runtime/container.js';
 
 const temporaryPaths: string[] = [];
+const trackedSolves = new Map<string, Set<number>>();
 type TestHarness = 'claude' | 'codex' | 'opencode';
 const testCredentials = {
   claude: 'test-oauth-token-claude-12345',
@@ -61,6 +63,19 @@ const testCodexAuth = JSON.stringify({
     nested: { refresh: testCredentials.codexRefresh },
   },
   short: 'ignored',
+});
+
+function trackedSolveKey(runId: string, entrantId: string): string {
+  return `${runId}:${entrantId}`;
+}
+
+function setTrackedSolves(runId: string, entrantId: string, ...challengeIds: number[]): void {
+  trackedSolves.set(trackedSolveKey(runId, entrantId), new Set(challengeIds));
+}
+
+beforeEach(() => {
+  trackedSolves.clear();
+  useSolvedLookup((runId, entrantId) => trackedSolves.get(trackedSolveKey(runId, entrantId)) ?? new Set());
 });
 
 afterEach(async () => {
@@ -980,7 +995,7 @@ describe('current challenge heuristic', () => {
       turn.push(commandLine('item_3', 'cat /challenges/contracts/Challenge3.sol'));
       await waitFor(() => context.journal.after(context.run.id, 0)
         .filter((event) => event.type === 'entrant.challenge').length === 1);
-      recordTrackedSolve(context.run.id, context.entrant.id, 3);
+      setTrackedSolves(context.run.id, context.entrant.id, 3);
       turn.push(commandLine('item_4', `cast call ${challenge5} "locked()"`));
       turn.finish(0);
 
@@ -1062,10 +1077,10 @@ describe('current challenge heuristic', () => {
     }
   });
 
-  it('guesses from the first unambiguous prose sentence', async () => {
+  it('guesses from the last unambiguous prose sentence', async () => {
     const context = await setup('codex');
     try {
-      recordTrackedSolve(context.run.id, context.entrant.id, 11);
+      setTrackedSolves(context.run.id, context.entrant.id, 11);
       await context.driver.start(context.run, context.entrant, 'opening');
       const turn = context.container.turns[0] as ControlledExecution;
       turn.push(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
@@ -1084,6 +1099,47 @@ describe('current challenge heuristic', () => {
       const guess = context.journal.after(context.run.id, 0)
         .find((event) => event.type === 'entrant.challenge');
       expect(guess?.payload).toMatchObject({ challengeId: 12, via: 'message' });
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('holds a prose guess until the self-reported challenge is solved', async () => {
+    const context = await setup('codex');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening');
+      context.journal.append(context.run.id, context.entrant.id, 'entrant.challenge', {
+        entrantId: context.entrant.id,
+        challengeId: 11,
+        via: 'self',
+        evidence: 'announced',
+      });
+      recordCurrentChallenge(context.run.id, context.entrant.id, 11, 'self');
+
+      const turn = context.container.turns[0] as ControlledExecution;
+      turn.push(JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }));
+      turn.push(JSON.stringify({
+        type: 'item.completed',
+        item: {
+          id: 'item_1',
+          type: 'agent_message',
+          text: "Challenge 11 is confirmed. I'm starting Challenge 12.",
+        },
+      }));
+      turn.finish(0);
+
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .some((event) => event.type === 'agent.message'));
+      expect(context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.challenge')).toHaveLength(1);
+
+      setTrackedSolves(context.run.id, context.entrant.id, 11);
+      expect(takePendingGuess(context.run.id, context.entrant.id)).toEqual({
+        challengeId: 12,
+        via: 'message',
+        evidence: 'Challenge 12',
+      });
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

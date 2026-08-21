@@ -492,6 +492,23 @@ describe('event history', () => {
     expect(empty.json()).toEqual({ error: 'Invalid types query value: empty CSV item' });
   });
 
+  it('accepts entrant.narration as a history type', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    const created = await server.manager.create({ preset: 'fake-duel' });
+    const line = server.journal.append(created.run.id, 'codex-1', 'entrant.narration', {
+      entrantId: 'codex-1', text: 'Testing challenge #3.', basedOnEventId: 1,
+    });
+
+    const response = await server.app.inject({
+      method: 'GET',
+      url: `/runs/${created.run.id}/events/history?types=entrant.narration`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect((response.json() as HistoryPage).events).toEqual([line]);
+  });
+
   it('names unknown history query parameters', async () => {
     const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);

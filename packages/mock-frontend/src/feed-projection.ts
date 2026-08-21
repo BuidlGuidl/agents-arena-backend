@@ -218,6 +218,8 @@ export function describeEvent(event: ArenaEvent): string {
       return event.payload.via === 'command'
         ? `now on challenge ${event.payload.challengeId} (guessed from ${event.payload.evidence ?? 'a command'})`
         : `now on challenge ${event.payload.challengeId} (announced)`;
+    case 'entrant.narration':
+      return `narrates: ${event.payload.text}`;
     case 'entrant.error':
       return `error: ${event.payload.message}`;
     case 'run.error':

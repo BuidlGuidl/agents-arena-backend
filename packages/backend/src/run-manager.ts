@@ -127,11 +127,18 @@ export type SolveWatch = (
   signal: AbortSignal,
 ) => void;
 
+export type NarrationWatch = (
+  run: RunRecord,
+  entrants: readonly EntrantRecord[],
+  signal: AbortSignal,
+) => void;
+
 export interface RunManagerOptions {
   prepareTimeoutMs?: number;
   fundingTimeoutMs?: number;
   operatorAddresses?: readonly string[];
   solveWatch?: SolveWatch;
+  narrationWatch?: NarrationWatch;
   promptBuilder?: OpeningPromptBuilder;
 }
 
@@ -150,6 +157,7 @@ interface SeedWaiter {
 const EMPTY_USAGE: EntrantUsage = { inputTokens: 0, outputTokens: 0, costUsd: null };
 
 const DEFAULT_PREPARE_TIMEOUT_MS = 300_000;
+const NARRATION_STOP_GRACE_MS = 45_000;
 const OPERATOR_STOP_REASON = 'stopped by operator before running';
 const ACTIVE_RUN_STATES: RunState[] = [
   'awaiting_signature',
@@ -163,6 +171,7 @@ const ACTIVE_RUN_STATES: RunState[] = [
 // The chain funding slice replaces this pass-through hook with the real gate.
 export const passThroughFundingGate: FundingGate = async () => {};
 export const passThroughSolveWatch: SolveWatch = () => {};
+export const passThroughNarrationWatch: NarrationWatch = () => {};
 
 // The prompt names the chain's RPC and says where the challenge briefing lives,
 // so it follows the same profile the funding gate resolves (ADR-0009).
@@ -176,10 +185,13 @@ export class RunManager {
   private readonly operatorStops = new Set<string>();
   private readonly teardownPromises = new Map<string, Promise<PromiseSettledResult<void>[]>>();
   private readonly solveWatchControllers = new Map<string, AbortController>();
+  private readonly narrationWatchControllers = new Map<string, AbortController>();
+  private readonly narrationStopTimers = new Map<string, NodeJS.Timeout>();
   private readonly prepareTimeoutMs: number;
   private readonly fundingTimeoutMs: number | undefined;
   private readonly operatorAddresses: ReadonlySet<string>;
   private readonly solveWatch: SolveWatch;
+  private readonly narrationWatch: NarrationWatch;
   private readonly promptBuilder: OpeningPromptBuilder;
 
   constructor(
@@ -192,6 +204,7 @@ export class RunManager {
     this.fundingTimeoutMs = options.fundingTimeoutMs ?? activeChainProfile.fundingTimeoutMs;
     this.operatorAddresses = new Set(normalizeOperatorAddresses(options.operatorAddresses ?? []));
     this.solveWatch = options.solveWatch ?? passThroughSolveWatch;
+    this.narrationWatch = options.narrationWatch ?? passThroughNarrationWatch;
     this.promptBuilder = options.promptBuilder ?? profilePromptBuilder;
     // snapshot() reads scores, which chainless presets never create otherwise.
     ensureChainTables(journal.database);
@@ -256,9 +269,11 @@ export class RunManager {
       const solvesByEntrant = this.solvesByEntrant(runId);
       const usageByEntrant = this.usageByEntrant(runId);
       const challengeByEntrant = this.challengeByEntrant(runId);
+      const narrationByEntrant = this.narrationByEntrant(runId);
       const entrantSummaries = this.entrants(runId).map<EntrantSummary>((entrant) => {
         const solves = solvesByEntrant.get(entrant.id) ?? [];
         const usage = usageByEntrant.get(entrant.id) ?? EMPTY_USAGE;
+        const narration = narrationByEntrant.get(entrant.id);
         return {
           id: entrant.id,
           harness: entrant.harness,
@@ -272,6 +287,7 @@ export class RunManager {
           outputTokens: usage.outputTokens,
           costUsd: usage.costUsd,
           currentChallengeId: challengeByEntrant.get(entrant.id) ?? null,
+          ...(narration === undefined ? {} : { narration }),
         };
       });
       const lastEvent = this.journal.database
@@ -528,6 +544,7 @@ export class RunManager {
       run = this.transition(runId, 'running');
       // Before the entrants start, so the first mint of the race is already covered.
       this.startSolveWatch(run, runEntrants);
+      this.startNarrationWatch(run, runEntrants);
       if (PRESETS[run.preset] === undefined) {
         throw new UnknownPresetError(`Unknown preset: ${run.preset}`);
       }
@@ -538,6 +555,7 @@ export class RunManager {
     } catch (error) {
       if (!controller.signal.aborted) controller.abort(asError(error));
       this.stopSolveWatch(runId);
+      this.stopNarrationWatch(runId);
       let current = this.requireRun(runId);
       if (!this.operatorStops.has(runId) && current.state !== 'failed' && current.state !== 'finished') {
         current = this.transition(runId, 'failed', errorMessage(error));
@@ -552,10 +570,12 @@ export class RunManager {
     if (!(
       ['awaiting_signature', 'preparing', 'awaiting_funding', 'ready', 'running'] as RunState[]
     ).includes(run.state)) {
+      this.stopNarrationWatch(runId);
       throw new InvalidTransitionError(`Cannot stop run ${runId} from ${run.state}`);
     }
 
     const runEntrants = this.entrants(runId);
+    let teardownResolved = false;
     this.operatorStops.add(runId);
     this.stopSolveWatch(runId);
     dropRunKeys(runId);
@@ -565,6 +585,7 @@ export class RunManager {
         this.startControllers.get(runId)?.abort(new Error(OPERATOR_STOP_REASON));
         run = this.transition(runId, 'stopping');
         const stopResults = await this.teardownEntrants(runId, run, runEntrants);
+        teardownResolved = true;
         const stopError = aggregateStopErrors(stopResults);
         if (stopError !== undefined) throw stopError;
         this.transition(runId, 'finished');
@@ -575,6 +596,7 @@ export class RunManager {
         this.startControllers.get(runId)?.abort(new Error(OPERATOR_STOP_REASON));
         run = this.transition(runId, 'failed', OPERATOR_STOP_REASON);
         const stopResults = await this.teardownEntrants(runId, run, runEntrants);
+        teardownResolved = true;
         const stopError = aggregateStopErrors(stopResults);
         if (stopError !== undefined) throw stopError;
         return this.snapshot(runId);
@@ -582,6 +604,7 @@ export class RunManager {
 
       run = this.transition(runId, 'stopping');
       const stopResults = await this.teardownEntrants(runId, run, runEntrants);
+      teardownResolved = true;
       const stopError = aggregateStopErrors(stopResults);
       if (stopError !== undefined) throw stopError;
       this.transition(runId, 'finished');
@@ -593,6 +616,7 @@ export class RunManager {
       }
       throw error;
     } finally {
+      if (teardownResolved) this.scheduleNarrationWatchStop(runId);
       this.operatorStops.delete(runId);
       this.clearTeardownWhenSafe(runId);
     }
@@ -709,6 +733,7 @@ export class RunManager {
   }
 
   failNonTerminalRuns(reason: string): number {
+    this.stopAllNarrationWatches();
     return this.journal.transaction(() => {
       const interrupted = this.journal.database
         .select({ id: runs.id })
@@ -748,6 +773,39 @@ export class RunManager {
   private stopSolveWatch(runId: string): void {
     this.solveWatchControllers.get(runId)?.abort();
     this.solveWatchControllers.delete(runId);
+  }
+
+  private startNarrationWatch(run: RunRecord, runEntrants: readonly EntrantRecord[]): void {
+    this.stopNarrationWatch(run.id);
+    const controller = new AbortController();
+    this.narrationWatchControllers.set(run.id, controller);
+    this.narrationWatch(run, runEntrants, controller.signal);
+  }
+
+  private stopNarrationWatch(runId: string): void {
+    const timer = this.narrationStopTimers.get(runId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.narrationStopTimers.delete(runId);
+    this.narrationWatchControllers.get(runId)?.abort();
+    this.narrationWatchControllers.delete(runId);
+  }
+
+  private scheduleNarrationWatchStop(runId: string): void {
+    const controller = this.narrationWatchControllers.get(runId);
+    if (controller === undefined || controller.signal.aborted) return;
+    const existing = this.narrationStopTimers.get(runId);
+    if (existing !== undefined) clearTimeout(existing);
+    const timer = setTimeout(() => this.stopNarrationWatch(runId), NARRATION_STOP_GRACE_MS);
+    timer.unref();
+    this.narrationStopTimers.set(runId, timer);
+  }
+
+  private stopAllNarrationWatches(): void {
+    const runIds = new Set([
+      ...this.narrationWatchControllers.keys(),
+      ...this.narrationStopTimers.keys(),
+    ]);
+    for (const runId of runIds) this.stopNarrationWatch(runId);
   }
 
   private clearTeardownWhenSafe(runId: string): void {
@@ -858,6 +916,29 @@ export class RunManager {
       .all();
 
     return new Map(rows.map((row) => [row.entrantId, row.challengeId]));
+  }
+
+  private narrationByEntrant(
+    runId: string,
+  ): Map<string, { text: string; ts: string; basedOnEventId: number }> {
+    const entrantId = sql<string>`json_extract(${events.payloadJson}, '$.entrantId')`;
+    const rows = this.journal.database
+      .select({
+        entrantId,
+        text: sql<string>`json_extract(${events.payloadJson}, '$.text')`,
+        ts: events.ts,
+        basedOnEventId: sql<number>`json_extract(${events.payloadJson}, '$.basedOnEventId')`,
+      })
+      .from(events)
+      .where(and(eq(events.runId, runId), eq(events.type, 'entrant.narration')))
+      .orderBy(asc(events.id))
+      .all();
+
+    return new Map(rows.map((row) => [row.entrantId, {
+      text: row.text,
+      ts: row.ts,
+      basedOnEventId: row.basedOnEventId,
+    }]));
   }
 
   private entrants(runId: string): EntrantRecord[] {

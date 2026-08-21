@@ -32,6 +32,12 @@ import { EntrantUnavailableError, type EntrantDriver } from './adapters/types.js
 import { eventTypes } from './db/schema.js';
 import { capEvent, EventJournal } from './journal.js';
 import {
+  DEFAULT_NARRATION_MAX_MS,
+  DEFAULT_NARRATION_MIN_MS,
+} from './config.js';
+import type { Narrate } from './narration/openrouter.js';
+import { createNarrationWatch } from './narration/watch.js';
+import {
   ActiveRunConflictError,
   type FundingGate,
   EntrantNotFoundError,
@@ -132,6 +138,10 @@ export interface ServerOptions {
   driverFactory?: (journal: EventJournal) => EntrantDriver;
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
   solveWatchFactory?: (journal: EventJournal) => SolveWatch;
+  narrate?: Narrate;
+  narrationMinMs?: number;
+  narrationMaxMs?: number;
+  narrationChallengeTitles?: Readonly<Record<number, string>>;
   corsOrigins?: readonly string[];
   logger?: boolean;
 }
@@ -161,6 +171,18 @@ export function createServer(options: ServerOptions): ArenaServer {
     ...(options.solveWatchFactory === undefined
       ? {}
       : { solveWatch: options.solveWatchFactory(journal) }),
+    ...(options.narrate === undefined
+      ? {}
+      : {
+        narrationWatch: createNarrationWatch({
+          journal,
+          narrate: options.narrate,
+          minMs: options.narrationMinMs ?? DEFAULT_NARRATION_MIN_MS,
+          maxMs: options.narrationMaxMs ?? DEFAULT_NARRATION_MAX_MS,
+          challengeTitles: options.narrationChallengeTitles ?? fallbackChallengeTitles(),
+          logger: app.log,
+        }),
+      }),
   };
   const manager = new RunManager(
     journal,
@@ -467,6 +489,12 @@ export function createServer(options: ServerOptions): ArenaServer {
   });
 
   return { app, journal, manager };
+}
+
+function fallbackChallengeTitles(): Readonly<Record<number, string>> {
+  return Object.fromEntries(
+    Array.from({ length: 12 }, (_, index) => [index + 1, `Challenge ${index + 1}`]),
+  );
 }
 
 /**

@@ -4,7 +4,13 @@ import Docker from 'dockerode';
 import { createFundingGate, runLocalDevFaucet } from './chain/funding-gate.js';
 import { activeChainProfile } from './chain/profile.js';
 import { createSolveWatch } from './chain/solve-poller.js';
-import { resolveListenHost } from './config.js';
+import {
+  InvalidNarrationConfigError,
+  resolveListenHost,
+  resolveNarrationConfig,
+} from './config.js';
+import { loadChallengeMaterial } from './ctf/pack.js';
+import { createOpenRouterNarrator } from './narration/openrouter.js';
 import { removeArenaResources } from './runtime/reconcile.js';
 import { createServer } from './server.js';
 import { localAutoSignEnabled, type FundingGate } from './run-manager.js';
@@ -42,11 +48,20 @@ if (!localAutoSignEnabled() && operatorAddresses.length === 0) {
 
 const { app, manager } = ((): ReturnType<typeof createServer> => {
   try {
+    const narration = resolveNarrationConfig();
     return createServer({
       operatorToken,
       siwe,
       corsOrigins,
       logger: true,
+      ...(narration.enabled && narration.apiKey !== undefined
+        ? {
+          narrate: createOpenRouterNarrator({ apiKey: narration.apiKey, model: narration.model }),
+          narrationMinMs: narration.minMs,
+          narrationMaxMs: narration.maxMs,
+          narrationChallengeTitles: narrationTitles(),
+        }
+        : {}),
       fundingGateFactory: (journal) => {
         const fundingGate = createFundingGate(journal);
         if (activeChainProfile.name !== 'local' || !localFaucetEnabled) {
@@ -74,9 +89,33 @@ const { app, manager } = ((): ReturnType<typeof createServer> => {
       );
       process.exit(1);
     }
+    if (error instanceof InvalidNarrationConfigError) {
+      console.error(`Narration config is invalid: ${error.message}`);
+      process.exit(1);
+    }
     throw error;
   }
 })();
+
+function narrationTitles(): Readonly<Record<number, string>> {
+  const aiCtfRepo = process.env.AI_CTF_REPO?.trim();
+  if (aiCtfRepo !== undefined && aiCtfRepo.length > 0) {
+    try {
+      return loadChallengeMaterial(aiCtfRepo).titles;
+    } catch (error) {
+      console.warn(
+        `[narration] Failed to load challenge titles from AI_CTF_REPO: ${describe(error)}. Falling back to numbered titles.`,
+      );
+    }
+  }
+  return Object.fromEntries(
+    Array.from({ length: 12 }, (_, index) => [index + 1, `Challenge ${index + 1}`]),
+  );
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 // The request timeout keeps a wedged daemon from hanging boot or eating the
 // shutdown grace budget; this client only serves reconciliation.

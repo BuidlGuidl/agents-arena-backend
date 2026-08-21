@@ -143,7 +143,7 @@ Returns `{"run": RunSnapshot}` — every run endpoint (create, get, start, seed,
 Each entrant carries its confirmed solves in journal order, and `flags` equals `solves.length`, so a reload can repaint the board without replaying events.
 
 ```json
-{"id":"codex-1","harness":"codex","model":"...","address":"0x...","status":"working","flags":2,"solves":[{"challengeId":3,"ts":"...","txHash":"0x..."},{"challengeId":7,"ts":"...","txHash":"0x..."}],"inputTokens":36126,"outputTokens":126,"costUsd":0.046418,"currentChallengeId":5}
+{"id":"codex-1","harness":"codex","model":"...","address":"0x...","status":"working","flags":2,"solves":[{"challengeId":3,"ts":"...","txHash":"0x..."},{"challengeId":7,"ts":"...","txHash":"0x..."}],"inputTokens":36126,"outputTokens":126,"costUsd":0.046418,"currentChallengeId":5,"narration":{"text":"The entrant is testing challenge #5.","ts":"...","basedOnEventId":42}}
 ```
 
 `inputTokens` and `outputTokens` total every `usage` event for that entrant, and `costUsd` totals the priced ones. Both survive a reload, and a client that folds live `usage` events into its own copy reaches the same numbers.
@@ -159,6 +159,11 @@ Each `usage` event counts only the work it covers, never a running total, and `i
 `currentChallengeId` has two sources, and the latest one wins. The agent can announce the challenge it works on through `POST /agent/progress` (journalled as `entrant.challenge` with `via: "self"`), and the backend also guesses from its commands: when one references exactly one challenge — by name (`Challenge5.sol`) or by a deployed address the pack knows — that becomes the current challenge (`via: "command"`). Each change journals an `entrant.challenge` event whose `evidence` says where it came from; the snapshot field carries the latest value so a reload lands where the feed already was. `null` until either source names one. Both sources dedupe against the same current value, so one moving it lets the other move it back. Events journalled before the guesser existed carry neither `via` nor `evidence` — every one of those was an announcement, and readers treat absence as `via: "self"`. Commands that reference several challenges (a grep across all sources, reading the briefing) are ignored as ambiguous, and a mint against NFTFlags moves nothing — solved is not the same as next.
 
 The command heuristic stays on even though agents can self-report: an agent forgets to announce, or announces and moves on, and its commands keep telling the truth either way. Neither source is authoritative — both are labelled, and the UI shows the freshest.
+
+`narration` is absent until the backend writes an `entrant.narration` event. The
+latest row wins. Its `basedOnEventId` is the highest journal row used for that
+line, and `ts` is the narration event time. Narration model calls never add to
+entrant `usage` totals.
 
 ### `POST /agent/progress`
 
@@ -313,6 +318,23 @@ data: {"id":12,"runId":"...","source":"codex-1","seq":2,"ts":"...","type":"agent
 Send `Last-Event-ID: 12` or `?after=12` to replay later events before live delivery. If both values exist, the service uses the larger value. The server subscribes before replay and removes duplicate IDs. A heartbeat comment arrives every 15 seconds.
 
 Event IDs increase across all runs. Per-source `seq` values increase within each `(runId, source)` pair.
+
+| Event type | Payload |
+| --- | --- |
+| `run.state` | `{state, reason?}` |
+| `entrant.status` | `{entrantId, status}` |
+| `agent.message`, `agent.reasoning` | `{entrantId, text}` |
+| `tool.call`, `tool.result` | Tool name, call ID, detail, and result fields |
+| `entrant.steered`, `entrant.prompt` | `{entrantId, text}` |
+| `entrant.restarted` | `{entrantId}` |
+| `entrant.nudged` | `{entrantId, text, flags}` |
+| `director.broadcast` | `{text, targetEntrantIds}` |
+| `wallet.assigned`, `funding.balance` | Entrant wallet and balance fields |
+| `score.flag` | `{entrantId, challengeId, txHash, tokenId}` |
+| `entrant.challenge` | `{entrantId, challengeId, via?, evidence?}` |
+| `entrant.narration` | `{entrantId, text, basedOnEventId}` |
+| `entrant.error`, `run.error` | Entrant or run error fields |
+| `usage` | Entrant token and cost fields |
 
 The journal retains payloads in full. Payload strings are capped at 4,000 characters when delivered over the SSE stream or history read. The event envelope's `truncated` keys are dotted paths to capped fields and record each original length and line count.
 

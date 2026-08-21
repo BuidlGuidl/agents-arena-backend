@@ -55,6 +55,9 @@ export interface EntrantSummary {
   // backend's guess from its commands — see entrant.challenge. Null until
   // either source names one.
   currentChallengeId: number | null;
+  // The latest model-written account of this entrant's activity. basedOnEventId
+  // is the journal cursor the line used, so clients can audit its source window.
+  narration?: { text: string; ts: string; basedOnEventId: number };
 }
 
 export interface RunSnapshot {
@@ -113,6 +116,9 @@ export type ArenaEvent =
   // Optional because rows journalled before the guesser existed carry neither;
   // every one of those was an announcement, so readers treat absence as 'self'.
   | (ArenaEventBase & { type: 'entrant.challenge'; payload: { entrantId: string; challengeId: number; via?: 'self' | 'command'; evidence?: string } })
+  // A backend model's short account of one entrant's activity. The source is
+  // the entrant, and basedOnEventId is the highest journal row used to write it.
+  | (ArenaEventBase & { type: 'entrant.narration'; payload: { entrantId: string; text: string; basedOnEventId: number } })
   | (ArenaEventBase & { type: 'entrant.error'; payload: { entrantId: string; message: string } })
   | (ArenaEventBase & { type: 'run.error'; payload: { message: string } })
   // Tokens count only what this event covers — codex emits one per turn, opencode

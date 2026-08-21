@@ -1,14 +1,16 @@
 import { and, eq, sql } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { privateKeyToAccount } from 'viem/accounts';
 
 import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
+import { FakeDriver } from '../src/adapters/fake.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import { activeChainProfile } from '../src/chain/profile.js';
 import { recordSolve } from '../src/chain/storage.js';
 import { getWallet, seedTypedData } from '../src/chain/wallet.js';
 import { entrants } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
+import { createNarrationWatch } from '../src/narration/watch.js';
 import {
   EntrantNotFoundError,
   InvalidTransitionError,
@@ -360,6 +362,29 @@ describe('RunManager snapshot current challenge', () => {
       expect(codex?.currentChallengeId).toBe(11);
       // No guess yet: null, so a lane shows nothing rather than a challenge #0.
       expect(opencode?.currentChallengeId).toBeNull();
+    } finally {
+      journal.close();
+    }
+  });
+});
+
+describe('RunManager snapshot narration', () => {
+  it('carries the latest narration per entrant with its event time and cursor', async () => {
+    const { journal, manager, runId } = await createManager();
+    try {
+      journal.append(runId, 'codex-1', 'entrant.narration', {
+        entrantId: 'codex-1', text: 'First line.', basedOnEventId: 4,
+      });
+      const latest = journal.append(runId, 'codex-1', 'entrant.narration', {
+        entrantId: 'codex-1', text: 'Latest line.', basedOnEventId: 8,
+      });
+
+      const snapshot = manager.snapshot(runId);
+      expect(snapshot.entrants.find((entrant) => entrant.id === 'codex-1')?.narration).toEqual({
+        text: 'Latest line.', ts: latest.ts, basedOnEventId: 8,
+      });
+      expect(snapshot.entrants.find((entrant) => entrant.id === 'opencode-1')?.narration)
+        .toBeUndefined();
     } finally {
       journal.close();
     }
@@ -767,6 +792,90 @@ describe('RunManager ready barrier', () => {
 });
 
 describe('RunManager lifecycle cancellation', () => {
+  it('lets each fake entrant write one closing narration before the grace abort', async () => {
+    vi.useFakeTimers();
+    const journal = new EventJournal(':memory:');
+    const narrate = vi.fn(async (input: { prompt: string }) =>
+      input.prompt.includes('Status: done') ? 'The entrant has stopped.' : 'The entrant is working.');
+    const driver = new FakeDriver(journal, () => {});
+    const manager = new RunManager(journal, driver, undefined, {
+      narrationWatch: createNarrationWatch({
+        journal,
+        narrate,
+        challengeTitles: {},
+        minMs: 10_000,
+        maxMs: 90_000,
+      }),
+    });
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      await manager.start(run.id);
+      await vi.advanceTimersByTimeAsync(0);
+
+      await manager.stop(run.id);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const events = journal.after(run.id, 0);
+      for (const entrantId of ['codex-1', 'opencode-1']) {
+        const done = [...events].reverse().find((event) =>
+          event.type === 'entrant.status'
+          && event.source === entrantId
+          && event.payload.status === 'done');
+        expect(done).toBeDefined();
+        const closing = events.filter((event) =>
+          event.type === 'entrant.narration'
+          && event.source === entrantId
+          && event.payload.basedOnEventId >= done!.id);
+        expect(closing).toHaveLength(1);
+      }
+
+      const narrationIds = events
+        .filter((event) => event.type === 'entrant.narration')
+        .map((event) => event.id);
+      await vi.advanceTimersByTimeAsync(45_000);
+      journal.append(run.id, 'codex-1', 'agent.message', {
+        entrantId: 'codex-1',
+        text: 'too late',
+      });
+      await vi.advanceTimersByTimeAsync(90_000);
+      expect(journal.after(run.id, 0)
+        .filter((event) => event.type === 'entrant.narration')
+        .map((event) => event.id)).toEqual(narrationIds);
+    } finally {
+      journal.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears a pending narration grace timer on a second stop', async () => {
+    vi.useFakeTimers();
+    const journal = new EventJournal(':memory:');
+    const driver = new FakeDriver(journal, () => {});
+    const manager = new RunManager(journal, driver, undefined, {
+      narrationWatch: createNarrationWatch({
+        journal,
+        narrate: async () => 'Line.',
+        challengeTitles: {},
+        minMs: 10_000,
+        maxMs: 90_000,
+      }),
+    });
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      await manager.start(run.id);
+      await vi.advanceTimersByTimeAsync(0);
+      await manager.stop(run.id);
+      expect(vi.getTimerCount()).toBe(1);
+
+      await expect(manager.stop(run.id)).rejects.toBeInstanceOf(InvalidTransitionError);
+
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      journal.close();
+      vi.useRealTimers();
+    }
+  });
+
   it('drops derived keys when a running run stops', async () => {
     const journal = new EventJournal(':memory:');
     const manager = new RunManager(journal, noopDriver);

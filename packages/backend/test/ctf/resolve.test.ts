@@ -33,6 +33,7 @@ const localProfile: ChainProfile = {
 
 const fixturePack: ChallengePack = {
   dir: '/tmp/challenge-pack',
+  titles: { 1: 'Fixture Challenge 1' },
   addresses: {
     NFTFlags: nftFlags,
     Challenge1: challenge1,

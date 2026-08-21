@@ -56,6 +56,8 @@ describe('assembleChallengePack', () => {
       MockIdentityRegistry: getAddress('0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6'),
       NFTFlags: getAddress('0x8A791620dd6260079BF849Dc5567aDC3F2FdC318'),
     });
+    expect(pack.titles[1]).toBe('Fixture Challenge 1');
+    expect(pack.titles[12]).toBe('Fixture Challenge 12');
 
     const briefing = readFileSync(join(outDir, 'BRIEFING.md'), 'utf8');
     const rows = briefing
@@ -78,6 +80,16 @@ describe('assembleChallengePack', () => {
       'MockIdentityRegistry',
       'NFTFlags',
     ]);
+  });
+
+  it('falls back when a challenge heading is missing', () => {
+    const challengePath = join(aiCtfRepo, 'packages', 'nextjs', 'data', 'challenges', '2.md');
+    writeFileSync(challengePath, 'No title here.\n');
+
+    const pack = assembleChallengePack({ aiCtfRepo, outDir });
+
+    expect(pack.titles[1]).toBe('Fixture Challenge 1');
+    expect(pack.titles[2]).toBe('Challenge 2');
   });
 
   // Asserted against a literal, not against the expression the implementation

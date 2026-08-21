@@ -14,10 +14,13 @@ import { revokeAgentToken } from '../agent-auth.js';
 import { activeChainProfile } from '../chain/profile.js';
 import {
   challengeAddressIndex,
-  currentChallenge,
   dropCurrentChallenge,
+  savePendingGuess,
+  mayMove,
   matchChallenge,
+  matchChallengeInProse,
   recordCurrentChallenge,
+  solvedChallenges,
 } from '../ctf/challenge-tracker.js';
 import type { ChallengePackAccess, ChallengePackResolver } from '../ctf/resolve.js';
 import { EntrantUnavailableError, type EntrantDriver, type EntrantRecord, type RunRecord } from './types.js';
@@ -567,11 +570,14 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     const runId = state.run.id;
     const entrantId = state.entrant.id;
     switch (event.type) {
-      case 'agent.message': this.journal.append(runId, entrantId, event.type, event.payload); break;
+      case 'agent.message':
+        this.journal.append(runId, entrantId, event.type, event.payload);
+        this.trackProgress(state, event.payload.text, 'message', matchChallengeInProse);
+        break;
       case 'agent.reasoning': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'tool.call':
         this.journal.append(runId, entrantId, event.type, event.payload);
-        this.trackProgress(state, event.payload.detail);
+        this.trackProgress(state, event.payload.detail, 'command', matchChallenge);
         break;
       case 'tool.result': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'entrant.error': this.journal.append(runId, entrantId, event.type, event.payload); break;
@@ -597,24 +603,30 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     }
   }
 
-  // The heuristic behind entrant.challenge: a command that references exactly one
-  // challenge moves the entrant's current-challenge guess (see contract notes).
-  private trackProgress(state: EntrantRuntimeState, detail: string): void {
+  // The guess behind entrant.challenge: a command or sentence that names exactly
+  // one unsolved challenge. The tracker decides whether a guess may move it.
+  private trackProgress(
+    state: EntrantRuntimeState,
+    detail: string,
+    via: 'command' | 'message',
+    matcher: typeof matchChallenge,
+  ): void {
     state.addressIndex ??= challengeAddressIndex(this.challengeAddresses?.(state.run.id) ?? {});
-    const guess = matchChallenge(detail, state.addressIndex);
-    if (guess === undefined) return;
     const runId = state.run.id;
     const entrantId = state.entrant.id;
-    // Deduped against the shared current, not a tracker-private last, so an
-    // announcement moving the value lets the next command move it back.
-    if (currentChallenge(runId, entrantId) === guess.challengeId) return;
+    const guess = matcher(detail, state.addressIndex, solvedChallenges(runId, entrantId));
+    if (guess === undefined) return;
+    if (!mayMove(runId, entrantId, guess.challengeId, via)) {
+      savePendingGuess(runId, entrantId, guess, via);
+      return;
+    }
     this.journal.append(runId, entrantId, 'entrant.challenge', {
       entrantId,
       challengeId: guess.challengeId,
-      via: 'command',
+      via,
       evidence: guess.evidence,
     });
-    recordCurrentChallenge(runId, entrantId, guess.challengeId);
+    recordCurrentChallenge(runId, entrantId, guess.challengeId, via);
   }
 
   private appendError(state: EntrantRuntimeState, message: string): void {

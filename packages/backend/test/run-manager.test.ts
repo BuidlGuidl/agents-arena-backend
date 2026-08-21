@@ -236,6 +236,10 @@ describe('RunManager snapshot solves', () => {
 
       const flagEvents = journal.after(runId, 0).filter((event) => event.type === 'score.flag');
       expect(flagEvents).toHaveLength(3);
+      const advances = journal.after(runId, 0)
+        .filter((event) => event.type === 'entrant.challenge')
+        .map((event) => event.payload);
+      expect(advances).toEqual([]);
 
       const { entrants } = manager.snapshot(runId);
       const codex = entrants.find((entrant) => entrant.id === 'codex-1');

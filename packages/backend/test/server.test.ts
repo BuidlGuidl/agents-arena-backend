@@ -132,12 +132,10 @@ describe('agent self-announce', () => {
     }
   });
 
-  it('dedupes against the command heuristic, not its own last value', async () => {
+  it('journals a matching guess again when the agent self-reports it', async () => {
     const { server, runId, token } = await announceSetup();
     try {
-      // The heuristic already moved the shared current to 5; the agent
-      // announcing 5 now adds nothing.
-      recordCurrentChallenge(runId, 'codex-1', 5);
+      recordCurrentChallenge(runId, 'codex-1', 5, 'command');
       const repeat = await server.app.inject({
         method: 'POST',
         url: '/agent/progress',
@@ -145,8 +143,10 @@ describe('agent self-announce', () => {
         payload: { challengeId: 5 },
       });
       expect(repeat.statusCode).toBe(200);
-      expect(repeat.json()).toEqual({ ok: true, changed: false });
-      expect(progressEvents(server, runId)).toEqual([]);
+      expect(repeat.json()).toEqual({ ok: true, changed: true });
+      expect(progressEvents(server, runId).map((event) => event.payload)).toEqual([
+        { entrantId: 'codex-1', challengeId: 5, via: 'self', evidence: 'announced' },
+      ]);
     } finally {
       dropCurrentChallenge(runId, 'codex-1');
       revokeAgentToken(runId, 'codex-1');

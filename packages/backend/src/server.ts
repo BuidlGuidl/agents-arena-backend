@@ -1,4 +1,5 @@
 import fastifyCors from '@fastify/cors';
+import { and, eq } from 'drizzle-orm';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Hex } from 'viem';
 import { z } from 'zod';
@@ -18,7 +19,7 @@ import {
 } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import { resolveAgentToken } from './agent-auth.js';
-import { currentChallenge, recordCurrentChallenge } from './ctf/challenge-tracker.js';
+import { mayMove, recordCurrentChallenge, useSolvedLookup } from './ctf/challenge-tracker.js';
 import {
   bearerToken,
   isSecureRequest,
@@ -29,7 +30,7 @@ import {
 import { SiweLogin, type SiweLoginOptions } from './siwe.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
 import { EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
-import { eventTypes } from './db/schema.js';
+import { eventTypes, scores } from './db/schema.js';
 import { capEvent, EventJournal } from './journal.js';
 import {
   ActiveRunConflictError,
@@ -155,6 +156,12 @@ export function createServer(options: ServerOptions): ArenaServer {
   const login = new SiweLogin(options.siwe ?? { operatorAddresses: [] });
   app.addHook('onRequest', operatorAuth({ token: options.operatorToken, login }));
   const journal = new EventJournal(options.dbPath);
+  useSolvedLookup((runId, entrantId) => new Set(journal.database
+    .select({ challengeId: scores.challengeId })
+    .from(scores)
+    .where(and(eq(scores.runId, runId), eq(scores.entrantId, entrantId)))
+    .all()
+    .map((row) => row.challengeId)));
   const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(journal, options.schedule);
   const runManagerOptions: RunManagerOptions = {
     operatorAddresses: options.siwe?.operatorAddresses ?? [],
@@ -345,8 +352,7 @@ export function createServer(options: ServerOptions): ArenaServer {
 
   // The agent-facing channel: authenticated by the per-entrant token the driver
   // injects as ARENA_AGENT_TOKEN, never by the operator credential. The agent's
-  // announcement of the challenge it works on journals as entrant.challenge with
-  // via 'self'; the command heuristic keeps feeding via 'command', latest wins.
+  // announcement of the challenge it works on journals as entrant.challenge.
   app.post('/agent/progress', async (request, reply) => {
     const token = bearerToken(request.headers.authorization);
     const identity = token === undefined ? undefined : resolveAgentToken(token);
@@ -362,9 +368,7 @@ export function createServer(options: ServerOptions): ArenaServer {
     }
 
     const { challengeId } = body.data;
-    // Deduped against the same current the command heuristic reads and moves,
-    // so the two sources cannot disagree about what is already announced.
-    if (currentChallenge(identity.runId, identity.entrantId) === challengeId) {
+    if (!mayMove(identity.runId, identity.entrantId, challengeId, 'self')) {
       return { ok: true, changed: false };
     }
     const now = Date.now();
@@ -382,7 +386,7 @@ export function createServer(options: ServerOptions): ArenaServer {
       via: 'self',
       evidence: 'announced',
     });
-    recordCurrentChallenge(identity.runId, identity.entrantId, challengeId);
+    recordCurrentChallenge(identity.runId, identity.entrantId, challengeId, 'self');
     identity.lastAnnouncedAtMs = now;
     return { ok: true, changed: true };
   });

@@ -136,7 +136,7 @@ describe('CodexEventParser', () => {
       item: {
         id: 'item-file-1',
         type: 'file_change',
-        path: 'packages/backend/src/example.ts',
+        changes: [{ path: 'src/Challenge12Solver.sol', kind: 'add' }, { path: 'foundry.toml', kind: 'update' }],
         status: 'in_progress',
       },
     }));
@@ -145,7 +145,7 @@ describe('CodexEventParser', () => {
       item: {
         id: 'item-file-1',
         type: 'file_change',
-        path: 'packages/backend/src/example.ts',
+        changes: [{ path: 'src/Challenge12Solver.sol', kind: 'add' }, { path: 'foundry.toml', kind: 'update' }],
         status: 'completed',
       },
     }));
@@ -156,7 +156,7 @@ describe('CodexEventParser', () => {
         entrantId: 'codex-1',
         tool: 'file_change',
         toolCallId: 'item-file-1',
-        detail: 'packages/backend/src/example.ts',
+        detail: 'src/Challenge12Solver.sol foundry.toml',
       },
     }]);
     expect(completed.events).toEqual([{
@@ -166,7 +166,7 @@ describe('CodexEventParser', () => {
         tool: 'file_change',
         toolCallId: 'item-file-1',
         ok: true,
-        detail: 'packages/backend/src/example.ts',
+        detail: 'src/Challenge12Solver.sol foundry.toml',
       },
     }]);
     const startedEvent = started.events[0];

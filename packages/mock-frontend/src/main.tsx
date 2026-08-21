@@ -805,7 +805,7 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
           <span
             className="stat"
             data-testid={`lane-current-${entrant.id}`}
-            title="announced by the agent, or guessed from its commands"
+            title="announced by the agent, or guessed from its commands and messages"
           >
             now <b>#{entrant.currentChallengeId}</b>
           </span>

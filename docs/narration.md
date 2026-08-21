@@ -11,8 +11,8 @@ challenge, never *what* the agent is doing about it.
 ## the shape
 
 A backend-side watcher reads each running entrant's events from the journal and asks a
-cheap model (Haiku by default, over OpenRouter, through the Vercel AI SDK) for 2–3
-plain sentences in the present tense. The result is journaled as a new event,
+cheap model (Haiku by default, over OpenRouter, through the Vercel AI SDK) for one or two
+short present-tense sentences, 30 words at most. The result is journaled as a new event,
 `entrant.narration`, under the entrant's own source. The snapshot exposes the latest line
 per entrant as `EntrantSummary.narration`. Nothing touches the harness driver, the
 parsers, or the `EntrantStatus` enum (ADR-0011 stands: lifecycle in the enum, activity
@@ -53,8 +53,10 @@ opencode lane mid-command produces nothing; the max bound is what keeps it alive
 ## what the model sees
 
 System prompt: the arena in two sentences, the 12 challenge names from the challenge
-pack, the output rules (2–3 sentences, present tense, name the challenge number when
-known, never guess at a solve, say "waiting" when nothing changed).
+pack, the output rules (one or two sentences, 30 words max, lead with the action, no
+hedges, don't repeat the name/elapsed/status, name the challenge number when known, never
+guess at a solve, one sentence on what it is waiting on when nothing changed). The client
+caps output at 80 tokens and keeps the first two sentences as a backstop.
 
 User turn, built from the journal (full payloads, not the 4000-char wire cap):
 

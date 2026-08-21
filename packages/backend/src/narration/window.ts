@@ -226,8 +226,11 @@ function systemPrompt(titles: Readonly<Record<number, string>>): string {
     'Challenges:',
     challenges,
     '',
-    'Write 2–3 plain sentences in the present tense. Name the challenge number when known.',
-    'Never claim a solve unless the solved flags say so. If no events changed, say that the entrant is waiting.',
+    'Write one or two short sentences, 30 words at most, present tense, like a sports caption.',
+    'Lead with the action: "Deploying a solver for #8 after two reverts." Name the challenge number when known.',
+    'Do not repeat the entrant\'s name, the elapsed time, or the status. Do not speculate about what it',
+    'might be doing; if nothing changed, write one sentence: what it is waiting on and for how long.',
+    'No hedges ("appears", "seems", "suggesting"). Never claim a solve unless the solved flags list it.',
     'Return only the narration text.',
   ].join('\n');
 }

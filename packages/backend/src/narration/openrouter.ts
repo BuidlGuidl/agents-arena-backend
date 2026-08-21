@@ -19,11 +19,18 @@ export function createOpenRouterNarrator(options: OpenRouterNarratorOptions): Na
       model,
       system: input.system,
       prompt: input.prompt,
-      maxOutputTokens: 240,
+      maxOutputTokens: 80,
       abortSignal: signal,
     });
-    const text = result.text.trim();
+    const text = firstSentences(result.text.trim(), 2);
     if (text.length === 0) throw new Error('OpenRouter returned empty narration text');
     return text;
   };
+}
+
+// The prompt asks for at most two sentences; this is the backstop when the model runs long.
+export function firstSentences(text: string, count: number): string {
+  const parts = text.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g);
+  if (parts === null) return text;
+  return parts.slice(0, count).join('').trim();
 }

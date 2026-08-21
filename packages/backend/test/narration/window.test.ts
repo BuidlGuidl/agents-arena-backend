@@ -317,6 +317,10 @@ describe('firstSentences', () => {
     expect(firstSentences('Holds the #1 flag. Running forge tests. Now idle. More.', 2))
       .toBe('Holds the #1 flag. Running forge tests.');
   });
+  it('does not split on a period inside a filename', () => {
+    expect(firstSentences('Reading Challenge12.sol to understand the setup. Examining deploy.ts next. Then more.', 2))
+      .toBe('Reading Challenge12.sol to understand the setup. Examining deploy.ts next.');
+  });
   it('returns a short or unterminated text unchanged', () => {
     expect(firstSentences('Waiting on forge test for 104s', 2)).toBe('Waiting on forge test for 104s');
     expect(firstSentences('Deploying #8.', 2)).toBe('Deploying #8.');

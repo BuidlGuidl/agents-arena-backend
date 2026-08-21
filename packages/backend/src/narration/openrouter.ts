@@ -32,7 +32,7 @@ export function createOpenRouterNarrator(options: OpenRouterNarratorOptions): Na
 
 // The prompt asks for at most two sentences; this is the backstop when the model runs long.
 export function firstSentences(text: string, count: number): string {
-  const parts = text.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g);
-  if (parts === null) return text;
-  return parts.slice(0, count).join('').trim();
+  // A sentence ends at .!? followed by whitespace, so "Challenge12.sol" stays whole.
+  const parts = text.split(/(?<=[.!?])\s+/);
+  return parts.slice(0, count).join(' ').trim();
 }

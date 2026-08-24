@@ -110,6 +110,28 @@ describe('buildNarrationWindow', () => {
     expect(resultLine?.length).toBeLessThan(340);
   });
 
+  it('describes a prose-derived challenge as a guess', async () => {
+    const { journal, run, entrant } = await setup();
+    journal.append(run.id, entrant.id, 'entrant.challenge', {
+      entrantId: entrant.id,
+      challengeId: 4,
+      via: 'message',
+      evidence: 'Challenge 4',
+    });
+
+    const built = buildNarrationWindow({
+      journal,
+      run,
+      entrant,
+      challengeTitles: {},
+      basedOnEventId: 0,
+    });
+
+    expect(built.input.prompt).toContain(
+      'now on challenge 4 (guessed from Challenge 4)',
+    );
+  });
+
   it('resumes after a cursor and states when no event changed', async () => {
     const { journal, run, entrant } = await setup();
     const cursor = journal.append(run.id, entrant.id, 'agent.message', {

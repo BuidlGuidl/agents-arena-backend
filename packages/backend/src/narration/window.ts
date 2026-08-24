@@ -262,9 +262,9 @@ function describeEvent(event: ArenaEvent): string {
     case 'funding.balance': return `balance ${detail(event.payload.wei)} wei${event.payload.funded ? ' (funded)' : ''}`;
     case 'score.flag': return `flag challenge ${event.payload.challengeId} token ${detail(event.payload.tokenId)} (${detail(event.payload.txHash)})`;
     case 'entrant.challenge':
-      return event.payload.via === 'command'
-        ? `now on challenge ${event.payload.challengeId} (guessed from ${detail(event.payload.evidence ?? 'a command')})`
-        : `now on challenge ${event.payload.challengeId} (announced)`;
+      return event.payload.via === undefined || event.payload.via === 'self'
+        ? `now on challenge ${event.payload.challengeId} (announced)`
+        : `now on challenge ${event.payload.challengeId} (guessed from ${detail(event.payload.evidence ?? event.payload.via)})`;
     case 'entrant.error': return `error: ${detail(event.payload.message)}`;
     case 'run.error': return `run error: ${detail(event.payload.message)}`;
     case 'usage': return `usage in ${event.payload.inputTokens} / out ${event.payload.outputTokens}`;

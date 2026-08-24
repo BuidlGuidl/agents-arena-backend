@@ -225,7 +225,7 @@ function systemPrompt(titles: Readonly<Record<number, string>>): string {
     challenges,
     '',
     'You get one agent\'s recent moves. Every line is about that same agent, so never name it and never use',
-    'a pronoun for it: start with the verb. "Reading Challenge9.sol after a failed cast call."',
+    'a pronoun for it: start with an -ing verb. "Reading Challenge9.sol after a failed cast call."',
     'Say plainly what it is doing, in one short sentence, present tense. Pick the newest thing it is doing.',
     'Describe the actual commands and files. No metaphors, no figures of speech, no drama, no jargon.',
     'Name the challenge number when you know it. Don\'t repeat the elapsed time or status.',

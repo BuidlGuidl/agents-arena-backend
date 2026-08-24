@@ -106,9 +106,12 @@ derived last-write-wins the same way `challengeByEntrant` derives `currentChalle
 | --- | --- | --- |
 | `OPENROUTER_API_KEY` | — | already used by the opencode adapter; narration is off without it |
 | `ARENA_NARRATION` | `on` | `off` disables the watcher entirely |
-| `ARENA_NARRATION_MODEL` | `anthropic/claude-haiku-4.5` | any OpenRouter model id; cheap alternatives worth trying: `google/gemini-2.5-flash-lite`, `openai/gpt-5-nano` |
+| `ARENA_NARRATION_MODEL` | `anthropic/claude-haiku-4.5` | any OpenRouter model id; a cheap alternative worth trying: `google/gemini-2.5-flash-lite` |
 | `ARENA_NARRATION_MIN_MS` | `10000` | floor between calls for one entrant |
 | `ARENA_NARRATION_MAX_MS` | `90000` | ceiling before a call with no new events |
+
+`ARENA_NARRATION_MODEL` alternatives must be non-reasoning models; reasoning models can
+spend the 80-token output cap on thinking and return empty text.
 
 On an API failure: log at warn, exponential backoff to 60 s (same shape as
 `SolvePoller`), no `run.error`, nothing in the `usage` event. A missing line beats a red

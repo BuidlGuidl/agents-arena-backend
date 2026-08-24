@@ -10,6 +10,7 @@ import {
   buildNarrationWindow,
   isNarrationEventRelevant,
   seedOpenTools,
+  type NarrationWindow,
   type OpenTool,
 } from './window.js';
 
@@ -84,34 +85,36 @@ export class NarrationWatcher {
         basedOnEventId = initialEvents.at(-1)?.id ?? basedOnEventId;
       }
       while (!signal.aborted) {
-        const nowMs = this.now();
-        const status = currentStatus(this.options.journal, run, entrant);
-        if (status === 'done' && closingWritten) return;
-
-        const dueAt = callDueAt(status, hasNewActivity, lastCallAtMs, this.options.minMs, this.options.maxMs);
-        const callAt = Math.max(dueAt, retryAtMs);
-        if (nowMs < callAt) {
-          await wake.wait(Number.isFinite(callAt) ? callAt - nowMs : undefined);
-          continue;
-        }
-
-        hasNewActivity = false;
-        const window = buildNarrationWindow({
-          journal: this.options.journal,
-          run,
-          entrant,
-          challengeTitles: this.options.challengeTitles,
-          basedOnEventId,
-          openTools,
-          nowMs,
-        });
-        if (status === 'done' && !window.everActive) return;
-
-        // A failed attempt still counts as a call for the timing floor. The
-        // retry deadline can extend it with exponential backoff.
-        lastCallAtMs = nowMs;
-        const timed = timedSignal(signal, NARRATION_TIMEOUT_MS);
+        let window: NarrationWindow | undefined;
+        let timed: ReturnType<typeof timedSignal> | undefined;
         try {
+          const nowMs = this.now();
+          const status = currentStatus(this.options.journal, run, entrant);
+          if (status === 'done' && closingWritten) return;
+
+          const dueAt = callDueAt(status, hasNewActivity, lastCallAtMs, this.options.minMs, this.options.maxMs);
+          const callAt = Math.max(dueAt, retryAtMs);
+          if (nowMs < callAt) {
+            await wake.wait(Number.isFinite(callAt) ? callAt - nowMs : undefined);
+            continue;
+          }
+
+          hasNewActivity = false;
+          window = buildNarrationWindow({
+            journal: this.options.journal,
+            run,
+            entrant,
+            challengeTitles: this.options.challengeTitles,
+            basedOnEventId,
+            openTools,
+            nowMs,
+          });
+          if (status === 'done' && !window.everActive) return;
+
+          // A failed attempt still counts as a call for the timing floor. The
+          // retry deadline can extend it with exponential backoff.
+          lastCallAtMs = nowMs;
+          timed = timedSignal(signal, NARRATION_TIMEOUT_MS);
           const text = await this.options.narrate(window.input, timed.signal);
           if (signal.aborted) return;
           this.options.journal.append(run.id, entrant.id, 'entrant.narration', {
@@ -129,7 +132,7 @@ export class NarrationWatcher {
           }
         } catch (error) {
           if (signal.aborted) return;
-          hasNewActivity = hasNewActivity || window.eventCount > 0;
+          hasNewActivity = hasNewActivity || (window?.eventCount ?? 0) > 0;
           failures += 1;
           const backoffMs = Math.min(
             MAX_BACKOFF_MS,
@@ -140,7 +143,7 @@ export class NarrationWatcher {
             `[narration] ${entrant.id} failed: ${describe(error)}; retrying in ${backoffMs}ms`,
           );
         } finally {
-          timed.close();
+          timed?.close();
         }
       }
     } finally {

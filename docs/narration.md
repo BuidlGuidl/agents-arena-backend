@@ -12,7 +12,7 @@ challenge, never *what* the agent is doing about it.
 
 A backend-side watcher reads each running entrant's events from the journal and asks a
 cheap model (Haiku by default, over OpenRouter, through the Vercel AI SDK) for one or two
-short present-tense sentences, 30 words at most. The result is journaled as a new event,
+short present-tense sentences. The result is journaled as a new event,
 `entrant.narration`, under the entrant's own source. The snapshot exposes the latest line
 per entrant as `EntrantSummary.narration`. Nothing touches the harness driver, the
 parsers, or the `EntrantStatus` enum (ADR-0011 stands: lifecycle in the enum, activity

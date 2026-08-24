@@ -31,6 +31,7 @@ export const eventTypes = [
   'funding.balance',
   'score.flag',
   'entrant.challenge',
+  'entrant.narration',
   'entrant.error',
   'run.error',
   'usage',

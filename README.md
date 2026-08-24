@@ -57,6 +57,16 @@ credential fails the whole run, not only the entrant that needed it:
 | `opencode` | `OPENROUTER_API_KEY`, or its own `auth.json`. |
 | `claude` | `CLAUDE_CODE_OAUTH_TOKEN`, from `claude setup-token`. |
 
+Entrant narration uses OpenRouter from the backend. It remains off when
+`OPENROUTER_API_KEY` is blank.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ARENA_NARRATION` | `on` | Set `off` to disable narration. |
+| `ARENA_NARRATION_MODEL` | `anthropic/claude-haiku-4.5` | OpenRouter model for narration. |
+| `ARENA_NARRATION_MIN_MS` | `10000` | Minimum time between calls for one entrant. |
+| `ARENA_NARRATION_MAX_MS` | `90000` | Maximum quiet time before a call. |
+
 Claude Code reads `ANTHROPIC_API_KEY` first. Unset it, or it overrides the token above and
 you never find out why.
 

@@ -25,6 +25,7 @@ export interface ChallengePackOptions {
 export interface ChallengePack {
   dir: string;
   addresses: Readonly<Record<string, Address>>;
+  titles: Readonly<Record<number, string>>;
 }
 
 function requireDirectory(path: string, label: string): void {
@@ -134,21 +135,31 @@ function contractOrder([nameA]: [string, Address], [nameB]: [string, Address]): 
   return nameA > nameB ? 1 : 0;
 }
 
-function buildBriefing(
-  aiCtfRepo: string,
-  addresses: Readonly<Record<string, Address>>,
-): string {
-  const challengeDir = join(aiCtfRepo, 'packages', 'nextjs', 'data', 'challenges');
-  const challengeContents: string[] = [];
+interface ChallengeMaterial {
+  contents: readonly string[];
+  titles: Readonly<Record<number, string>>;
+}
+
+export function loadChallengeMaterial(aiCtfRepo: string): ChallengeMaterial {
+  const resolvedRepo = resolve(aiCtfRepo);
+  const challengeDir = join(resolvedRepo, 'packages', 'nextjs', 'data', 'challenges');
+  const contents: string[] = [];
+  const titles = Object.create(null) as Record<number, string>;
   for (let number = 1; number <= CHALLENGE_COUNT; number += 1) {
     const challengePath = join(challengeDir, `${number}.md`);
     requireFile(challengePath, 'Challenge markdown');
     const content = readFileSync(challengePath, 'utf8');
-    // A file saved without a trailing newline would put the next '---' directly
-    // under a paragraph, where CommonMark reads it as a setext heading underline
-    // instead of the separator between two challenges.
-    challengeContents.push(content.endsWith('\n') ? content : `${content}\n`);
+    const heading = new RegExp(`^# #${number}:\\s*(.+?)\\s*$`, 'm').exec(content);
+    titles[number] = heading?.[1]?.trim() || `Challenge ${number}`;
+    contents.push(content.endsWith('\n') ? content : `${content}\n`);
   }
+  return { contents, titles: Object.freeze(titles) };
+}
+
+function buildBriefing(
+  addresses: Readonly<Record<string, Address>>,
+  challengeContents: readonly string[],
+): string {
 
   const tableRows = Object.entries(addresses)
     .sort(contractOrder)
@@ -199,7 +210,8 @@ export function assembleChallengePack(options: ChallengePackOptions): ChallengeP
     throw new Error(`No Solidity files found: ${contractsDir}`);
   }
   requireFile(deployPath, 'Deploy script');
-  const briefing = buildBriefing(aiCtfRepo, addresses);
+  const material = loadChallengeMaterial(aiCtfRepo);
+  const briefing = buildBriefing(addresses, material.contents);
 
   // Staged then renamed so a build that fails partway leaves the previous pack
   // in place, rather than a half-copied directory that still looks complete.
@@ -226,5 +238,6 @@ export function assembleChallengePack(options: ChallengePackOptions): ChallengeP
   return {
     dir: outDir,
     addresses,
+    titles: material.titles,
   };
 }

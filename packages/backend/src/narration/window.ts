@@ -244,10 +244,6 @@ function currentStatus(options: NarrationWindowOptions): EntrantStatus {
     .get()?.status ?? options.entrant.status;
 }
 
-export function describeNarrationEvent(event: ArenaEvent): string {
-  return describeEvent(event);
-}
-
 function describeEvent(event: ArenaEvent): string {
   switch (event.type) {
     case 'run.state':

@@ -85,11 +85,11 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
   }
 
   protected startArgv(entrant: EntrantRecord, prompt: string): string[] {
-    return ['opencode', 'run', '--format', 'json', '--auto', '-m', entrant.model, prompt];
+    return ['opencode', 'run', '--format', 'json', '--auto', '--thinking', '-m', entrant.model, prompt];
   }
 
   protected resumeArgv(_entrant: EntrantRecord, sessionId: string, text: string): string[] {
-    return ['opencode', 'run', '--format', 'json', '--auto', '-s', sessionId, text];
+    return ['opencode', 'run', '--format', 'json', '--auto', '--thinking', '-s', sessionId, text];
   }
 
   protected createParser(entrant: EntrantRecord): OpenCodeEventParser {

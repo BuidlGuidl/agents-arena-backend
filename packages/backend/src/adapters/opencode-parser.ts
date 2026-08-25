@@ -5,6 +5,7 @@ type JsonObject = Record<string, unknown>;
 export class OpenCodeEventParser {
   unknownEvents = 0;
   private syntheticToolCallCount = 0;
+  private readonly seenReasoningPartIds = new Set<string>();
 
   constructor(
     private readonly entrantId: string,
@@ -23,6 +24,19 @@ export class OpenCodeEventParser {
       return withSession([{
         type: 'agent.message',
         payload: { entrantId: this.entrantId, text: stringValue(part?.text) ?? '' },
+      }], sessionId);
+    }
+    if (type === 'reasoning') {
+      const partId = stringValue(part?.id);
+      if (partId !== undefined && this.seenReasoningPartIds.has(partId)) {
+        return withSession([], sessionId);
+      }
+      const text = stringValue(part?.text) ?? '';
+      if (text.length === 0) return withSession([], sessionId);
+      if (partId !== undefined) this.seenReasoningPartIds.add(partId);
+      return withSession([{
+        type: 'agent.reasoning',
+        payload: { entrantId: this.entrantId, text },
       }], sessionId);
     }
     if (type === 'tool_use') {

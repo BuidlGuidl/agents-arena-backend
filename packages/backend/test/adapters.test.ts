@@ -1386,6 +1386,45 @@ describe('adapter guardrails', () => {
     }
   });
 
+  it('requests OpenCode reasoning on start and resume', async () => {
+    const context = await setup('opencode');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening prompt');
+      expect(context.container.calls.at(-1)?.argv).toEqual([
+        'opencode',
+        'run',
+        '--format',
+        'json',
+        '--auto',
+        '--thinking',
+        '-m',
+        'openrouter/z-ai/glm-5.2',
+        'opening prompt',
+      ]);
+      completeTurn('opencode', context.container.turns[0] as ControlledExecution, 'session-1');
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.status')
+        .at(-1)?.payload.status === 'idle');
+
+      await context.driver.steer(context.run, context.entrant, 'steer text');
+      expect(context.container.calls.at(-1)?.argv).toEqual([
+        'opencode',
+        'run',
+        '--format',
+        'json',
+        '--auto',
+        '--thinking',
+        '-s',
+        'session-1',
+        'steer text',
+      ]);
+      completeTurn('opencode', context.container.turns[1] as ControlledExecution, 'session-1');
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
   it.each(['codex', 'opencode', 'claude'] as const)(
     '%s credentials are scrubbed after prepare and exposed after teardown cleanup',
     async (harness) => {

@@ -258,12 +258,45 @@ describe('OpenCodeEventParser', () => {
         type: 'usage',
         payload: { entrantId: 'opencode-1', inputTokens: 15213, outputTokens: 3, cachedInputTokens: 15104, costUsd: null },
       },
+      {
+        type: 'agent.reasoning',
+        payload: { entrantId: 'opencode-1', text: 'The command succeeded, so I can answer with its output.' },
+      },
     ]);
     const toolEvents = events.filter((event) => event.type === 'tool.call' || event.type === 'tool.result');
     expect(toolEvents[0]?.payload.toolCallId).toBe('call_00_7kEdm3hh7CQuyhLOI92R7648');
     expect(toolEvents[0]?.payload.toolCallId).not.toBe('prt_f8878ffad001vvHNmblpjdVwDF');
     expect(parsed.every((result) => result.sessionId === 'ses_077870ef7ffeaZ3Asz0lQdr92M')).toBe(true);
-    expect(parsed.at(-1)?.turnEnded).toBe(true);
+    expect(parsed.at(-2)?.turnEnded).toBe(true);
+  });
+
+  it('maps a reasoning part to agent reasoning', () => {
+    const parser = new OpenCodeEventParser('opencode-1');
+    const parsed = parser.parse(JSON.stringify({
+      type: 'reasoning',
+      sessionID: 'session-reasoning',
+      part: { id: 'part-reasoning', text: 'I need to inspect the result.' },
+    }));
+
+    expect(parsed).toEqual({
+      events: [{
+        type: 'agent.reasoning',
+        payload: { entrantId: 'opencode-1', text: 'I need to inspect the result.' },
+      }],
+      sessionId: 'session-reasoning',
+    });
+  });
+
+  it('emits a reasoning part id once', () => {
+    const parser = new OpenCodeEventParser('opencode-1');
+    const line = JSON.stringify({
+      type: 'reasoning',
+      sessionID: 'session-reasoning',
+      part: { id: 'part-reasoning', text: 'I need to inspect the result.' },
+    });
+
+    expect(parser.parse(line).events).toHaveLength(1);
+    expect(parser.parse(line)).toEqual({ events: [], sessionId: 'session-reasoning' });
   });
 
   it('warns on malformed lines and counts unknown events', () => {
@@ -292,6 +325,21 @@ describe('OpenCodeEventParser', () => {
       expect.objectContaining({ toolCallId: 'synthetic-1' }),
       expect.objectContaining({ toolCallId: 'synthetic-1' }),
     ]);
+  });
+
+  it('does not let an empty reasoning part consume its id', () => {
+    const parser = new OpenCodeEventParser('opencode-1');
+    const first = parser.parse(JSON.stringify({
+      type: 'reasoning', sessionID: 'session-1', part: { id: 'prt_1', text: '' },
+    }));
+    const second = parser.parse(JSON.stringify({
+      type: 'reasoning', sessionID: 'session-1', part: { id: 'prt_1', text: 'the whole thought' },
+    }));
+    expect(first.events).toEqual([]);
+    expect(second.events).toEqual([{
+      type: 'agent.reasoning',
+      payload: { entrantId: 'opencode-1', text: 'the whole thought' },
+    }]);
   });
 
   it('ends a length-limited step and preserves its usage', () => {

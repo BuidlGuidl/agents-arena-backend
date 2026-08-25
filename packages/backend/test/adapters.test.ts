@@ -1410,7 +1410,7 @@ describe('adapter guardrails', () => {
         '--auto',
         '--thinking',
         '-m',
-        'openrouter/z-ai/glm-5.2',
+        'openrouter/z-ai/glm-5.3',
         'opening prompt',
       ]);
       completeTurn('opencode', context.container.turns[0] as ControlledExecution, 'session-1');

@@ -81,7 +81,7 @@ describe('buildRoster', () => {
     expect(entries[3]).toEqual({
       id: 'opencode-1',
       harness: 'opencode',
-      model: 'openrouter/z-ai/glm-5.2',
+      model: 'openrouter/z-ai/glm-5.3',
       effort: 'high',
     });
   });

@@ -1376,6 +1376,18 @@ describe('adapter guardrails', () => {
     }
   });
 
+  it('lifts the OpenCode output clamp to 64k in the container env', async () => {
+    const context = await setup('opencode');
+    try {
+      expect(context.containerOptions.env).toEqual(expect.objectContaining({
+        OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '64000',
+      }));
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
   it('writes no OpenCode config when reasoning effort is unset', async () => {
     const context = await setup('opencode');
     try {

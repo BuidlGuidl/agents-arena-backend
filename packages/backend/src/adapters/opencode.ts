@@ -67,6 +67,10 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
       }),
       env: scrubOpenCodeEnvironment({
         OPENROUTER_API_KEY: apiKey,
+        // opencode clamps every model's output limit to 32k unless this lifts it.
+        // OpenRouter counts reasoning inside that limit, so a long think at 32k
+        // ate the answer; 64k is min'd against the model's real max by opencode.
+        OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '64000',
         ETH_RPC_URL: this.rpcUrl,
         ARENA_API_URL: this.agentApiUrl,
         ARENA_AGENT_TOKEN: issueAgentToken(run.id, entrant.id),

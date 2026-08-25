@@ -5,6 +5,7 @@ type JsonObject = Record<string, unknown>;
 export class OpenCodeEventParser {
   unknownEvents = 0;
   private syntheticToolCallCount = 0;
+  private readonly seenReasoningPartIds = new Set<string>();
 
   constructor(
     private readonly entrantId: string,
@@ -23,6 +24,19 @@ export class OpenCodeEventParser {
       return withSession([{
         type: 'agent.message',
         payload: { entrantId: this.entrantId, text: stringValue(part?.text) ?? '' },
+      }], sessionId);
+    }
+    if (type === 'reasoning') {
+      const partId = stringValue(part?.id);
+      if (partId !== undefined && this.seenReasoningPartIds.has(partId)) {
+        return withSession([], sessionId);
+      }
+      const text = stringValue(part?.text) ?? '';
+      if (text.trim().length === 0) return withSession([], sessionId);
+      if (partId !== undefined) this.seenReasoningPartIds.add(partId);
+      return withSession([{
+        type: 'agent.reasoning',
+        payload: { entrantId: this.entrantId, text },
       }], sessionId);
     }
     if (type === 'tool_use') {
@@ -48,18 +62,20 @@ export class OpenCodeEventParser {
     }
     if (type === 'step_finish') {
       const tokens = objectValue(part?.tokens);
-      // Tokens and cost are per step, and opencode prices each step itself.
-      // `tokens.input` counts only what was not served from cache — the fixture's
-      // total adds up as input + output + reasoning + cache.read. codex instead
-      // counts cache reads inside its input, so the prompt total goes on the wire
-      // and the two lanes' token counts mean the same thing on the board.
-      const cachedInputTokens = numberValue(objectValue(tokens?.cache)?.read);
+      // Tokens and cost are per step. OpenCode's input excludes cache reads and
+      // writes, so add both back: claude adds cache creation the same way, and
+      // codex's input already includes cache. Reasoning goes into output because
+      // OpenRouter bills it inside max_tokens and the other lanes count thinking
+      // as output too, so the board means the same thing across lanes.
+      const cache = objectValue(tokens?.cache);
+      const cachedInputTokens = numberValue(cache?.read);
+      const cacheWriteTokens = numberValue(cache?.write);
       const usage: ParsedArenaEvent = {
         type: 'usage',
         payload: {
           entrantId: this.entrantId,
-          inputTokens: numberValue(tokens?.input) + cachedInputTokens,
-          outputTokens: numberValue(tokens?.output),
+          inputTokens: numberValue(tokens?.input) + cachedInputTokens + cacheWriteTokens,
+          outputTokens: numberValue(tokens?.output) + numberValue(tokens?.reasoning),
           cachedInputTokens,
           costUsd: reportedCost(part?.cost),
         },

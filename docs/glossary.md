@@ -12,7 +12,7 @@ canonical vocabulary for the arena backend. terms only, no implementation. built
 - **harness** — a coding-agent CLI: Codex, OpenCode, or Claude Code. each is wrapped by an adapter.
 - **entrant session** — the long-lived, steerable harness conversation for one entrant. NOT a one-shot process. the runner injects turns into it: the opening prompt, an auto-nudge, or an Austin steer. survives across nudges, keeping the agent's memory of what it already tried.
 - **turn injection** — feeding a user message into a live entrant session. three sources, one mechanism: opening prompt, auto-nudge, Austin steer.
-- **auto-nudge** — a turn the arena injects on its own when an entrant goes idle before the deadline while holding fewer than 12 flags. built from on-chain truth (flags the wallet actually minted), so a hallucinated "I'm done" gets corrected by reality.
+- **auto-nudge** — a turn the arena injects on its own when an entrant goes idle before the deadline while holding fewer than 12 flags. built from on-chain truth (flags the wallet actually minted), so a hallucinated "I'm done" gets corrected by reality. designed, not wired yet.
 - **Austin steer** — a free-text turn Austin types mid-race, targeted at one entrant or both, appended to the session like any user turn. the live-caster intervention.
 - **steer delivery** — what the steer POST reports back: `injected` (the turn entered the session now) or `queued` (the entrant is mid-turn; the text waits in memory and injects when that turn ends; if the entrant degrades or stops first, the drop is journaled as an `entrant.error`). `entrant.steered` journals only at injection, so the journal records what the session received, never intent.
 - **entrant restart** — the operator's recovery for one lane whose session went stale or blocked: the turn in flight is killed, queued steers are dropped, and a *new* harness session opens on the entrant's opening prompt. the container, wallet, credentials, and pack are kept, and the rest of the field never notices. distinct from a steer, which continues the existing session.
@@ -38,8 +38,8 @@ canonical vocabulary for the arena backend. terms only, no implementation. built
 per-entrant lifecycle, distinct from run state:
 
 - **working** — the session is actively producing output.
-- **idle** — the session settled with no pending turn. triggers auto-nudge if flags < 12 and time remains.
+- **idle** — the session settled with no pending turn. auto-nudge is designed but not wired, so idle waits for a steer.
 - **blocked** — the session is waiting on an approval/permission prompt. under the `dontAsk` policy this should never happen; if it does, it's a policy bug to surface.
-- **done** — finished AND the arena has consumed the exit (checked flag count, decided not to nudge). a process exiting is NOT the entrant being done.
+- **done** — finished AND the arena has consumed the exit (checked flag count). a process exiting is NOT the entrant being done.
 
 the set is closed until a state has an honest emitter: `submitting` becomes possible once on-chain solve detection can see a transaction before the flag confirms; a `thinking` state would need a reasoning channel that does not exist yet. the UI maps its display vocabulary onto these four, not the reverse. outside reference: vercel's ai sdk — the widest-deployed public protocol for streaming agent activity to a UI — makes the same cuts: reasoning is a channel, not a status, and its `tool-approval-request` frame is our `blocked`.

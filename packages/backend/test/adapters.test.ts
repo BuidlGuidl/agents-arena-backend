@@ -1361,7 +1361,7 @@ describe('adapter guardrails', () => {
               openrouter: {
                 models: {
                   'z-ai/glm-5.3': {
-                    options: { reasoningEffort: 'high' },
+                    options: { reasoning: { effort: 'high' } },
                   },
                 },
               },
@@ -1376,10 +1376,61 @@ describe('adapter guardrails', () => {
     }
   });
 
+  it('lifts the OpenCode output clamp to 64k in the container env', async () => {
+    const context = await setup('opencode');
+    try {
+      expect(context.containerOptions.env).toEqual(expect.objectContaining({
+        OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '64000',
+      }));
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
   it('writes no OpenCode config when reasoning effort is unset', async () => {
     const context = await setup('opencode');
     try {
       expect(context.containerOptions.credentialFiles).toBeUndefined();
+    } finally {
+      await context.driver.stop(context.run, context.entrant);
+      context.journal.close();
+    }
+  });
+
+  it('requests OpenCode reasoning on start and resume', async () => {
+    const context = await setup('opencode');
+    try {
+      await context.driver.start(context.run, context.entrant, 'opening prompt');
+      expect(context.container.calls.at(-1)?.argv).toEqual([
+        'opencode',
+        'run',
+        '--format',
+        'json',
+        '--auto',
+        '--thinking',
+        '-m',
+        'openrouter/z-ai/glm-5.3',
+        'opening prompt',
+      ]);
+      completeTurn('opencode', context.container.turns[0] as ControlledExecution, 'session-1');
+      await waitFor(() => context.journal.after(context.run.id, 0)
+        .filter((event) => event.type === 'entrant.status')
+        .at(-1)?.payload.status === 'idle');
+
+      await context.driver.steer(context.run, context.entrant, 'steer text');
+      expect(context.container.calls.at(-1)?.argv).toEqual([
+        'opencode',
+        'run',
+        '--format',
+        'json',
+        '--auto',
+        '--thinking',
+        '-s',
+        'session-1',
+        'steer text',
+      ]);
+      completeTurn('opencode', context.container.turns[1] as ControlledExecution, 'session-1');
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

@@ -1349,7 +1349,7 @@ describe('adapter guardrails', () => {
       'opencode',
       undefined,
       false,
-      'openrouter/z-ai/glm-5.2',
+      'openrouter/z-ai/glm-5.3',
       'high',
     );
     try {
@@ -1360,7 +1360,7 @@ describe('adapter guardrails', () => {
             provider: {
               openrouter: {
                 models: {
-                  'z-ai/glm-5.2': {
+                  'z-ai/glm-5.3': {
                     options: { reasoningEffort: 'high' },
                   },
                 },
@@ -2057,7 +2057,7 @@ describe('adapter construction errors', () => {
       runId: run.id,
       id: `${harness}-1`,
       harness,
-      model: harness === 'claude' ? 'claude-opus-5' : 'openrouter/z-ai/glm-5.2',
+      model: harness === 'claude' ? 'claude-opus-5' : 'openrouter/z-ai/glm-5.3',
       effort: null,
       address: null,
       status: 'idle',

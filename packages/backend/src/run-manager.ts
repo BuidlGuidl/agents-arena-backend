@@ -92,14 +92,14 @@ const PRESETS: Readonly<Record<string, Preset>> = {
     substrate: 'docker',
     entrants: [
       { id: 'codex-1', harness: 'codex', model: 'gpt-5.5' },
-      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.2' },
+      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3' },
     ],
   },
   'docker-arena': {
     substrate: 'docker',
     entrants: [
       { id: 'codex-1', harness: 'codex', model: 'gpt-5.5' },
-      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.2' },
+      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3' },
       { id: 'claude-1', harness: 'claude', model: 'claude-opus-5' },
     ],
   },

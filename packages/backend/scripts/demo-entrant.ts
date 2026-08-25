@@ -21,7 +21,7 @@ const now = new Date().toISOString();
 const model = harness === 'codex'
   ? 'default' // ChatGPT-account login: use the account default, don't pin an API-only model
   : harness === 'opencode'
-    ? 'openrouter/z-ai/glm-5.2'
+    ? 'openrouter/z-ai/glm-5.3'
     : 'claude-opus-5';
 const run: RunRecord = {
   id: runId,

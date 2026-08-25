@@ -1149,7 +1149,7 @@ describe('run rosters', () => {
         roster: [
           { id: 'claude-opus', harness: 'claude', model: 'claude-opus-5' },
           { id: 'codex-main', harness: 'codex', model: 'gpt-5.5' },
-          { id: 'opencode-main', harness: 'opencode', model: 'openrouter/z-ai/glm-5.2' },
+          { id: 'opencode-main', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3' },
         ],
       },
     });
@@ -1266,7 +1266,7 @@ describe('run rosters', () => {
         roster: [{
           id: 'opencode-main',
           harness: 'opencode',
-          model: 'openrouter/z-ai/glm-5.2',
+          model: 'openrouter/z-ai/glm-5.3',
           effort: 'high',
         }],
       },
@@ -1278,7 +1278,7 @@ describe('run rosters', () => {
       expect.objectContaining({
         id: 'opencode-main',
         harness: 'opencode',
-        model: 'openrouter/z-ai/glm-5.2',
+        model: 'openrouter/z-ai/glm-5.3',
         effort: 'high',
       }),
     ]);
@@ -1297,7 +1297,7 @@ describe('run rosters', () => {
         roster: [{
           id: 'opencode-main',
           harness: 'opencode',
-          model: 'openrouter/z-ai/glm-5.2',
+          model: 'openrouter/z-ai/glm-5.3',
           effort: 'xhigh',
         }],
       },

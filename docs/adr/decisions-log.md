@@ -351,3 +351,18 @@ fail-closed startup is the other trade: a deploy that forgets the token variable
 **Trade-off:** a new network dependency and a new credential path in the backend. at five lanes running on the 10 s floor, ops cost can reach roughly 1,800 OpenRouter calls per hour at about 2–3k input tokens each. mitigated by reusing `OPENROUTER_API_KEY` (already injected into opencode containers and redacted per run), an `ARENA_NARRATION=off` switch, and silent degradation on failure — log and back off, never a `run.error` on the board. narration tokens are deliberately kept out of the `usage` event so the leaderboard's cost column stays an entrant-only number; the arena's own spend is an ops cost, not a score. the model call is injected through `ServerOptions` so the test suite never touches the network. `ANTHROPIC_API_KEY` is not introduced: `claude.ts` warns that it hijacks the claude harness's subscription auth.
 
 **Consequence:** `arena-types.ts` and `API.md` bump, the ai.ctf frontend re-copies the contract per ADR-0002 (the mock frontend imports it directly), `eventTypes` in `db/schema.ts` grows by one so `?types=entrant.narration` validates, and the mock frontend renders the row. the watcher lives in `src/narration/` and does not touch `harness-driver.ts` or the parsers. the model id, floor and ceiling are env vars so the box can swap to another cheap model without a deploy.
+
+---
+
+## ADR-0022 — the OpenCode lane shows reasoning, counts it as output, and gets a 64k output limit
+
+**Status:** accepted (2026-08-25), from issue #70. items 2 and 3 of that issue; item 1 (idle auto-nudge) stays open.
+
+**Decision:** `opencode run` gets `--thinking`, and the parser turns each `reasoning` part into `agent.reasoning`, deduped on the part id. `tokens.reasoning` is added into `outputTokens`, no new field. every opencode container gets `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=64000` in its env, which opencode mins against the model's real output max from models.dev. reasoning effort is sent as `options.reasoning.effort`. a step that ends with `reason: length` still ends the turn; no auto-continue.
+
+**Why:** a qwen entrant died in production at 24,253 output + 7,747 reasoning = 32,000 tokens exactly, then sat idle. opencode clamps every model's output limit to `OUTPUT_TOKEN_MAX = 32_000` unless the experimental env lifts it, and OpenRouter counts reasoning inside `max_tokens`, so a long think eats the answer. the reasoning was invisible because `--format json` drops reasoning parts without `--thinking`. and `options.reasoningEffort`, which the arena had been writing, is a no-op on OpenRouter — the provider reads `options.reasoning.effort`.
+
+**Trade-off:** reasoning is not streamed: opencode emits one frame per step at its end, so the `thinks:` line lands late. summing reasoning into output makes the board match the codex and claude lanes, whose providers already count thinking inside output, at the cost of not being able to split the two later without a contract bump. the env var is marked experimental upstream and can change name. an auto-continue on `length` was designed (resume the session with a fixed prompt, max 3 per turn, journaled as `entrant.nudged`) and dropped: doubling the limit removes the case that was seen, and the continue adds driver state the other lanes do not need. revisit if a lane hits 64k.
+
+**Consequence:** no change to `arena-types.ts` or `harness-driver.ts`. the parser's `length` handling is unchanged: the turn ends and the lane goes idle, same as `stop`.
+

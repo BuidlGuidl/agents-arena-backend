@@ -27,7 +27,7 @@ One process owns a run: lifecycle, containers, credentials, the event journal, a
 
 - **Entrant** — a coding-agent CLI + model + funded wallet, running in its own container as one long-lived, steerable session.
 - **Ready barrier** — all entrants prepare and hold. The run releases them together on one recorded start time, so boot time never decides the race.
-- **Steer** — an operator injects a free-text turn into a live agent mid-race. An idle agent that still has flags to win is auto-nudged from on-chain truth. Both use one injection path.
+- **Steer** — an operator injects a free-text turn into a live agent mid-race. The idle auto-nudge from on-chain truth is designed but not wired; when it lands it will use the same injection path.
 - **Journal** — every fact is one append-only row with a global `id` and a per-source `seq`. The feed is a projection; a reconnect replays it.
 - **Chain profile** — selects addresses, RPC, confirmation depth, funding threshold, and funding timeout for the active chain.
 

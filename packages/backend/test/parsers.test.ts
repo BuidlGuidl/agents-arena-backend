@@ -248,7 +248,7 @@ describe('OpenCodeEventParser', () => {
       // The tool-calls step is mid-turn, but its tokens are real spend.
       {
         type: 'usage',
-        payload: { entrantId: 'opencode-1', inputTokens: 15138, outputTokens: 45, cachedInputTokens: 0, costUsd: null },
+        payload: { entrantId: 'opencode-1', inputTokens: 15138, outputTokens: 60, cachedInputTokens: 0, costUsd: null },
       },
       {
         type: 'agent.message',
@@ -256,7 +256,7 @@ describe('OpenCodeEventParser', () => {
       },
       {
         type: 'usage',
-        payload: { entrantId: 'opencode-1', inputTokens: 15213, outputTokens: 3, cachedInputTokens: 15104, costUsd: null },
+        payload: { entrantId: 'opencode-1', inputTokens: 15213, outputTokens: 13, cachedInputTokens: 15104, costUsd: null },
       },
       {
         type: 'agent.reasoning',
@@ -347,13 +347,13 @@ describe('OpenCodeEventParser', () => {
     const parsed = parser.parse(JSON.stringify({
       type: 'step_finish',
       sessionID: 'session-length',
-      part: { reason: 'length', tokens: { input: 321, output: 45 } },
+      part: { reason: 'length', tokens: { input: 321, output: 45, reasoning: 30 } },
     }));
 
     expect(parsed).toEqual({
       events: [{
         type: 'usage',
-        payload: { entrantId: 'opencode-1', inputTokens: 321, outputTokens: 45, cachedInputTokens: 0, costUsd: null },
+        payload: { entrantId: 'opencode-1', inputTokens: 321, outputTokens: 75, cachedInputTokens: 0, costUsd: null },
       }],
       sessionId: 'session-length',
       turnEnded: true,
@@ -392,7 +392,7 @@ describe('OpenCodeEventParser', () => {
     expect(parsed.events[0]?.payload).toMatchObject({
       inputTokens: 15213,
       cachedInputTokens: 15104,
-      outputTokens: 3,
+      outputTokens: 13,
     });
   });
 

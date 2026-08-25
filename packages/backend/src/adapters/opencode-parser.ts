@@ -62,18 +62,16 @@ export class OpenCodeEventParser {
     }
     if (type === 'step_finish') {
       const tokens = objectValue(part?.tokens);
-      // Tokens and cost are per step, and opencode prices each step itself.
-      // `tokens.input` counts only what was not served from cache — the fixture's
-      // total adds up as input + output + reasoning + cache.read. codex instead
-      // counts cache reads inside its input, so the prompt total goes on the wire
-      // and the two lanes' token counts mean the same thing on the board.
+      // Tokens and cost are per step. Input excludes cache reads, so add them back.
+      // OpenRouter counts reasoning inside max_tokens. Codex and Claude count
+      // thinking in outputTokens, so add reasoning here too.
       const cachedInputTokens = numberValue(objectValue(tokens?.cache)?.read);
       const usage: ParsedArenaEvent = {
         type: 'usage',
         payload: {
           entrantId: this.entrantId,
           inputTokens: numberValue(tokens?.input) + cachedInputTokens,
-          outputTokens: numberValue(tokens?.output),
+          outputTokens: numberValue(tokens?.output) + numberValue(tokens?.reasoning),
           cachedInputTokens,
           costUsd: reportedCost(part?.cost),
         },

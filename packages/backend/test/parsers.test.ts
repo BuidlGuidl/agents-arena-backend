@@ -255,19 +255,19 @@ describe('OpenCodeEventParser', () => {
         payload: { entrantId: 'opencode-1', text: 'hello arena' },
       },
       {
-        type: 'usage',
-        payload: { entrantId: 'opencode-1', inputTokens: 15213, outputTokens: 13, cachedInputTokens: 15104, costUsd: null },
-      },
-      {
         type: 'agent.reasoning',
         payload: { entrantId: 'opencode-1', text: 'The command succeeded, so I can answer with its output.' },
+      },
+      {
+        type: 'usage',
+        payload: { entrantId: 'opencode-1', inputTokens: 15213, outputTokens: 13, cachedInputTokens: 15104, costUsd: null },
       },
     ]);
     const toolEvents = events.filter((event) => event.type === 'tool.call' || event.type === 'tool.result');
     expect(toolEvents[0]?.payload.toolCallId).toBe('call_00_7kEdm3hh7CQuyhLOI92R7648');
     expect(toolEvents[0]?.payload.toolCallId).not.toBe('prt_f8878ffad001vvHNmblpjdVwDF');
     expect(parsed.every((result) => result.sessionId === 'ses_077870ef7ffeaZ3Asz0lQdr92M')).toBe(true);
-    expect(parsed.at(-2)?.turnEnded).toBe(true);
+    expect(parsed.at(-1)?.turnEnded).toBe(true);
   });
 
   it('maps a reasoning part to agent reasoning', () => {
@@ -327,18 +327,18 @@ describe('OpenCodeEventParser', () => {
     ]);
   });
 
-  it('does not let an empty reasoning part consume its id', () => {
+  it('does not let a whitespace-only reasoning part consume its id', () => {
     const parser = new OpenCodeEventParser('opencode-1');
     const first = parser.parse(JSON.stringify({
-      type: 'reasoning', sessionID: 'session-1', part: { id: 'prt_1', text: '' },
+      type: 'reasoning', sessionID: 'session-1', part: { id: 'prt_ws', text: '\n\n' },
     }));
     const second = parser.parse(JSON.stringify({
-      type: 'reasoning', sessionID: 'session-1', part: { id: 'prt_1', text: 'the whole thought' },
+      type: 'reasoning', sessionID: 'session-1', part: { id: 'prt_ws', text: '\nThe whole thought.\n' },
     }));
     expect(first.events).toEqual([]);
     expect(second.events).toEqual([{
       type: 'agent.reasoning',
-      payload: { entrantId: 'opencode-1', text: 'the whole thought' },
+      payload: { entrantId: 'opencode-1', text: '\nThe whole thought.\n' },
     }]);
   });
 
@@ -375,7 +375,7 @@ describe('OpenCodeEventParser', () => {
     expect(parsed.turnEnded).toBeUndefined();
   });
 
-  // opencode reports input net of cache; codex counts cache reads inside input.
+  // opencode reports input net of cache; codex counts cache inside input.
   // The board compares the two lanes, so this adapter normalizes to codex's shape.
   it('folds cache reads into the prompt total', () => {
     const parser = new OpenCodeEventParser('opencode-1');
@@ -393,6 +393,23 @@ describe('OpenCodeEventParser', () => {
       inputTokens: 15213,
       cachedInputTokens: 15104,
       outputTokens: 13,
+    });
+  });
+
+  it('folds cache reads and writes into the prompt total', () => {
+    const parser = new OpenCodeEventParser('opencode-1');
+    const parsed = parser.parse(JSON.stringify({
+      type: 'step_finish',
+      sessionID: 'session-cache-write',
+      part: {
+        reason: 'stop',
+        tokens: { input: 40, output: 3, cache: { read: 100, write: 250 } },
+      },
+    }));
+
+    expect(parsed.events[0]?.payload).toMatchObject({
+      inputTokens: 390,
+      cachedInputTokens: 100,
     });
   });
 

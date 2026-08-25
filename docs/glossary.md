@@ -38,8 +38,8 @@ canonical vocabulary for the arena backend. terms only, no implementation. built
 per-entrant lifecycle, distinct from run state:
 
 - **working** — the session is actively producing output.
-- **idle** — the session settled with no pending turn. triggers auto-nudge if flags < 12 and time remains.
+- **idle** — the session settled with no pending turn. auto-nudge is designed but not wired, so idle waits for a steer.
 - **blocked** — the session is waiting on an approval/permission prompt. under the `dontAsk` policy this should never happen; if it does, it's a policy bug to surface.
-- **done** — finished AND the arena has consumed the exit (checked flag count, decided not to nudge). a process exiting is NOT the entrant being done.
+- **done** — finished AND the arena has consumed the exit (checked flag count). a process exiting is NOT the entrant being done.
 
 the set is closed until a state has an honest emitter: `submitting` becomes possible once on-chain solve detection can see a transaction before the flag confirms; a `thinking` state would need a reasoning channel that does not exist yet. the UI maps its display vocabulary onto these four, not the reverse. outside reference: vercel's ai sdk — the widest-deployed public protocol for streaming agent activity to a UI — makes the same cuts: reasoning is a channel, not a status, and its `tool-approval-request` frame is our `blocked`.

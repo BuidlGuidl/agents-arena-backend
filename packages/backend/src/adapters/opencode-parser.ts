@@ -32,7 +32,7 @@ export class OpenCodeEventParser {
         return withSession([], sessionId);
       }
       const text = stringValue(part?.text) ?? '';
-      if (text.length === 0) return withSession([], sessionId);
+      if (text.trim().length === 0) return withSession([], sessionId);
       if (partId !== undefined) this.seenReasoningPartIds.add(partId);
       return withSession([{
         type: 'agent.reasoning',
@@ -62,15 +62,19 @@ export class OpenCodeEventParser {
     }
     if (type === 'step_finish') {
       const tokens = objectValue(part?.tokens);
-      // Tokens and cost are per step. Input excludes cache reads, so add them back.
-      // OpenRouter counts reasoning inside max_tokens. Codex and Claude count
-      // thinking in outputTokens, so add reasoning here too.
-      const cachedInputTokens = numberValue(objectValue(tokens?.cache)?.read);
+      // Tokens and cost are per step. OpenCode's input excludes cache reads and
+      // writes, so add both back: claude adds cache creation the same way, and
+      // codex's input already includes cache. Reasoning goes into output because
+      // OpenRouter bills it inside max_tokens and the other lanes count thinking
+      // as output too, so the board means the same thing across lanes.
+      const cache = objectValue(tokens?.cache);
+      const cachedInputTokens = numberValue(cache?.read);
+      const cacheWriteTokens = numberValue(cache?.write);
       const usage: ParsedArenaEvent = {
         type: 'usage',
         payload: {
           entrantId: this.entrantId,
-          inputTokens: numberValue(tokens?.input) + cachedInputTokens,
+          inputTokens: numberValue(tokens?.input) + cachedInputTokens + cacheWriteTokens,
           outputTokens: numberValue(tokens?.output) + numberValue(tokens?.reasoning),
           cachedInputTokens,
           costUsd: reportedCost(part?.cost),

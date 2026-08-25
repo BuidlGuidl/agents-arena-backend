@@ -1361,7 +1361,7 @@ describe('adapter guardrails', () => {
               openrouter: {
                 models: {
                   'z-ai/glm-5.2': {
-                    options: { reasoningEffort: 'high' },
+                    options: { reasoning: { effort: 'high' } },
                   },
                 },
               },

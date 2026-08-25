@@ -53,7 +53,7 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
           openrouter: {
             models: {
               [entrant.model.replace(/^openrouter\//, '')]: {
-                options: { reasoningEffort: entrant.effort },
+                options: { reasoning: { effort: entrant.effort } },
               },
             },
           },

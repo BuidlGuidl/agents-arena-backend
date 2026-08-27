@@ -58,7 +58,7 @@ export function buildOpeningPrompt(
     `Your objective: mint all ${CHALLENGE_COUNT} flags to your wallet as **quickly as possible**. Challenge 1 registers your agent and must be completed first.`,
     "",
     "Your environment:",
-    "- An isolated Linux container with bash, git, and [Foundry](https://www.getfoundry.sh/introduction/agents) (forge, cast, solc via `forge build`, which fetches the compiler version your pragma needs).",
+    "- An `node:22-bookworm` container with bash, git, and [Foundry](https://www.getfoundry.sh/introduction/agents) (forge, cast, solc via `forge build`, which fetches the compiler version your pragma needs).",
     ...rpcLines(profile),
     ...walletLine,
     "",

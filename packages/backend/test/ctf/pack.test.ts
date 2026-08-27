@@ -119,6 +119,21 @@ describe('assembleChallengePack', () => {
     expect(briefing).not.toContain('No trailing newline.\n---');
   });
 
+  // The github copy is unreachable from a container; the pack ships the same file.
+  it('rewrites the challenge 9 deploy-script link to the file the pack ships', () => {
+    const challengeDir = join(aiCtfRepo, 'packages', 'nextjs', 'data', 'challenges');
+    writeFileSync(
+      join(challengeDir, '9.md'),
+      '# #9: The unverified\n\n- Take a look at the [deploy script](https://github.com/buidlguidl/ai.ctf.buidlguidl.com/blob/main/packages/hardhat/deploy/00_deploy_ctf_contracts.ts).\n',
+    );
+
+    assembleChallengePack({ aiCtfRepo, outDir });
+
+    const briefing = readFileSync(join(outDir, 'BRIEFING.md'), 'utf8');
+    expect(briefing).toContain('[deploy script](deploy/00_deploy_ctf_contracts.ts)');
+    expect(briefing).not.toContain('github.com');
+  });
+
   it('skips the solcInputs directory when reading deployments', () => {
     const pack = assembleChallengePack({ aiCtfRepo, outDir });
 

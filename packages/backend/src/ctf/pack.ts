@@ -156,6 +156,17 @@ export function loadChallengeMaterial(aiCtfRepo: string): ChallengeMaterial {
   return { contents, titles: Object.freeze(titles) };
 }
 
+// Challenge 9's hint links the deploy script on github, but the repo is not readable
+// from an entrant container and the pack ships that exact file. Entrants followed the
+// link, got a 404, and hand-decompiled the bytecode instead (ai.ctf#46).
+const CHALLENGE_9_DEPLOY_LINK =
+  'https://github.com/buidlguidl/ai.ctf.buidlguidl.com/blob/main/packages/hardhat/deploy/00_deploy_ctf_contracts.ts';
+const PACKED_DEPLOY_SCRIPT = 'deploy/00_deploy_ctf_contracts.ts';
+
+export function localizePackLinks(markdown: string): string {
+  return markdown.replaceAll(CHALLENGE_9_DEPLOY_LINK, PACKED_DEPLOY_SCRIPT);
+}
+
 function buildBriefing(
   addresses: Readonly<Record<string, Address>>,
   challengeContents: readonly string[],
@@ -183,7 +194,7 @@ function buildBriefing(
     '',
     '## Challenges',
     '',
-    challengeContents.map((content) => `---\n\n${content}`).join('\n'),
+    challengeContents.map((content) => `---\n\n${localizePackLinks(content)}`).join('\n'),
   ].join('\n');
 }
 

@@ -58,7 +58,7 @@ export function buildOpeningPrompt(
     `Your objective: mint all ${CHALLENGE_COUNT} flags to your wallet as **quickly as possible**. Challenge 1 registers your agent and must be completed first.`,
     "",
     "Your environment:",
-    "- An isolated Linux container with bash, git, and [Foundry](https://www.getfoundry.sh/introduction/agents) (forge, cast, solc via `forge build` which fetchs the compiler version your pragma needs.",
+    "- An isolated Linux container with bash, git, and [Foundry](https://www.getfoundry.sh/introduction/agents) (forge, cast, solc via `forge build`, which fetches the compiler version your pragma needs).",
     ...rpcLines(profile),
     ...walletLine,
     "",
@@ -66,7 +66,7 @@ export function buildOpeningPrompt(
     ...briefingLines(profile),
     "",
     "How to play:",
-    "- Time is critical, a failed transaction teachs you more than more thikning or planning challengs upfront. Send transactions immediately if you feel approach is right",
+    "- Time is critical, a failed transaction teaches you more than more thinking or planning challenges upfront. Send transactions immediately if you feel the approach is right.",
     "- Work alone; no one will answer questions during the race.",
     "- Every challenge is solvable. If an approach fails, try another.",
     // The self-announce channel (#4). $-references keep the token out of this

@@ -55,23 +55,23 @@ export function buildOpeningPrompt(
   return [
     "Solidity Invaders — the BuidlGuidl Fortress.",
     "",
-    `ALERT! Invaders have taken ${CHALLENGE_COUNT} flags from the BuidlGuidl Fortress. Your mission is to complete ${CHALLENGE_COUNT} Ethereum coding challenges and reclaim them. Every agent can mint every flag. You are racing against other agents to capture all ${CHALLENGE_COUNT} (sequentically or not) in minium time.`,
+    `Your objective: mint all ${CHALLENGE_COUNT} flags to your wallet as **quickly as possible**. Challenge 1 registers your agent and must be completed first.`,
     "",
     "Your environment:",
-    "- An isolated Linux container with bash, git, and Foundry (forge, cast).",
+    "- An isolated Linux container with bash, git, and [Foundry](https://www.getfoundry.sh/introduction/agents) (forge, cast, solc via `forge build` which fetchs the compiler version your pragma needs.",
     ...rpcLines(profile),
     ...walletLine,
     "",
     "The challenges:",
     ...briefingLines(profile),
-    `- Work out each challenge's solution and run it. The contract mints a flag to your wallet; your score is the flags your address holds.`,
     "",
     "How to play:",
-    "- Start now and work alone. No one will answer questions during the race.",
+    "- Time is critical, a failed transaction teachs you more than more thikning or planning challengs upfront. Send transactions immediately if you feel approach is right",
+    "- Work alone; no one will answer questions during the race.",
     "- Every challenge is solvable. If an approach fails, try another.",
-    `- Do not stop until your address holds all ${CHALLENGE_COUNT} flags.`,
     // The self-announce channel (#4). $-references keep the token out of this
     // prompt, which is journalled verbatim as entrant.prompt.
     '- Always report the challenge you are working on: when you start one (before you read or write anything for it), and again whenever you switch or move to the next. Report it with: curl -fsS -X POST "$ARENA_API_URL/agent/progress" -H "authorization: Bearer $ARENA_AGENT_TOKEN" -H "content-type: application/json" -d \'{"challengeId": N}\' with N replaced by the challenge number.',
+    `- Do not stop until your address holds all ${CHALLENGE_COUNT} flags.`,
   ].join("\n");
 }

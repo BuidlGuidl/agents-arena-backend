@@ -1376,15 +1376,34 @@ describe('adapter guardrails', () => {
     }
   });
 
-  it('lifts the OpenCode output clamp to 64k in the container env', async () => {
+  it('lifts the OpenCode output clamp to 64k and enables websearch in the container env', async () => {
     const context = await setup('opencode');
     try {
       expect(context.containerOptions.env).toEqual(expect.objectContaining({
         OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '64000',
+        OPENCODE_ENABLE_EXA: '1',
       }));
+      expect(context.containerOptions.env).not.toHaveProperty('EXA_API_KEY');
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();
+    }
+  });
+
+  it('forwards EXA_API_KEY to the OpenCode container only when set', async () => {
+    const previous = process.env.EXA_API_KEY;
+    process.env.EXA_API_KEY = 'exa-test-key';
+    let context: Awaited<ReturnType<typeof setup>> | undefined;
+    try {
+      context = await setup('opencode');
+      expect(context.containerOptions.env).toEqual(expect.objectContaining({ EXA_API_KEY: 'exa-test-key' }));
+    } finally {
+      if (previous === undefined) delete process.env.EXA_API_KEY;
+      else process.env.EXA_API_KEY = previous;
+      if (context !== undefined) {
+        await context.driver.stop(context.run, context.entrant);
+        context.journal.close();
+      }
     }
   });
 

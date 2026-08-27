@@ -17,16 +17,19 @@ import type { EntrantRecord, RunRecord } from './types.js';
 export interface OpenCodeDriverOptions extends HarnessDriverOptions {
   apiKey?: string;
   authPath?: string;
+  exaApiKey?: string;
 }
 
 export class OpenCodeDriver extends HarnessEntrantDriver {
   private readonly apiKey: string | undefined;
   private readonly authPath: string;
+  private readonly exaApiKey: string | undefined;
 
   constructor(journal: EventJournal, options: OpenCodeDriverOptions = {}) {
     super(journal, options);
     this.apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY;
     this.authPath = options.authPath ?? join(homedir(), '.local', 'share', 'opencode', 'auth.json');
+    this.exaApiKey = options.exaApiKey ?? process.env.EXA_API_KEY;
   }
 
   protected harnessName(): string {
@@ -45,7 +48,8 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
     if (apiKey === undefined || apiKey.length === 0) {
       throw new Error(`OpenRouter API key not found in OPENROUTER_API_KEY or ${this.authPath}`);
     }
-    registerCredentialSecrets(run.id, [apiKey]);
+    const exaApiKey = this.exaApiKey === undefined || this.exaApiKey.length === 0 ? undefined : this.exaApiKey;
+    registerCredentialSecrets(run.id, exaApiKey === undefined ? [apiKey] : [apiKey, exaApiKey]);
     const config = entrant.effort === null
       ? undefined
       : `${JSON.stringify({
@@ -71,6 +75,11 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
         // OpenRouter counts reasoning inside that limit, so a long think at 32k
         // ate the answer; 64k is min'd against the model's real max by opencode.
         OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: '64000',
+        // Registers opencode's built-in websearch tool. Off by default, while claude
+        // and codex search out of the box. Without a key it hits Exa's public MCP
+        // endpoint (shared rate limit); EXA_API_KEY makes the calls ours.
+        OPENCODE_ENABLE_EXA: '1',
+        ...(exaApiKey === undefined ? {} : { EXA_API_KEY: exaApiKey }),
         ETH_RPC_URL: this.rpcUrl,
         ARENA_API_URL: this.agentApiUrl,
         ARENA_AGENT_TOKEN: issueAgentToken(run.id, entrant.id),

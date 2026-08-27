@@ -80,7 +80,7 @@ describe('buildOpeningPrompt', () => {
 
     expect(prompt).toContain('Do not stop until your address holds all 12 flags.');
     expect(prompt).toContain('Every challenge is solvable.');
-    expect(prompt).toContain('No one will answer questions during the race.');
+    expect(prompt).toContain('Work alone; no one will answer questions during the race.');
   });
 
   it('uses the public briefing without local mount instructions', () => {

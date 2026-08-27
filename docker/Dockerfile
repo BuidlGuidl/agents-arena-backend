@@ -27,8 +27,10 @@ RUN npm install --global \
       "tsx@${TSX_VERSION}" \
     && npm cache clean --force
 
-RUN mkdir -p /arena /work /creds \
-    && chown -R node:node /arena /work /creds
+# /tmp/opencode is created root-owned by opencode's postinstall during npm install -g;
+# hand it to node or every opencode tool call fails with EACCES.
+RUN mkdir -p /arena /work /creds /tmp/opencode \
+    && chown -R node:node /arena /work /creds /tmp/opencode
 COPY --chown=node:node runner.mjs /arena/runner.mjs
 
 USER node

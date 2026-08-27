@@ -54,7 +54,7 @@ credential fails the whole run, not only the entrant that needed it:
 | Harness | Credential |
 | ------- | ---------- |
 | `codex` | `~/.codex/auth.json`. No variable. Leave the model as `default` for a ChatGPT-account login, because API-only model ids are rejected. |
-| `opencode` | `OPENROUTER_API_KEY`, or its own `auth.json`. |
+| `opencode` | `OPENROUTER_API_KEY`, or its own `auth.json`. `EXA_API_KEY` is optional; websearch works without it on Exa's shared rate limit. |
 | `claude` | `CLAUDE_CODE_OAUTH_TOKEN`, from `claude setup-token`. |
 
 Entrant narration uses OpenRouter from the backend. It remains off when

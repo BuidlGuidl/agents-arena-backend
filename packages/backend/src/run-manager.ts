@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { and, asc, count, desc, eq, inArray, max, ne, notInArray, sql } from 'drizzle-orm';
-import { recoverTypedDataAddress, type Hex } from 'viem';
+import { getAddress, recoverTypedDataAddress, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
 import type {
@@ -13,15 +13,23 @@ import type {
   RunSnapshot,
   RunState,
   SteerDelivery,
+  SweepResult,
+  SweepResponse,
 } from './contract.js';
 import { entrants, events, runs, scores } from './db/schema.js';
 import { ensureChainTables } from './chain/storage.js';
 import { activeChainProfile } from './chain/profile.js';
+import {
+  createNativeSweepChain,
+  type NativeSweepChain,
+} from './chain/native-sweep.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from './chain/local-dev.js';
 import {
   canonicalizeSeedSignature,
   deriveEntrantKeys,
   dropRunKeys,
+  getWallet,
+  runKeySecrets,
   seedTypedData,
 } from './chain/wallet.js';
 import { buildOpeningPrompt, type OpeningPromptBuilder } from './ctf/prompt.js';
@@ -50,6 +58,8 @@ export class UnknownPresetError extends Error {}
 export class SeedStateConflictError extends Error {}
 export class SeedEncodingError extends Error {}
 export class SeedSignatureError extends Error {}
+export class SweepConflictError extends Error {}
+export class SweepSignatureError extends Error {}
 export class ActiveRunConflictError extends Error {
   constructor(
     message: string,
@@ -140,6 +150,7 @@ export interface RunManagerOptions {
   solveWatch?: SolveWatch;
   narrationWatch?: NarrationWatch;
   promptBuilder?: OpeningPromptBuilder;
+  sweepChain?: NativeSweepChain;
 }
 
 interface EntrantUsage {
@@ -167,6 +178,12 @@ const ACTIVE_RUN_STATES: RunState[] = [
   'running',
   'stopping',
 ];
+const SWEEPABLE_RUN_STATES: ReadonlySet<RunState> = new Set([
+  'awaiting_funding',
+  'ready',
+  'finished',
+  'failed',
+]);
 
 // The chain funding slice replaces this pass-through hook with the real gate.
 export const passThroughFundingGate: FundingGate = async () => {};
@@ -193,6 +210,7 @@ export class RunManager {
   private readonly solveWatch: SolveWatch;
   private readonly narrationWatch: NarrationWatch;
   private readonly promptBuilder: OpeningPromptBuilder;
+  private readonly sweepChain: NativeSweepChain;
 
   constructor(
     private readonly journal: EventJournal,
@@ -206,6 +224,7 @@ export class RunManager {
     this.solveWatch = options.solveWatch ?? passThroughSolveWatch;
     this.narrationWatch = options.narrationWatch ?? passThroughNarrationWatch;
     this.promptBuilder = options.promptBuilder ?? profilePromptBuilder;
+    this.sweepChain = options.sweepChain ?? createNativeSweepChain(activeChainProfile);
     // snapshot() reads scores, which chainless presets never create otherwise.
     ensureChainTables(journal.database);
   }
@@ -319,6 +338,7 @@ export class RunManager {
         state: runs.state,
         createdAt: runs.createdAt,
         startedAt: runs.startedAt,
+        seededBy: runs.seededBy,
         agentCount: count(entrants.runId),
       })
       .from(runs)
@@ -352,6 +372,175 @@ export class RunManager {
 
   async submitSeed(runId: string, signature: Hex): Promise<RunSnapshot> {
     return this.submitSeedInternal(runId, signature, false);
+  }
+
+  async sweep(runId: string, signature: Hex): Promise<SweepResponse> {
+    const run = this.requireRun(runId);
+    if (!SWEEPABLE_RUN_STATES.has(run.state)) {
+      throw new SweepConflictError(`Cannot sweep run ${runId} from ${run.state}`);
+    }
+    if (this.inFlightStarts.has(runId)) {
+      throw new SweepConflictError(`Cannot sweep run ${runId} while a start is in flight`);
+    }
+    const runEntrants = this.entrants(runId).filter(
+      (entrant): entrant is EntrantRecord & { address: string } => entrant.address !== null,
+    );
+    if (run.seededBy === null || runEntrants.length === 0) {
+      throw new SweepConflictError('Run has no seeded wallets to sweep');
+    }
+
+    let canonicalSignature: Hex;
+    try {
+      canonicalSignature = canonicalizeSeedSignature(signature);
+    } catch {
+      throw new SeedEncodingError(
+        'Signature encoding is not canonical (expects low-s, v 27/28).',
+      );
+    }
+
+    let recovered: string;
+    try {
+      recovered = await recoverTypedDataAddress({
+        ...seedTypedData(run.id, activeChainProfile.chainId),
+        signature: canonicalSignature,
+      });
+    } catch {
+      throw new SweepSignatureError("Sweep signature does not match this run's seed signer");
+    }
+    if (getAddress(recovered) !== getAddress(run.seededBy)) {
+      throw new SweepSignatureError("Sweep signature does not match this run's seed signer");
+    }
+
+    const hadLiveKeys = runKeySecrets(run.id).length > 0;
+    try {
+      let derivedAddresses: ReadonlyMap<string, string>;
+      try {
+        derivedAddresses = deriveEntrantKeys(
+          run.id,
+          canonicalSignature,
+          runEntrants.map((entrant) => entrant.id),
+        );
+      } catch {
+        throw new SweepConflictError(
+          "the signature does not reproduce this run's wallets — the signer must re-sign deterministically (RFC 6979 EOA) on the run's original chain",
+        );
+      }
+      for (const entrant of runEntrants) {
+        const derivedAddress = derivedAddresses.get(entrant.id);
+        if (derivedAddress === undefined || getAddress(derivedAddress) !== getAddress(entrant.address)) {
+          throw new SweepConflictError(
+            "the signature does not reproduce this run's wallets — the signer must re-sign deterministically (RFC 6979 EOA) on the run's original chain",
+          );
+        }
+      }
+
+      const current = this.requireRun(runId);
+      if (!SWEEPABLE_RUN_STATES.has(current.state)) {
+        throw new SweepConflictError(`Cannot sweep run ${runId} from ${current.state}`);
+      }
+      if (this.inFlightStarts.has(runId)) {
+        throw new SweepConflictError(`Cannot sweep run ${runId} while a start is in flight`);
+      }
+
+      const to = getAddress(recovered);
+      const results: SweepResult[] = [];
+      let gasPrice: bigint;
+      try {
+        gasPrice = await this.sweepChain.getGasPrice();
+      } catch (error) {
+        return {
+          runId,
+          to,
+          chainId: activeChainProfile.chainId,
+          results: runEntrants.map((entrant) => ({
+            entrantId: entrant.id,
+            address: getAddress(entrant.address),
+            status: 'failed',
+            error: sweepErrorMessage(error),
+          })),
+        };
+      }
+
+      for (const [index, entrant] of runEntrants.entries()) {
+        const address = getAddress(entrant.address);
+        let balance: bigint | undefined;
+        try {
+          balance = await this.sweepChain.getBalance(address);
+          const gas = await this.sweepChain.estimateGas(address, to);
+          const l1Fee = await this.sweepChain.estimateL1Fee(address, to);
+          const gasCost = gas * gasPrice;
+          const headroom = l1Fee * 2n;
+          const value = balance - gasCost - headroom;
+          if (value <= 0n) {
+            results.push({
+              entrantId: entrant.id,
+              address,
+              balanceWei: balance.toString(),
+              status: 'skipped_low_balance',
+            });
+            continue;
+          }
+
+          const wallet = getWallet(run.id, entrant.id);
+          if (wallet === null) {
+            throw new Error('Derived wallet key is unavailable for this entrant');
+          }
+
+          const latest = this.requireRun(runId);
+          if (!SWEEPABLE_RUN_STATES.has(latest.state) || this.inFlightStarts.has(runId)) {
+            results.push({
+              entrantId: entrant.id,
+              address,
+              balanceWei: balance.toString(),
+              status: 'failed',
+              error: 'run state changed during sweep',
+            });
+            for (const remaining of runEntrants.slice(index + 1)) {
+              results.push({
+                entrantId: remaining.id,
+                address: getAddress(remaining.address),
+                status: 'failed',
+                error: 'run state changed during sweep',
+              });
+            }
+            break;
+          }
+
+          const txHash = await this.sweepChain.sendTransaction({
+            privateKey: wallet.privateKey,
+            to,
+            value,
+            gas,
+            gasPrice,
+          });
+          results.push({
+            entrantId: entrant.id,
+            address,
+            balanceWei: balance.toString(),
+            status: 'swept',
+            txHash,
+          });
+        } catch (error) {
+          results.push({
+            entrantId: entrant.id,
+            address,
+            ...(balance === undefined ? {} : { balanceWei: balance.toString() }),
+            status: 'failed',
+            error: sweepErrorMessage(error),
+          });
+        }
+      }
+
+      return {
+        runId,
+        to,
+        chainId: activeChainProfile.chainId,
+        results,
+      };
+    } finally {
+      // Redaction needs keys for the run's lifetime; a sweep must not shorten it.
+      if (!hadLiveKeys) dropRunKeys(run.id);
+    }
   }
 
   private async submitSeedInternal(
@@ -1042,4 +1231,19 @@ function asError(error: unknown): Error {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function sweepErrorMessage(error: unknown): string {
+  if (
+    typeof error === 'object'
+    && error !== null
+    && 'shortMessage' in error
+    && typeof error.shortMessage === 'string'
+  ) {
+    return error.shortMessage;
+  }
+  if (error instanceof Error && !error.message.toLowerCase().includes('http')) {
+    return error.message;
+  }
+  return 'transaction failed';
 }

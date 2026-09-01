@@ -1,5 +1,8 @@
+import { createECDH } from 'node:crypto';
+
 import { and, eq } from 'drizzle-orm';
 import {
+  hashTypedData,
   parseSignature,
   serializeSignature,
   toHex,
@@ -15,6 +18,7 @@ import { isSecureRequest, MissingOperatorTokenError } from '../src/auth.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import {
   deriveEntrantKeys,
+  deriveEntrantWallets,
   dropRunKeys,
   runKeySecrets,
   seedTypedData,
@@ -1128,6 +1132,13 @@ describe('seed endpoint', () => {
 });
 
 describe('sweep endpoint', () => {
+  const sweepRunIds = new Set<string>();
+
+  afterEach(() => {
+    for (const runId of sweepRunIds) dropRunKeys(runId);
+    sweepRunIds.clear();
+  });
+
   function sweepChain() {
     return {
       getBalance: vi.fn(async () => 100_000n),
@@ -1150,8 +1161,10 @@ describe('sweep endpoint', () => {
       sweepChain: chain,
     });
     servers.push(server);
-    const operator = privateKeyToAccount(generatePrivateKey());
+    const operatorPrivateKey = generatePrivateKey();
+    const operator = privateKeyToAccount(operatorPrivateKey);
     const { run } = await server.manager.create({ preset: 'fake-duel' });
+    sweepRunIds.add(run.id);
     const signature = await operator.signTypedData(seedTypedData(run.id, 31337));
     const walletSignature = (options.walletChainId ?? 31337) === 31337
       ? signature
@@ -1174,7 +1187,7 @@ describe('sweep endpoint', () => {
         .run();
     }
     if (options.keepLiveKeys !== true) dropRunKeys(run.id);
-    return { addresses, chain, operator, run, server, signature };
+    return { addresses, chain, operator, operatorPrivateKey, run, server, signature };
   }
 
   it('rejects a signature from a signer other than the run seed signer', async () => {
@@ -1232,7 +1245,7 @@ describe('sweep endpoint', () => {
     expect(chain.getBalance).not.toHaveBeenCalled();
   });
 
-  it('keeps live run keys after a sweep and drops keys derived only for the sweep', async () => {
+  it('keeps live run keys and never publishes keys derived only for a sweep', async () => {
     const live = await sweepSetup({ keepLiveKeys: true });
     expect(runKeySecrets(live.run.id)).not.toHaveLength(0);
 
@@ -1324,11 +1337,50 @@ describe('sweep endpoint', () => {
     expect(response.statusCode).toBe(200);
   });
 
+  it('rejects a second sweep while the first sweep is in progress', async () => {
+    const { chain, run, server, signature } = await sweepSetup();
+    let markStarted: (() => void) | undefined;
+    let releaseGasPrice: ((gasPrice: bigint) => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    chain.getGasPrice.mockImplementationOnce(async () => {
+      markStarted?.();
+      return new Promise<bigint>((resolve) => {
+        releaseGasPrice = resolve;
+      });
+    });
+
+    const firstSweep = server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+    await started;
+    const secondSweep = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+    releaseGasPrice?.(2n);
+    const firstResponse = await firstSweep;
+
+    expect(secondSweep.statusCode).toBe(409);
+    expect(secondSweep.json()).toEqual({
+      error: 'A sweep for this run is already in progress',
+    });
+    expect(firstResponse.statusCode).toBe(200);
+  });
+
   it('isolates an entrant estimate failure and sanitizes transport errors', async () => {
     const { addresses, chain, run, server, signature } = await sweepSetup();
     chain.estimateGas
       .mockResolvedValueOnce(21_000n)
-      .mockRejectedValueOnce(new Error('RPC failed at https://key.example/rpc'));
+      .mockRejectedValueOnce(Object.assign(new Error('transport failed'), {
+        shortMessage: 'RPC failed at https://key.example/rpc',
+      }));
 
     const response = await server.app.inject({
       method: 'POST',
@@ -1350,11 +1402,52 @@ describe('sweep endpoint', () => {
           entrantId: 'opencode-1',
           address: addresses.get('opencode-1'),
           status: 'failed',
-          error: 'transaction failed',
+          error: 'RPC failed at <url>',
         }),
       ],
     }));
     expect(chain.getGasPrice).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps harmless HTTP status text in sweep errors', async () => {
+    const { chain, run, server, signature } = await sweepSetup();
+    chain.getGasPrice.mockRejectedValueOnce(new Error('HTTP request failed with 429'));
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().results).toEqual([
+      expect.objectContaining({ error: 'HTTP request failed with 429' }),
+      expect.objectContaining({ error: 'HTTP request failed with 429' }),
+    ]);
+  });
+
+  it('replaces sweep errors that contain a derived private key', async () => {
+    const { chain, run, server, signature } = await sweepSetup();
+    const wallet = deriveEntrantWallets(run.id, signature, ['codex-1']).get('codex-1');
+    expect(wallet).toBeDefined();
+    chain.estimateGas.mockRejectedValueOnce(
+      new Error(`transaction rejected for ${wallet?.privateKey}`),
+    );
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().results[0]).toEqual(expect.objectContaining({
+      status: 'failed',
+      error: 'transaction failed',
+    }));
+    expect(response.body).not.toContain(wallet?.privateKey);
   });
 
   it('subtracts twice the L1 fee and skips a balance below total headroom', async () => {
@@ -1449,6 +1542,28 @@ describe('sweep endpoint', () => {
       gas: 21_000n,
       gasPrice: 2n,
     }));
+  });
+
+  it('preserves live keys when the signer returns different valid signature bytes', async () => {
+    const { operatorPrivateKey, run, server, signature } = await sweepSetup({
+      keepLiveKeys: true,
+    });
+    const secretsBefore = runKeySecrets(run.id);
+    const randomizedSignature = alternateNonceSignature(
+      hashTypedData(seedTypedData(run.id, 31337)),
+      operatorPrivateKey,
+    );
+    expect(randomizedSignature).not.toBe(signature);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature: randomizedSignature },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(runKeySecrets(run.id)).toEqual(secretsBefore);
   });
 });
 
@@ -1889,6 +2004,26 @@ function highSSignature(signature: Hex): Hex {
 function paritySignature(signature: Hex): Hex {
   const { yParity } = parseSignature(signature);
   return `${signature.slice(0, -2)}0${yParity}` as Hex;
+}
+
+function alternateNonceSignature(hash: Hex, privateKey: Hex): Hex {
+  // A fixed alternate nonce models a signer that does not use viem's RFC 6979 nonce.
+  const noncePoint = createECDH('secp256k1');
+  noncePoint.setPrivateKey(Buffer.from(toHex(1n, { size: 32 }).slice(2), 'hex'));
+  const publicPoint = noncePoint.getPublicKey(undefined, 'uncompressed');
+  const r = BigInt(`0x${publicPoint.subarray(1, 33).toString('hex')}`) % SECP256K1_N;
+  let s = (BigInt(hash) + r * BigInt(privateKey)) % SECP256K1_N;
+  let yParity = Number(publicPoint[64]! & 1);
+  if (s > SECP256K1_N / 2n) {
+    s = SECP256K1_N - s;
+    yParity ^= 1;
+  }
+  if (r === 0n || s === 0n) throw new Error('Alternate test signature is invalid');
+  return serializeSignature({
+    r: toHex(r, { size: 32 }),
+    s: toHex(s, { size: 32 }),
+    v: BigInt(27 + yParity),
+  });
 }
 
 async function waitForState(

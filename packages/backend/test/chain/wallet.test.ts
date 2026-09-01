@@ -22,8 +22,10 @@ import { ensureChainTables } from '../../src/chain/storage.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../../src/chain/local-dev.js';
 import {
   deriveEntrantKeys,
+  deriveEntrantWallets,
   dropRunKeys,
   getWallet,
+  runKeySecrets,
   seedTypedData,
 } from '../../src/chain/wallet.js';
 import { openArenaDatabase } from '../../src/db/index.js';
@@ -97,6 +99,20 @@ describe('derived entrant wallets', () => {
     deriveEntrantKeys('run-1', signature, ['e1']);
 
     expect(getWallet('run-1', 'e1')).toEqual(first);
+  });
+
+  it('derives wallets without publishing their keys', async () => {
+    const signature = await account.signTypedData(seedTypedData('run-1', 31337));
+
+    const wallets = deriveEntrantWallets('run-1', signature, ['e1']);
+
+    expect(wallets.get('e1')).toEqual(expect.objectContaining({
+      runId: 'run-1',
+      entrantId: 'e1',
+      address: expect.any(String),
+      privateKey: expect.any(String),
+    }));
+    expect(runKeySecrets('run-1')).toEqual([]);
   });
 
   it('canonicalizes parity-encoded signatures before deriving keys', async () => {

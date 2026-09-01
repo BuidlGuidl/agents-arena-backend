@@ -223,7 +223,7 @@ Credentials come from the host: `codex` reads `~/.codex/auth.json`, `opencode` r
 5. Hold at the ready barrier until all entrants report ready. Record one start time and release them with their opening prompt.
 6. Parse each agent's stdout into `ArenaEvent`s, append them to the journal, and stream them to the browser.
 
-Keys are dropped at teardown and never enter SQLite. The seed signer holds that run's recovery capability: `POST /runs/:id/sweep` takes a fresh seed signature, re-derives the burner keys, and sweeps their balances back to the signer. If any preflight fails, the run fails and every container is torn down. No entrant starts.
+Keys are dropped at teardown and never enter SQLite. The seed signer holds that run's recovery capability: `POST /runs/:id/sweep` takes a fresh seed signature, re-derives the burner keys, and sweeps their balances back to the signer. The offline `packages/backend/scripts/recover-keys.ts` script still re-derives and sweeps with no server in the path. If any preflight fails, the run fails and every container is torn down. No entrant starts.
 
 ## API
 

@@ -61,6 +61,16 @@ export function deriveEntrantKeys(
   signature: Hex,
   entrantIds: readonly string[],
 ): ReadonlyMap<string, Address> {
+  const entrantKeys = deriveEntrantWallets(runId, signature, entrantIds);
+  runKeys.set(runId, entrantKeys);
+  return new Map([...entrantKeys].map(([entrantId, wallet]) => [entrantId, wallet.address]));
+}
+
+export function deriveEntrantWallets(
+  runId: string,
+  signature: Hex,
+  entrantIds: readonly string[],
+): Map<string, WalletRecord> {
   const canonicalSignature = canonicalizeSeedSignature(signature);
   const entrantKeys = new Map<string, WalletRecord>();
 
@@ -76,8 +86,7 @@ export function deriveEntrantKeys(
     entrantKeys.set(entrantId, { runId, entrantId, address, privateKey });
   }
 
-  runKeys.set(runId, entrantKeys);
-  return new Map([...entrantKeys].map(([entrantId, wallet]) => [entrantId, wallet.address]));
+  return entrantKeys;
 }
 
 export function getWallet(runId: string, entrantId: string): WalletRecord | null {

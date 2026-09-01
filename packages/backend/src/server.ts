@@ -16,6 +16,7 @@ import {
   type RosterEntry,
   type RunListResponse,
   type SteerResponse,
+  type SweepResponse,
 } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import { resolveAgentToken } from './agent-auth.js';
@@ -49,9 +50,12 @@ import {
   SeedEncodingError,
   SeedSignatureError,
   SeedStateConflictError,
+  SweepConflictError,
+  SweepSignatureError,
   type SolveWatch,
   UnknownPresetError,
 } from './run-manager.js';
+import type { NativeSweepChain } from './chain/native-sweep.js';
 
 const rosterEntrySchema = z.object({
   id: z.string()
@@ -139,6 +143,7 @@ export interface ServerOptions {
   driverFactory?: (journal: EventJournal) => EntrantDriver;
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
   solveWatchFactory?: (journal: EventJournal) => SolveWatch;
+  sweepChain?: NativeSweepChain;
   narrate?: Narrate;
   narrationMinMs?: number;
   narrationMaxMs?: number;
@@ -190,6 +195,7 @@ export function createServer(options: ServerOptions): ArenaServer {
           logger: app.log,
         }),
       }),
+    ...(options.sweepChain === undefined ? {} : { sweepChain: options.sweepChain }),
   };
   const manager = new RunManager(
     journal,
@@ -215,6 +221,10 @@ export function createServer(options: ServerOptions): ArenaServer {
       void reply.status(409).send({ error: error.message });
       return;
     }
+    if (error instanceof SweepConflictError) {
+      void reply.status(409).send({ error: error.message });
+      return;
+    }
     if (error instanceof ActiveRunConflictError) {
       void reply.status(409).send({
         error: error.message,
@@ -224,6 +234,10 @@ export function createServer(options: ServerOptions): ArenaServer {
       return;
     }
     if (error instanceof SeedSignatureError) {
+      void reply.status(403).send({ error: error.message });
+      return;
+    }
+    if (error instanceof SweepSignatureError) {
       void reply.status(403).send({ error: error.message });
       return;
     }
@@ -338,6 +352,14 @@ export function createServer(options: ServerOptions): ArenaServer {
     const { id } = request.params as { id: string };
     const run = await manager.submitSeed(id, body.signature as Hex);
     return reply.status(202).send({ run });
+  });
+
+  app.post('/runs/:id/sweep', async (request, reply) => {
+    const body = parseBody(seedSchema, request.body, reply);
+    if (body === undefined) return;
+    const { id } = request.params as { id: string };
+    const response: SweepResponse = await manager.sweep(id, body.signature as Hex);
+    return response;
   });
 
   app.post('/runs/:id/stop', async (request) => {

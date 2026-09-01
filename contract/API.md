@@ -126,12 +126,12 @@ An unknown preset or invalid roster returns status `400`.
 
 ### `GET /runs`
 
-Returns `{"runs": RunListItem[]}` with the newest runs first by `createdAt`. Each item carries `id`, `state`, `createdAt`, `startedAt`, and `agentCount` — the number of entrants. The list is deliberately thin: finish time, winner, scores, and events live on `GET /runs/:id`.
+Returns `{"runs": RunListItem[]}` with the newest runs first by `createdAt`. Each item carries `id`, `state`, `createdAt`, `startedAt`, `seededBy`, and `agentCount` — the number of entrants. `seededBy` is the seed signer address or `null` before seeding. The list is deliberately thin: finish time, winner, scores, and events live on `GET /runs/:id`.
 
 The optional `limit` query accepts an integer from 1 to 200 and defaults to 50. An invalid `limit` returns status `400`.
 
 ```json
-{"runs":[{"id":"...","state":"finished","createdAt":"2026-08-05T10:00:00.000Z","startedAt":"2026-08-05T10:01:00.000Z","agentCount":2}]}
+{"runs":[{"id":"...","state":"finished","createdAt":"2026-08-05T10:00:00.000Z","startedAt":"2026-08-05T10:01:00.000Z","seededBy":"0x...","agentCount":2}]}
 ```
 
 ### `GET /runs/:id`
@@ -244,6 +244,59 @@ The seed signer signs this typed data. `chainId` is the active chain profile's c
 The domain has no `verifyingContract`. The backend verifies that the recovered address is in `ARENA_OPERATOR_ADDRESSES`. It derives each entrant wallet in memory, stores the signer as `seededBy`, stores each address on the entrant, and emits one `wallet.assigned` event per entrant. The signature and private keys never enter the event journal or database. Local automatic signing bypasses the allowlist and records the local dev signer.
 
 A valid request returns status `202` with `{"run": RunSnapshot}`. A malformed or non-canonical signature returns status `400`. A canonical signature from a non-operator address returns status `403`. A run outside `awaiting_signature` returns status `409`.
+
+### `POST /runs/:id/sweep`
+
+Sweeps leftover native funds from the run's entrant wallets to its seed signer. The global operator credential protects this route. The signature is the fund-recovery capability: it must recover to the run's stored `seededBy` address.
+
+```json
+{"signature":"0x..."}
+```
+
+Sign the exact `Seed` typed data from `POST /runs/:id/seed` again. Use the same `runId` and the active `chainId`. Deterministic EOA signing recreates the run's original seed signature and, therefore, the same derived wallet keys. The request has no destination field. Every transfer targets the verified signer.
+
+The route accepts runs in `awaiting_funding`, `ready`, `finished`, or `failed`. It rejects `created`, `awaiting_signature`, `preparing`, `running`, and `stopping` runs. It also rejects a run with a start in flight. Before any RPC call, it derives every addressed entrant wallet again and compares each address with the database. A mismatch rejects the whole request because the signature did not reproduce the keys that created the stored wallets.
+
+The backend reads the RPC gas price once. For each entrant, it reads the native balance and estimates a plain transfer. Chains with a gas price oracle in viem's registry also estimate the L1 data fee. The transfer value is `balance - gas * gasPrice - 2 * l1Fee`. The L1 fee buffer covers changes before inclusion and leaves any dust in the wallet. A non-positive value gets `skipped_low_balance`.
+
+Any balance, gas, fee, wallet, or send error gets `failed`, and the backend continues with the remaining entrants. Error text uses the transport's short message when available and never includes an HTTP RPC URL. If the run leaves a sweepable state before a send, that entrant and all remaining entrants get `failed` with `run state changed during sweep`. The response keeps earlier transaction hashes and does not wait for receipts.
+
+```json
+{
+  "runId":"...",
+  "to":"0x...",
+  "chainId":31337,
+  "results":[
+    {
+      "entrantId":"codex-1",
+      "address":"0x...",
+      "balanceWei":"10000000000000000",
+      "status":"swept",
+      "txHash":"0x..."
+    },
+    {
+      "entrantId":"opencode-1",
+      "address":"0x...",
+      "balanceWei":"12000",
+      "status":"skipped_low_balance"
+    }
+  ]
+}
+```
+
+The route returns these errors:
+
+| Status | Cause |
+| --- | --- |
+| `400` | The body is malformed, has extra fields, or lacks a 65-byte hex signature. |
+| `400` | The signature encoding is non-canonical, including a high-s signature. |
+| `401` | The request lacks valid operator auth. |
+| `403` | The signature does not recover to the run's stored seed signer. |
+| `404` | The run does not exist. |
+| `409` | The run state is not sweepable, a start is in flight, or the run has no seeded addressed wallets. |
+| `409` | The signature does not reproduce the run's wallets. The signer must re-sign deterministically with an RFC 6979 EOA on the run's original chain. |
+
+A per-entrant error does not change the HTTP status. The matching result uses `status: "failed"` and includes `error`; other entrant sweeps continue. `balanceWei` is absent if the balance was not read.
 
 ### `POST /runs/:id/stop`
 

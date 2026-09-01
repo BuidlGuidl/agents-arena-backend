@@ -12,8 +12,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 
 import {
   canonicalizeSeedSignature,
-  deriveEntrantKeys,
-  getWallet,
+  deriveEntrantWallets,
   seedTypedData,
 } from '../src/chain/wallet.js';
 
@@ -73,17 +72,12 @@ try {
   throw new Error('The seed signature is not canonical.');
 }
 
+let recovered: ReturnType<typeof deriveEntrantWallets>;
 try {
-  deriveEntrantKeys(runId, canonicalSignature, entrantIds);
+  recovered = deriveEntrantWallets(runId, canonicalSignature, entrantIds);
 } catch {
   throw new Error('Key derivation failed without exposing the rejected key.');
 }
-
-const recovered = entrantIds.map((entrantId) => {
-  const wallet = getWallet(runId, entrantId);
-  if (wallet === null) throw new Error(`No recovered wallet for ${entrantId}.`);
-  return wallet;
-});
 
 const publicClient = rpcUrl === undefined
   ? undefined
@@ -101,7 +95,7 @@ const chain = publicClient === undefined || rpcUrl === undefined
     });
 
 console.log('WARNING: this output contains private keys. Store it securely.');
-for (const wallet of recovered) {
+for (const wallet of recovered.values()) {
   console.log(`\n${wallet.entrantId}`);
   console.log(`address:     ${wallet.address}`);
   console.log(`private key: ${wallet.privateKey}`);

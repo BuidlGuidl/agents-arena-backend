@@ -1,12 +1,15 @@
-import { eq } from 'drizzle-orm';
+import { createECDH } from 'node:crypto';
+
+import { and, eq } from 'drizzle-orm';
 import {
+  hashTypedData,
   parseSignature,
   serializeSignature,
   toHex,
   type Hex,
 } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { issueAgentToken, revokeAgentToken } from '../src/agent-auth.js';
 import { dropCurrentChallenge, recordCurrentChallenge } from '../src/ctf/challenge-tracker.js';
@@ -15,6 +18,9 @@ import { isSecureRequest, MissingOperatorTokenError } from '../src/auth.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import {
   deriveEntrantKeys,
+  deriveEntrantWallets,
+  dropRunKeys,
+  runKeySecrets,
   seedTypedData,
 } from '../src/chain/wallet.js';
 import type { ArenaEvent, HistoryPage, RunSnapshot } from '../src/contract.js';
@@ -711,6 +717,7 @@ describe('run list', () => {
         id: 'newest',
         state: 'failed',
         preset: 'fake-duel',
+        seededBy: LOCAL_DEV_OPERATOR.address,
         createdAt: '2099-01-01T00:00:00.000Z',
       },
     ]).run();
@@ -736,6 +743,7 @@ describe('run list', () => {
         state: 'failed',
         createdAt: '2099-01-01T00:00:00.000Z',
         startedAt: null,
+        seededBy: LOCAL_DEV_OPERATOR.address,
         agentCount: 0,
       },
       {
@@ -743,6 +751,7 @@ describe('run list', () => {
         state: 'created',
         createdAt: expect.any(String),
         startedAt: null,
+        seededBy: null,
         agentCount: 2,
       },
       {
@@ -750,6 +759,7 @@ describe('run list', () => {
         state: 'finished',
         createdAt: '2020-01-01T00:00:00.000Z',
         startedAt: '2020-01-01T00:01:00.000Z',
+        seededBy: null,
         agentCount: 0,
       },
     ] });
@@ -1118,6 +1128,442 @@ describe('seed endpoint', () => {
 
       await server.manager.stop(run.id);
     });
+  });
+});
+
+describe('sweep endpoint', () => {
+  const sweepRunIds = new Set<string>();
+
+  afterEach(() => {
+    for (const runId of sweepRunIds) dropRunKeys(runId);
+    sweepRunIds.clear();
+  });
+
+  function sweepChain() {
+    return {
+      getBalance: vi.fn(async () => 100_000n),
+      getGasPrice: vi.fn(async () => 2n),
+      estimateGas: vi.fn(async () => 21_000n),
+      estimateL1Fee: vi.fn(async () => 0n),
+      sendTransaction: vi.fn(async () => `0x${'ab'.repeat(32)}` as Hex),
+    };
+  }
+
+  async function sweepSetup(options: {
+    walletChainId?: number;
+    state?: 'awaiting_funding' | 'ready' | 'finished' | 'failed';
+    keepLiveKeys?: boolean;
+  } = {}) {
+    const chain = sweepChain();
+    const server = createServer({
+      dbPath: ':memory:',
+      operatorToken: OPERATOR_TOKEN,
+      sweepChain: chain,
+    });
+    servers.push(server);
+    const operatorPrivateKey = generatePrivateKey();
+    const operator = privateKeyToAccount(operatorPrivateKey);
+    const { run } = await server.manager.create({ preset: 'fake-duel' });
+    sweepRunIds.add(run.id);
+    const signature = await operator.signTypedData(seedTypedData(run.id, 31337));
+    const walletSignature = (options.walletChainId ?? 31337) === 31337
+      ? signature
+      : await operator.signTypedData(seedTypedData(run.id, options.walletChainId ?? 31337));
+    const addresses = deriveEntrantKeys(
+      run.id,
+      walletSignature,
+      run.entrants.map((entrant) => entrant.id),
+    );
+    server.journal.database
+      .update(runs)
+      .set({ state: options.state ?? 'finished', seededBy: operator.address })
+      .where(eq(runs.id, run.id))
+      .run();
+    for (const entrant of run.entrants) {
+      server.journal.database
+        .update(entrants)
+        .set({ address: addresses.get(entrant.id) })
+        .where(and(eq(entrants.runId, run.id), eq(entrants.id, entrant.id)))
+        .run();
+    }
+    if (options.keepLiveKeys !== true) dropRunKeys(run.id);
+    return { addresses, chain, operator, operatorPrivateKey, run, server, signature };
+  }
+
+  it('rejects a signature from a signer other than the run seed signer', async () => {
+    const { chain, run, server } = await sweepSetup();
+    const wrongSigner = privateKeyToAccount(generatePrivateKey());
+    const wrongSignature = await wrongSigner.signTypedData(seedTypedData(run.id, 31337));
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature: wrongSignature },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({
+      error: "Sweep signature does not match this run's seed signer",
+    });
+    expect(chain.getBalance).not.toHaveBeenCalled();
+  });
+
+  it.each(['created', 'awaiting_signature', 'preparing', 'running', 'stopping'] as const)(
+    'rejects a run in active state %s',
+    async (state) => {
+      const { chain, run, server, signature } = await sweepSetup();
+      server.journal.database.update(runs).set({ state }).where(eq(runs.id, run.id)).run();
+
+      const response = await server.app.inject({
+        method: 'POST',
+        url: `/runs/${run.id}/sweep`,
+        headers: operatorHeaders,
+        payload: { signature },
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: `Cannot sweep run ${run.id} from ${state}` });
+      expect(chain.getBalance).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects wallets derived under a different chain profile', async () => {
+    const { chain, run, server, signature } = await sweepSetup({ walletChainId: 84532 });
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: "the signature does not reproduce this run's wallets — the signer must re-sign deterministically (RFC 6979 EOA) on the run's original chain",
+    });
+    expect(chain.getBalance).not.toHaveBeenCalled();
+  });
+
+  it('keeps live run keys and never publishes keys derived only for a sweep', async () => {
+    const live = await sweepSetup({ keepLiveKeys: true });
+    expect(runKeySecrets(live.run.id)).not.toHaveLength(0);
+
+    const liveResponse = await live.server.app.inject({
+      method: 'POST',
+      url: `/runs/${live.run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature: live.signature },
+    });
+
+    expect(liveResponse.statusCode).toBe(200);
+    expect(runKeySecrets(live.run.id)).not.toHaveLength(0);
+
+    const recovered = await sweepSetup();
+    expect(runKeySecrets(recovered.run.id)).toHaveLength(0);
+
+    const recoveredResponse = await recovered.server.app.inject({
+      method: 'POST',
+      url: `/runs/${recovered.run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature: recovered.signature },
+    });
+
+    expect(recoveredResponse.statusCode).toBe(200);
+    expect(runKeySecrets(recovered.run.id)).toHaveLength(0);
+  });
+
+  it('does not drop live keys when a wrong-chain signature is rejected', async () => {
+    const { operator, run, server } = await sweepSetup({ keepLiveKeys: true });
+    const secretsBefore = runKeySecrets(run.id);
+    const wrongChainSignature = await operator.signTypedData(seedTypedData(run.id, 84532));
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature: wrongChainSignature },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(runKeySecrets(run.id)).toEqual(secretsBefore);
+  });
+
+  it('rejects a high-s sweep signature as non-canonical', async () => {
+    const { run, server, signature } = await sweepSetup();
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature: highSSignature(signature) },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: 'Signature encoding is not canonical (expects low-s, v 27/28).',
+    });
+  });
+
+  it('returns 404 for an unknown run and 401 without operator auth', async () => {
+    const { run, server, signature } = await sweepSetup();
+
+    const unknown = await server.app.inject({
+      method: 'POST',
+      url: '/runs/unknown/sweep',
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+    const unauthorized = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      payload: { signature },
+    });
+
+    expect(unknown.statusCode).toBe(404);
+    expect(unauthorized.statusCode).toBe(401);
+  });
+
+  it('accepts a failed run', async () => {
+    const { run, server, signature } = await sweepSetup({ state: 'failed' });
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it('rejects a second sweep while the first sweep is in progress', async () => {
+    const { chain, run, server, signature } = await sweepSetup();
+    let markStarted: (() => void) | undefined;
+    let releaseGasPrice: ((gasPrice: bigint) => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    chain.getGasPrice.mockImplementationOnce(async () => {
+      markStarted?.();
+      return new Promise<bigint>((resolve) => {
+        releaseGasPrice = resolve;
+      });
+    });
+
+    const firstSweep = server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+    await started;
+    const secondSweep = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+    releaseGasPrice?.(2n);
+    const firstResponse = await firstSweep;
+
+    expect(secondSweep.statusCode).toBe(409);
+    expect(secondSweep.json()).toEqual({
+      error: 'A sweep for this run is already in progress',
+    });
+    expect(firstResponse.statusCode).toBe(200);
+  });
+
+  it('isolates an entrant estimate failure and sanitizes transport errors', async () => {
+    const { addresses, chain, run, server, signature } = await sweepSetup();
+    chain.estimateGas
+      .mockResolvedValueOnce(21_000n)
+      .mockRejectedValueOnce(Object.assign(new Error('transport failed'), {
+        shortMessage: 'RPC failed at https://key.example/rpc',
+      }));
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(expect.objectContaining({
+      results: [
+        expect.objectContaining({
+          entrantId: 'codex-1',
+          address: addresses.get('codex-1'),
+          status: 'swept',
+          txHash: expect.any(String),
+        }),
+        expect.objectContaining({
+          entrantId: 'opencode-1',
+          address: addresses.get('opencode-1'),
+          status: 'failed',
+          error: 'RPC failed at <url>',
+        }),
+      ],
+    }));
+    expect(chain.getGasPrice).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps harmless HTTP status text in sweep errors', async () => {
+    const { chain, run, server, signature } = await sweepSetup();
+    chain.getGasPrice.mockRejectedValueOnce(new Error('HTTP request failed with 429'));
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().results).toEqual([
+      expect.objectContaining({ error: 'HTTP request failed with 429' }),
+      expect.objectContaining({ error: 'HTTP request failed with 429' }),
+    ]);
+  });
+
+  it('replaces sweep errors that contain a derived private key', async () => {
+    const { chain, run, server, signature } = await sweepSetup();
+    const wallet = deriveEntrantWallets(run.id, signature, ['codex-1']).get('codex-1');
+    expect(wallet).toBeDefined();
+    chain.estimateGas.mockRejectedValueOnce(
+      new Error(`transaction rejected for ${wallet?.privateKey}`),
+    );
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().results[0]).toEqual(expect.objectContaining({
+      status: 'failed',
+      error: 'transaction failed',
+    }));
+    expect(response.body).not.toContain(wallet?.privateKey);
+  });
+
+  it('subtracts twice the L1 fee and skips a balance below total headroom', async () => {
+    const { chain, run, server, signature } = await sweepSetup();
+    chain.getBalance
+      .mockResolvedValueOnce(100_000n)
+      .mockResolvedValueOnce(61_999n);
+    chain.estimateL1Fee.mockResolvedValue(10_000n);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().results.map((result: { status: string }) => result.status)).toEqual([
+      'swept',
+      'skipped_low_balance',
+    ]);
+    expect(chain.sendTransaction).toHaveBeenCalledWith(expect.objectContaining({
+      value: 38_000n,
+    }));
+  });
+
+  it('returns completed hashes when the run state changes during the sweep', async () => {
+    const { chain, run, server, signature } = await sweepSetup();
+    chain.sendTransaction.mockImplementationOnce(async () => {
+      server.journal.database
+        .update(runs)
+        .set({ state: 'running' })
+        .where(eq(runs.id, run.id))
+        .run();
+      return `0x${'cd'.repeat(32)}` as Hex;
+    });
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().results).toEqual([
+      expect.objectContaining({ status: 'swept', txHash: `0x${'cd'.repeat(32)}` }),
+      expect.objectContaining({ status: 'failed', error: 'run state changed during sweep' }),
+    ]);
+    expect(chain.sendTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('sweeps the balance above legacy gas cost and skips a low balance', async () => {
+    const { addresses, chain, operator, run, server, signature } = await sweepSetup();
+    chain.getBalance
+      .mockResolvedValueOnce(100_000n)
+      .mockResolvedValueOnce(42_000n);
+    const txHash = `0x${'ab'.repeat(32)}`;
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      runId: run.id,
+      to: operator.address,
+      chainId: 31337,
+      results: [
+        {
+          entrantId: 'codex-1',
+          address: addresses.get('codex-1'),
+          balanceWei: '100000',
+          status: 'swept',
+          txHash,
+        },
+        {
+          entrantId: 'opencode-1',
+          address: addresses.get('opencode-1'),
+          balanceWei: '42000',
+          status: 'skipped_low_balance',
+        },
+      ],
+    });
+    expect(chain.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(chain.sendTransaction).toHaveBeenCalledWith(expect.objectContaining({
+      to: operator.address,
+      value: 58_000n,
+      gas: 21_000n,
+      gasPrice: 2n,
+    }));
+  });
+
+  it('preserves live keys when the signer returns different valid signature bytes', async () => {
+    const { operatorPrivateKey, run, server, signature } = await sweepSetup({
+      keepLiveKeys: true,
+    });
+    const secretsBefore = runKeySecrets(run.id);
+    const randomizedSignature = alternateNonceSignature(
+      hashTypedData(seedTypedData(run.id, 31337)),
+      operatorPrivateKey,
+    );
+    expect(randomizedSignature).not.toBe(signature);
+
+    const response = await server.app.inject({
+      method: 'POST',
+      url: `/runs/${run.id}/sweep`,
+      headers: operatorHeaders,
+      payload: { signature: randomizedSignature },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(runKeySecrets(run.id)).toEqual(secretsBefore);
   });
 });
 
@@ -1558,6 +2004,26 @@ function highSSignature(signature: Hex): Hex {
 function paritySignature(signature: Hex): Hex {
   const { yParity } = parseSignature(signature);
   return `${signature.slice(0, -2)}0${yParity}` as Hex;
+}
+
+function alternateNonceSignature(hash: Hex, privateKey: Hex): Hex {
+  // A fixed alternate nonce models a signer that does not use viem's RFC 6979 nonce.
+  const noncePoint = createECDH('secp256k1');
+  noncePoint.setPrivateKey(Buffer.from(toHex(1n, { size: 32 }).slice(2), 'hex'));
+  const publicPoint = noncePoint.getPublicKey(undefined, 'uncompressed');
+  const r = BigInt(`0x${publicPoint.subarray(1, 33).toString('hex')}`) % SECP256K1_N;
+  let s = (BigInt(hash) + r * BigInt(privateKey)) % SECP256K1_N;
+  let yParity = Number(publicPoint[64]! & 1);
+  if (s > SECP256K1_N / 2n) {
+    s = SECP256K1_N - s;
+    yParity ^= 1;
+  }
+  if (r === 0n || s === 0n) throw new Error('Alternate test signature is invalid');
+  return serializeSignature({
+    r: toHex(r, { size: 32 }),
+    s: toHex(s, { size: 32 }),
+    v: BigInt(27 + yParity),
+  });
 }
 
 async function waitForState(

@@ -223,7 +223,7 @@ Credentials come from the host: `codex` reads `~/.codex/auth.json`, `opencode` r
 5. Hold at the ready barrier until all entrants report ready. Record one start time and release them with their opening prompt.
 6. Parse each agent's stdout into `ArenaEvent`s, append them to the journal, and stream them to the browser.
 
-Keys are dropped at teardown and never enter SQLite. At race time, the seed signer must save the canonical signature because it is that run's recovery key. From `packages/backend`, `scripts/recover-keys.ts` re-derives the burner keys and can sweep their balances. If any preflight fails, the run fails and every container is torn down. No entrant starts.
+Keys are dropped at teardown and never enter SQLite. The seed signer holds that run's recovery capability: `POST /runs/:id/sweep` takes a fresh seed signature, re-derives the burner keys, and sweeps their balances back to the signer. The offline `packages/backend/scripts/recover-keys.ts` script still re-derives and sweeps with no server in the path. If any preflight fails, the run fails and every container is torn down. No entrant starts.
 
 ## API
 
@@ -233,6 +233,7 @@ Keys are dropped at teardown and never enter SQLite. At race time, the seed sign
 | POST | `/runs/:id/start` | begin the signature, preparation, funding, and ready flow; release a ready run |
 | POST | `/runs/:id/seed` | submit an allowlisted operator's seed signature while the run awaits it |
 | POST | `/runs/:id/stop` | stop and tear down |
+| POST | `/runs/:id/sweep` | re-derive a run's burner keys from a fresh seed signature and sweep leftover balances to the signer |
 | POST | `/runs/:id/entrants/:eid/steer` | inject a turn into one live agent |
 | POST | `/runs/:id/entrants/:eid/restart` | give one stale or blocked agent a fresh session on its opening prompt |
 | POST | `/runs/:id/broadcast` | inject one director message into every live agent |

@@ -4,6 +4,8 @@
 
 Below is an high level flow and important entities of the agents arena:
 
+check the diagram in [excalidraw](https://excalidraw.com/#json=YzfGckH4EyQiEFvD5B_LS,qSD8HM9s-t-FaXWQd9WtRw)
+
 ```mermaid
 flowchart LR
     subgraph USERS[Users]

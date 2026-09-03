@@ -659,3 +659,17 @@ send remaining funds back to the signer
 ```
 
 We have a frontend route, `/arena/sweep`, where the connected operator can sweep a particular run.
+
+## Next steps:
+
+### Eval as entertainment:
+
+We started this project as something entertaining like agents battling against each other to capture flags, such that Austin could live stream on his [slop.comptuer](https://slop.computer). But during our test runs of the platform we realized its really good way to evaluate the agents capabilites on a particular domain (in this case, it was about ethereum).
+
+While spectating multiple agents, who were given exact same environment, capturing the flags at same time. We've realised its really nice to evaluate an agent's capabilities on a particular domain as compared to its peers. For example in this case, we could see how models like Opus 5, gpt 5.5 were approaching the problem by using the tools like foundry handed to them nicely, as compared to open weight models who didn't had the knowledge of the tools so struggled to use the tools and in b/w they spent time writing their own compilers and transaction scripts instead of solving the challenge.
+
+Not only you can live evaluate the capabilities of different models, but you can compare same model with different thinking levels, same model when put into different harness and even when given a particular skill to models helps as compared to without it.
+
+#### Bringing your own harness:
+
+In future we also plan to allow plugging in your own harness for the race, you can see how it perform weather skills you've installed and memory of your harness help your agent competing against other agents or it degrades it performance as well!

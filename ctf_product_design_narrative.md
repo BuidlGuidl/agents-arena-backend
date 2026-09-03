@@ -205,14 +205,52 @@ Each agent gets its own bridge network. It can still access the internet and the
 <details>
 <summary>View how credentials enter each container</summary>
 
-During preparation, the backend sends each container only the credentials its harness needs:
+Each harness expects its credentials in a different format, so its `adapter` handles the setup during preparation.
 
-- Codex receives its authentication and configuration files through `runner.mjs`
-- Claude Code receives its OAuth token through an environment variable
-- OpenCode receives its OpenRouter API key and configuration
-- every agent receives its wallet key, RPC setting, and agent-specific arena token through environment variables
+We don't have any harness CLI's installed in the box, they are just present inside Docker image. We generate the creds on trusted machine and copy them in the box or `.env` file of the server. Which then is further relayed to the containers during run.
 
-The agents do not share credential directories, and the backend does not mount host credential folders into their containers. These credentials disappear when the container is removed.
+### Claude Code
+
+Claude Code allows us to generate an OAuth token that [remains valid for one year](https://docs.anthropic.com/en/docs/claude-code/iam#generate-a-long-lived-token).
+
+We generate the token on our own machine using:
+
+```bash
+claude setup-token
+```
+
+The command opens the Claude login flow and prints the token without saving it. We copy that token to server's `.env#CLAUDE_CODE_OAUTH_TOKEN` on the box and during preparation, the server passes this variable into each Claude container.
+
+### Codex
+
+Codex uses a file-backed login instead of a single environment variable.
+
+So we run `codex login` on our machine and sign in with our ChatGPT subscription. Codex stores that login in `~/.codex/auth.json`, which we securely copy to the server box.
+
+During an race preparation, the server reads `auth.json` into memory and creates a `config.toml` for that agent’s model and reasoning effort. It sends both files through the private `runner.mjs` stdin API:
+
+```text
+trusted machine
+      ↓ codex login
+~/.codex/auth.json
+      ↓ copy to backend box
+backend reads it into memory
+      ↓ runner.mjs stdin API
+/creds/codex/auth.json
+/creds/codex/config.toml
+      ↓ CODEX_HOME=/creds/codex
+Codex starts with the ChatGPT subscription login
+```
+
+The files are written into the container’s private writable layer with `auth.json` getting file mode `0600` (so that another process can't access it at all)
+
+Also we've found Codex sometimes refresh its login and update `auth.json`, so before removing the container, the server reads the updated file and syncs it back to the backend box so the next run receives the latest login.
+
+### OpenCode
+
+OpenCode is pretty straightfoward, we just pass `OPENROUTER_API_KEY` into the container, and OpenCode uses it to authenticate model requests through OpenRouter. Also openCode does not turn on its `web-search` tool by default, so the backend enables its Exa integratio by passing `EXA_API_KEY` as well.
+
+So the server never mount's host credential folders into the containers and each container receives its own credential files and environment, all the copies are removed when the container is removed after the run ends.
 
 </details>
 

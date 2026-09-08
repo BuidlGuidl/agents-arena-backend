@@ -4,9 +4,10 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { getAddress, isAddressEqual, recoverMessageAddress, type Address, type Hex } from 'viem';
 import { z } from 'zod';
 
-import { AgentIngest, AgentInputError, AgentBatchTooLargeError, AgentRateLimitError, AGENT_BODY_LIMIT } from './agent-ingest.js';
+import { AgentIngest } from './agent-ingest.js';
+import { AgentInputError, AgentBatchTooLargeError, AgentRateLimitError, AGENT_BODY_LIMIT } from './agent-limits.js';
 import { AgentInbox } from './inbox.js';
-import { externalStatusFor } from './adapters/external-status.js';
+import { ExternalStatus } from './adapters/external-status.js';
 import { createChallengePackResolver, type ChallengePackAccess } from './ctf/resolve.js';
 import { declaredFields } from './external-entrants.js';
 import { flagsHeld } from './chain/flags-held.js';
@@ -175,7 +176,7 @@ export interface ServerOptions {
   schedule?: Schedule;
   externalIdleMs?: number;
   challengePack?: ChallengePackAccess;
-  driverFactory?: (journal: EventJournal) => EntrantDriver;
+  driverFactory?: (journal: EventJournal, status: ExternalStatus) => EntrantDriver;
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
   solveWatchFactory?: (journal: EventJournal) => SolveWatch;
   sweepChain?: NativeSweepChain;
@@ -213,15 +214,15 @@ export function createServer(options: ServerOptions): ArenaServer {
     .all()
     .map((row) => row.challengeId)));
   const externalTokens = new ExternalAgentTokens(journal.database);
-  const externalStatus = externalStatusFor(journal, {
+  const externalStatus = new ExternalStatus(journal, {
     ...(options.schedule === undefined ? {} : { schedule: options.schedule }),
     ...(options.externalIdleMs === undefined ? {} : { idleMs: options.externalIdleMs }),
   });
   const pack = options.challengePack ?? createChallengePackResolver(activeChainProfile);
   const ingest = new AgentIngest(journal, externalStatus, pack.addressesFor);
   const inbox = new AgentInbox(journal);
-  const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(
-    journal, options.schedule, externalTokens, undefined, pack,
+  const driver = options.driverFactory?.(journal, externalStatus) ?? new RegisteredEntrantDriver(
+    journal, { status: externalStatus, schedule: options.schedule, tokens: externalTokens, pack },
   );
   const runManagerOptions: RunManagerOptions = {
     externalTokens,

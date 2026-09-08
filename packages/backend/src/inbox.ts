@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import type { AgentTokenRecord } from './agent-auth.js';
 import type { AgentInboxResponse } from './contract.js';
-import { AgentInputError, AgentRequestLimit } from './agent-ingest.js';
+import { AgentInputError, AgentRequestLimit, checkAgentStrings } from './agent-limits.js';
 import type { EventJournal } from './journal.js';
 import type { ArenaDatabase } from './db/index.js';
 import { inboxMessages } from './db/schema.js';
@@ -27,10 +27,11 @@ export class AgentInbox {
   }
 
   read(identity: AgentTokenRecord, query: unknown): AgentInboxResponse {
+    checkAgentStrings(query);
+    this.polls.take(identity);
     const parsed = inboxQuery.safeParse(query);
     if (!parsed.success) throw new AgentInputError('Invalid after query value');
     const after = parsed.data.after;
-    this.polls.take(identity);
     const { runId, entrantId } = identity;
     return this.journal.transaction(() => {
       const rows = this.journal.database.select().from(inboxMessages)

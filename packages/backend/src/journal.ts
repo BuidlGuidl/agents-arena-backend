@@ -33,7 +33,7 @@ export class EventJournal {
   private readonly sqlite: ReturnType<typeof openArenaDatabase>['sqlite'];
   private readonly subscribers = new Map<string, Set<Subscriber>>();
   private readonly pendingNotifications: ArenaEvent[][] = [];
-  private readonly transactionEffects: { commit: (() => void)[]; rollback: (() => void)[] }[] = [];
+  private readonly transactionEffects: (() => void)[][] = [];
 
   constructor(path = process.env.ARENA_DB ?? './arena.db') {
     const opened = openArenaDatabase(path);
@@ -119,7 +119,7 @@ export class EventJournal {
 
   transaction<T>(action: () => T): T {
     const notifications: ArenaEvent[] = [];
-    const effects = { commit: [] as (() => void)[], rollback: [] as (() => void)[] };
+    const effects: (() => void)[] = [];
     this.transactionEffects.push(effects);
     this.pendingNotifications.push(notifications);
     let result: T;
@@ -128,17 +128,15 @@ export class EventJournal {
     } catch (error) {
       this.pendingNotifications.pop();
       this.transactionEffects.pop();
-      for (const undo of effects.rollback.reverse()) undo();
       throw error;
     }
     this.pendingNotifications.pop();
     this.transactionEffects.pop();
     const parentEffects = this.transactionEffects.at(-1);
     if (parentEffects === undefined) {
-      for (const commit of effects.commit) commit();
+      for (const commit of effects) commit();
     } else {
-      parentEffects.commit.push(...effects.commit);
-      parentEffects.rollback.push(...effects.rollback);
+      parentEffects.push(...effects);
     }
     const parent = this.pendingNotifications.at(-1);
     if (parent === undefined) {
@@ -150,14 +148,11 @@ export class EventJournal {
   }
 
   // Memory follows the outer transaction, before subscribers read the committed batch.
+  // Outside a transaction, the action runs immediately.
   afterCommit(action: () => void): void {
     const effects = this.transactionEffects.at(-1);
     if (effects === undefined) action();
-    else effects.commit.push(action);
-  }
-
-  onRollback(action: () => void): void {
-    this.transactionEffects.at(-1)?.rollback.push(action);
+    else effects.push(action);
   }
 
   after(runId: string, afterId: number): ArenaEvent[] {

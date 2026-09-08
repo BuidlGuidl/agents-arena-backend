@@ -15,8 +15,6 @@ import { activeChainProfile } from '../chain/profile.js';
 import {
   challengeAddressIndex,
   dropCurrentChallenge,
-  matchChallenge,
-  matchChallengeInProse,
 } from '../ctf/challenge-tracker.js';
 import { trackProgress } from '../ctf/track-progress.js';
 import type { ChallengePackAccess, ChallengePackResolver } from '../ctf/resolve.js';
@@ -577,12 +575,12 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     switch (event.type) {
       case 'agent.message':
         this.journal.append(runId, entrantId, event.type, event.payload);
-        this.trackProgress(state, event.payload.text, 'message', matchChallengeInProse);
+        this.trackProgress(state, event.payload.text, 'message');
         break;
       case 'agent.reasoning': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'tool.call':
         this.journal.append(runId, entrantId, event.type, event.payload);
-        this.trackProgress(state, event.payload.detail, 'command', matchChallenge);
+        this.trackProgress(state, event.payload.detail, 'command');
         break;
       case 'tool.result': this.journal.append(runId, entrantId, event.type, event.payload); break;
       case 'entrant.error': this.journal.append(runId, entrantId, event.type, event.payload); break;
@@ -614,12 +612,11 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     state: EntrantRuntimeState,
     detail: string,
     via: 'command' | 'message',
-    matcher: typeof matchChallenge,
   ): void {
     state.addressIndex ??= challengeAddressIndex(this.challengeAddresses?.(state.run.id) ?? {});
     const runId = state.run.id;
     const entrantId = state.entrant.id;
-    trackProgress(this.journal, runId, entrantId, detail, via, state.addressIndex, matcher);
+    trackProgress(this.journal, { runId, entrantId }, detail, via, state.addressIndex);
   }
 
   private appendError(state: EntrantRuntimeState, message: string): void {

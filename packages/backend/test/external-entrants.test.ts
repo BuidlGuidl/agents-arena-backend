@@ -1,3 +1,4 @@
+import { ExternalStatus } from '../src/adapters/external-status.js';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -99,7 +100,7 @@ describe('external entrant join', () => {
   it('removes through the injected driver stop seam', async () => {
     const stop = vi.fn<ExternalDriver['stop']>();
     const { target, runId } = await setup({ driverFactory: (journal) => {
-      const driver = new ExternalDriver(journal);
+      const driver = new ExternalDriver(journal, new ExternalStatus(journal));
       stop.mockImplementation((run, entrant) => driver.stop(run, entrant));
       return { ...noopDriver, stop };
     } });
@@ -352,7 +353,7 @@ describe('external lane lifecycle', () => {
     const start = vi.fn(async () => {});
     const funding = vi.fn(async () => {});
     const watch = vi.fn(() => {});
-    const target = server({ driverFactory: (journal) => new RegisteredEntrantDriver(journal, () => {}, undefined, { ...noopDriver, prepare, start }), fundingGateFactory: () => funding, solveWatchFactory: () => watch, flagsHeld: async () => 0 });
+    const target = server({ driverFactory: (journal, status) => new RegisteredEntrantDriver(journal, { status, schedule: () => {}, hosted: { ...noopDriver, prepare, start } }), fundingGateFactory: () => funding, solveWatchFactory: () => watch, flagsHeld: async () => 0 });
     const { run } = await target.manager.create({ preset: 'docker-duel', roster: [{ id: 'host', harness: 'codex', model: 'gpt-5.5' }] });
     const starting = target.manager.start(run.id);
     await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
@@ -373,7 +374,7 @@ describe('external lane lifecycle', () => {
   it('revokes a join during preparation if preparation fails', async () => {
     let fail!: (error: Error) => void;
     const prepare = vi.fn(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
-    const { target, runId } = await setup({ driverFactory: (journal) => new RegisteredEntrantDriver(journal, () => {}, undefined, { ...noopDriver, prepare }) });
+    const { target, runId } = await setup({ driverFactory: (journal, status) => new RegisteredEntrantDriver(journal, { status, schedule: () => {}, hosted: { ...noopDriver, prepare } }) });
     // One hosted lane makes the preparation failure deterministic.
     target.journal.database.delete(entrants).where(eq(entrants.id, 'opencode-1')).run();
     const starting = target.manager.start(runId).catch(() => undefined);

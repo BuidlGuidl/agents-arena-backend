@@ -1,5 +1,5 @@
 import { ExternalAgentTokens } from '../agent-auth.js';
-import { externalStatusFor, type ExternalStatus, type ExternalStatusOptions } from './external-status.js';
+import type { ExternalStatus } from './external-status.js';
 import { enqueueMessage } from '../inbox.js';
 import type { EventJournal } from '../journal.js';
 import {
@@ -8,15 +8,11 @@ import {
 } from './types.js';
 
 export class ExternalDriver implements EntrantDriver {
-  private readonly status: ExternalStatus;
-
   constructor(
     private readonly journal: EventJournal,
+    private readonly status: ExternalStatus,
     private readonly tokens = new ExternalAgentTokens(journal.database),
-    statusOptions: ExternalStatusOptions = {},
-  ) {
-    this.status = externalStatusFor(journal, statusOptions);
-  }
+  ) {}
 
   async prepare(_run: RunRecord, entrant: EntrantRecord): Promise<void> {
     assertExternal(entrant);
@@ -26,7 +22,7 @@ export class ExternalDriver implements EntrantDriver {
     assertExternal(entrant);
     if (entrant.removedAt !== null) return;
     this.journal.append(run.id, entrant.id, 'entrant.prompt', { entrantId: entrant.id, text: openingPrompt });
-    this.status.set(run.id, entrant.id, entrant.status);
+    if (entrant.status !== 'done') this.status.start(run.id, entrant.id);
   }
 
   async steer(run: RunRecord, entrant: EntrantRecord, text: string, origin: 'steer' | 'broadcast' = 'steer'): Promise<'queued'> {

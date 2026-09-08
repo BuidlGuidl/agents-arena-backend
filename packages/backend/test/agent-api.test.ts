@@ -8,7 +8,7 @@ import { dropCurrentChallenge, takePendingGuess } from '../src/ctf/challenge-tra
 import { SolvePoller } from '../src/chain/solve-poller.js';
 import type { PublicClient } from 'viem';
 import type { AgentEventInput, AgentInboxResponse, AgentTaskResponse } from '../src/contract.js';
-import { entrants, externalEntrants, inboxMessages } from '../src/db/schema.js';
+import { entrants, externalEntrants, inboxMessages, scores } from '../src/db/schema.js';
 import { toEntrantRecord } from '../src/external-entrants.js';
 import { enqueueMessage } from '../src/inbox.js';
 import { createServer, type ServerOptions } from '../src/server.js';
@@ -74,7 +74,7 @@ describe('event ingest', () => {
       { seq: 5, type: 'usage', inputTokens: 10, outputTokens: 20 }, { seq: 6, type: 'entrant.status', status: 'blocked' }];
     expect((await f.post(batch)).json()).toEqual({ accepted: 6, duplicates: 0 });
     const events = f.events().slice(1);
-    expect(events.map((event) => event.type)).toEqual(['entrant.status', 'agent.message', 'agent.reasoning', 'tool.call', 'tool.result', 'usage', 'entrant.status']);
+    expect(events.map((event) => event.type)).toEqual(['agent.message', 'agent.reasoning', 'tool.call', 'tool.result', 'usage', 'entrant.status']);
     for (const event of events) expect(event.payload).toMatchObject({ entrantId: f.entrantId });
     expect(events.find((event) => event.type === 'usage')?.payload).toEqual({ entrantId: f.entrantId, inputTokens: 10, outputTokens: 20, cachedInputTokens: 0, costUsd: null });
     expect(f.lane().status).toBe('blocked');
@@ -161,7 +161,7 @@ describe('event ingest', () => {
     const f = await setup();
     await f.post([call(1, `cast call ${address}`)]);
     expect(f.lane().currentChallengeId).toBe(3);
-    expect(f.events().at(-1)?.payload).toMatchObject({ via: 'command' });
+    expect(f.events().filter((event) => event.type === 'entrant.challenge').at(-1)?.payload).toMatchObject({ via: 'command' });
     await f.post([message(2, 'Starting challenge 7.')]);
     expect(f.lane().currentChallengeId).toBe(7);
     expect(f.events().at(-1)?.payload).toMatchObject({ via: 'message' });
@@ -180,11 +180,24 @@ describe('event ingest', () => {
     expect(takePendingGuess(f.runId, f.entrantId)).toBeUndefined();
   });
 
+
+  it('accepts ignored hook fields beyond the mapped string limit', async () => {
+    const f = await setup();
+    expect((await f.hook({ hook_event_name: 'Stop', last_assistant_message: 'hello', transcript_path: 'a'.repeat(20_000) })).statusCode).toBe(200);
+    expect(f.events().find((event) => event.type === 'agent.message')?.payload).toMatchObject({ text: 'hello' });
+  });
+
+  it('uses stdout and stderr for failure hooks without error text', async () => {
+    const f = await setup();
+    expect((await f.hook({ hook_event_name: 'PostToolUseFailure', tool_response: { stdout: 'output', stderr: 'failure' } })).statusCode).toBe(200);
+    expect(f.events().find((event) => event.type === 'tool.result')?.payload).toMatchObject({ ok: false, detail: 'output\nfailure' });
+  });
+
   it('redacts echoed byoa tokens', async () => {
     const f = await setup();
     await f.post([message(1, f.token)]);
     expect(JSON.stringify(f.events())).not.toContain(f.token);
-    expect(f.events().at(-1)?.payload).toMatchObject({ text: '[redacted-key]' });
+    expect(f.events().find((event) => event.type === 'agent.message')?.payload).toMatchObject({ text: '[redacted-key]' });
   });
 
   it.each(['remove', 'stop', 'rejoin'] as const)('rejects dead tokens after %s on every route', async (action) => {
@@ -272,17 +285,26 @@ describe('external status', () => {
     expect(f.lane().status).toBe('done');
   });
 
-  it('rolls back journal, status, challenge memory, and dedupe on a mid-batch failure', async () => {
+  it('rejects an invalid batch without replacing a pending challenge guess', async () => {
+    const f = await setup(timed);
+    await f.app.inject({ method: 'POST', url: '/agent/progress', headers: f.headers, payload: { challengeId: 5 } });
+    await f.post([message(1, 'Starting challenge 7.')]);
+    const before = f.events();
+    expect((await f.post([message(2, 'Starting challenge 8.'), { seq: 3, type: 'entrant.status', status: 'invalid' }])).statusCode).toBe(400);
+    expect(f.events()).toEqual(before);
+    expect(f.lane()).toMatchObject({ status: 'working', currentChallengeId: 5 });
+    f.journal.database.insert(scores).values({
+      runId: f.runId, entrantId: f.entrantId, entrantAddress: address, challengeId: 5,
+      tokenId: '5', txHash: '0x01', blockNumber: 1, solvedAt: new Date().toISOString(),
+    }).run();
+    expect(takePendingGuess(f.runId, f.entrantId)).toMatchObject({ challengeId: 7, via: 'message' });
+  });
+
+  it('rejects an invalid batch without changing journal, status, challenge memory, or dedupe', async () => {
     const f = await setup(timed);
     const before = f.events();
-    const append = f.journal.append.bind(f.journal);
-    const spy = vi.spyOn(f.journal, 'append').mockImplementation((...args) => {
-      if (args[2] === 'agent.reasoning') throw new Error('Injected write failure');
-      return append(...args);
-    });
     const batch = [message(1, 'Starting challenge 7.'), { seq: 2, type: 'agent.reasoning', text: 'think' }];
-    expect((await f.post(batch)).statusCode).toBe(500);
-    spy.mockRestore();
+    expect((await f.post([batch[0], { ...batch[1], text: 42 }])).statusCode).toBe(400);
     expect(f.events()).toEqual(before);
     expect(f.lane()).toMatchObject({ status: 'idle', currentChallengeId: null });
     await vi.advanceTimersByTimeAsync(200);
@@ -337,6 +359,16 @@ describe('agent inbox', () => {
     const second = (await f.inbox(first.cursor)).json() as AgentInboxResponse;
     expect(second.messages).toHaveLength(1);
     expect(second.messages[0]?.text).toBe('message 50');
+  });
+
+
+  it('checks inbox string limits before rate, then cursor shape', async () => {
+    const f = await setup();
+    expect((await f.inbox('bad')).statusCode).toBe(400);
+    expect((await f.inbox('a'.repeat(16001))).statusCode).toBe(400);
+    expect((await f.inbox('bad')).statusCode).toBe(429);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect((await f.inbox()).statusCode).toBe(200);
   });
 
   it('rate limits polls with Retry-After 1', async () => {

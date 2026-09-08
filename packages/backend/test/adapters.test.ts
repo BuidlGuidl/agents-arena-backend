@@ -1,3 +1,4 @@
+import { ExternalStatus } from '../src/adapters/external-status.js';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -2084,7 +2085,7 @@ describe('adapter construction errors', () => {
     const journal = new EventJournal(':memory:');
     const dockerStop = vi.spyOn(DockerEntrantDriver.prototype, 'stop').mockResolvedValue();
     const fakeStop = vi.spyOn(FakeDriver.prototype, 'stop').mockResolvedValue();
-    const driver = new RegisteredEntrantDriver(journal);
+    const driver = new RegisteredEntrantDriver(journal, { status: new ExternalStatus(journal) });
     const run: RunRecord = {
       id: 'legacy-run',
       state: 'stopping',

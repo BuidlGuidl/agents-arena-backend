@@ -1,25 +1,18 @@
 import { z } from 'zod';
 
+import { AGENT_BATCH_LIMIT, AGENT_STRING_LIMIT, AgentInputError, AgentBatchTooLargeError, AgentRequestLimit, checkAgentStrings } from './agent-limits.js';
+
 import type { AgentTokenRecord } from './agent-auth.js';
-import type { AgentEventInput, AgentEventsResponse } from './contract.js';
+import type { AgentEventInput, AgentEventsResponse, EntrantStatus } from './contract.js';
 import type { ExternalStatus } from './adapters/external-status.js';
-import { challengeAddressIndex, matchChallenge, matchChallengeInProse } from './ctf/challenge-tracker.js';
+import { challengeAddressIndex } from './ctf/challenge-tracker.js';
 import type { ChallengePackAccess } from './ctf/resolve.js';
 import { trackProgress } from './ctf/track-progress.js';
 import type { EventJournal } from './journal.js';
 import { claudeHookToAgentEvents, claudeHookSchema } from './claude-hooks.js';
 
-export const AGENT_BODY_LIMIT = 256 * 1024;
-export class AgentInputError extends Error {}
-export class AgentBatchTooLargeError extends Error {}
-export class AgentRateLimitError extends Error {
-  constructor(readonly retryAfter: number) {
-    super('Request limit reached');
-  }
-}
-
 const seq = z.number().int();
-const text = z.string().max(16_000);
+const text = z.string().max(AGENT_STRING_LIMIT);
 const eventSchema = z.discriminatedUnion('type', [
   z.object({ seq, type: z.literal('agent.message'), text }).strict(),
   z.object({ seq, type: z.literal('agent.reasoning'), text }).strict(),
@@ -30,46 +23,21 @@ const eventSchema = z.discriminatedUnion('type', [
     cachedInputTokens: z.number().finite().optional(), costUsd: z.number().finite().nullable().optional(),
   }).strict(),
   z.object({ seq, type: z.literal('entrant.status'), status: z.enum(['working', 'idle', 'blocked', 'done']) }).strict(),
-]);
-const requestSchema = z.object({ events: z.array(eventSchema).min(1).max(100) }).strict();
-
-// Walk iteratively because hook extensions can contain deeply nested JSON.
-export function checkAgentStrings(value: unknown): void {
-  const pending = [value];
-  while (pending.length > 0) {
-    const item = pending.pop();
-    if (typeof item === 'string' && item.length > 16_000) {
-      throw new AgentInputError('String fields must contain at most 16000 characters');
-    }
-    if (item !== null && typeof item === 'object') {
-      for (const child of Object.values(item)) pending.push(child);
-    }
-  }
-}
-
-export class AgentRequestLimit {
-  private readonly windows = new WeakMap<AgentTokenRecord, { start: number; count: number }>();
-
-  constructor(private readonly limit: number, private readonly intervalMs: number, private readonly now = Date.now) {}
-
-  take(identity: AgentTokenRecord): void {
-    const now = this.now();
-    let window = this.windows.get(identity);
-    if (window === undefined || now - window.start >= this.intervalMs) {
-      window = { start: now, count: 0 };
-      this.windows.set(identity, window);
-    }
-    if (window.count >= this.limit) {
-      throw new AgentRateLimitError(Math.max(1, Math.ceil((window.start + this.intervalMs - now) / 1000)));
-    }
-    window.count += 1;
-  }
-}
+]).transform((event): AgentEventInput => {
+  if (event.type !== 'usage') return event;
+  const { cachedInputTokens, costUsd, ...required } = event;
+  return {
+    ...required,
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    ...(costUsd === undefined ? {} : { costUsd }),
+  };
+}) satisfies z.ZodType<AgentEventInput, z.ZodTypeDef, unknown>;
+const requestSchema = z.object({ events: z.array(eventSchema).min(1).max(AGENT_BATCH_LIMIT) }).strict();
 
 export class AgentIngest {
   private readonly requests: AgentRequestLimit;
+  // ExternalAgentTokens.states preserves record identity; a rejoined token gets fresh dedupe state.
   private readonly sequences = new WeakMap<AgentTokenRecord, Set<number>>();
-  private hookSeq = 0;
 
   constructor(
     private readonly journal: EventJournal,
@@ -82,25 +50,23 @@ export class AgentIngest {
 
   events(identity: AgentTokenRecord, body: unknown): AgentEventsResponse {
     if (body !== null && typeof body === 'object' && 'events' in body
-      && Array.isArray(body.events) && body.events.length > 100) {
-      throw new AgentBatchTooLargeError('A batch must contain at most 100 events');
+      && Array.isArray(body.events) && body.events.length > AGENT_BATCH_LIMIT) {
+      throw new AgentBatchTooLargeError(`A batch must contain at most ${AGENT_BATCH_LIMIT} events`);
     }
     checkAgentStrings(body);
     this.requests.take(identity);
     const parsed = requestSchema.safeParse(body);
     if (!parsed.success) throw new AgentInputError('Invalid event batch');
-    return this.append(identity, parsed.data.events as AgentEventInput[], true);
+    return this.append(identity, parsed.data.events, true);
   }
 
   hook(identity: AgentTokenRecord, body: unknown): void {
-    checkAgentStrings(body);
     const parsed = claudeHookSchema.safeParse(body);
     const mapped = parsed.success ? claudeHookToAgentEvents(parsed.data) : [];
     checkAgentStrings(mapped);
     this.requests.take(identity);
     if (!parsed.success) throw new AgentInputError('Invalid Claude Code hook');
-    const events = mapped.map((event) => ({ ...event, seq: ++this.hookSeq }));
-    this.append(identity, events, false);
+    this.append(identity, mapped, false);
   }
 
   private append(identity: AgentTokenRecord, events: AgentEventInput[], dedupe: boolean): AgentEventsResponse {
@@ -111,15 +77,16 @@ export class AgentIngest {
     let duplicates = 0;
     const index = challengeAddressIndex(this.addressesFor(runId) ?? {});
     this.journal.transaction(() => {
+      let pending: EntrantStatus | undefined;
       for (const event of events) {
         if (dedupe && sequences.has(event.seq)) {
           duplicates += 1;
           continue;
         }
         if (event.type === 'entrant.status') {
-          this.status.set(runId, entrantId, event.status);
+          pending = event.status;
         } else {
-          this.status.touch(runId, entrantId);
+          pending = 'working';
           switch (event.type) {
             case 'usage':
               this.journal.append(runId, entrantId, event.type, {
@@ -131,14 +98,14 @@ export class AgentIngest {
             case 'agent.reasoning':
               this.journal.append(runId, entrantId, event.type, { entrantId, text: event.text });
               if (event.type === 'agent.message') {
-                trackProgress(this.journal, runId, entrantId, event.text, 'message', index, matchChallengeInProse);
+                trackProgress(this.journal, identity, event.text, 'message', index);
               }
               break;
             case 'tool.call':
               this.journal.append(runId, entrantId, event.type, {
                 entrantId, tool: event.tool, toolCallId: event.toolCallId, detail: event.detail,
               });
-              trackProgress(this.journal, runId, entrantId, event.detail, 'command', index, matchChallenge);
+              trackProgress(this.journal, identity, event.detail, 'command', index);
               break;
             case 'tool.result':
               this.journal.append(runId, entrantId, event.type, {
@@ -152,6 +119,7 @@ export class AgentIngest {
           if (sequences.size > 1000) sequences.delete(sequences.values().next().value!);
         }
       }
+      if (pending !== undefined) this.status.set(runId, entrantId, pending);
       if (dedupe) this.journal.afterCommit(() => this.sequences.set(identity, sequences));
     });
     return { accepted, duplicates };

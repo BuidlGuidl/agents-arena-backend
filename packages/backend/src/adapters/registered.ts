@@ -3,11 +3,20 @@ import type { SteerDelivery } from '../contract.js';
 import { createChallengePackResolver, type ChallengePackAccess } from '../ctf/resolve.js';
 import type { EventJournal } from '../journal.js';
 import { presetSubstrate, UnknownPresetError } from '../run-manager.js';
+import type { ExternalStatus } from './external-status.js';
 import { ExternalDriver } from './external.js';
 import type { ExternalAgentTokens } from '../agent-auth.js';
 import { DockerEntrantDriver } from './docker.js';
 import { FakeDriver, type Schedule } from './fake.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
+
+interface RegisteredEntrantDriverOptions {
+  status: ExternalStatus;
+  schedule?: Schedule | undefined;
+  tokens?: ExternalAgentTokens;
+  hosted?: EntrantDriver;
+  pack?: ChallengePackAccess;
+}
 
 export class RegisteredEntrantDriver implements EntrantDriver {
   private readonly external: ExternalDriver;
@@ -16,15 +25,13 @@ export class RegisteredEntrantDriver implements EntrantDriver {
 
   constructor(
     journal: EventJournal,
-    schedule?: Schedule,
-    tokens?: ExternalAgentTokens,
-    private readonly hosted?: EntrantDriver,
-    pack: ChallengePackAccess = createChallengePackResolver(activeChainProfile),
+    private readonly options: RegisteredEntrantDriverOptions,
   ) {
-    this.external = new ExternalDriver(journal, tokens, schedule === undefined ? {} : { schedule });
-    this.fake = new FakeDriver(journal, schedule);
+    this.external = new ExternalDriver(journal, options.status, options.tokens);
+    this.fake = new FakeDriver(journal, options.schedule);
     // Same profile the funding gate and the opening prompt read. A profile with
     // a briefing URL has no resolver and mounts nothing (ADR-0009).
+    const pack = options.pack ?? createChallengePackResolver(activeChainProfile);
     this.docker = new DockerEntrantDriver(
       journal,
       {
@@ -56,7 +63,7 @@ export class RegisteredEntrantDriver implements EntrantDriver {
 
   private driver(run: RunRecord, entrant: EntrantRecord): EntrantDriver {
     if (entrant.kind === 'external') return this.external;
-    if (this.hosted !== undefined) return this.hosted;
+    if (this.options.hosted !== undefined) return this.options.hosted;
     try {
       return presetSubstrate(run.preset) === 'docker' ? this.docker : this.fake;
     } catch (error) {

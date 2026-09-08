@@ -78,15 +78,6 @@ export function matchChallengeInProse(
 
 const targetByEntrant = new Map<string, Target>();
 
-export function restoreChallengeOnRollback(runId: string, entrantId: string): () => void {
-  const key = entrantKey(runId, entrantId);
-  const target = targetByEntrant.get(key);
-  const previous = target === undefined ? undefined : structuredClone(target);
-  return () => {
-    if (previous === undefined) targetByEntrant.delete(key);
-    else targetByEntrant.set(key, previous);
-  };
-}
 let solvedLookup = (_runId: string, _entrantId: string): ReadonlySet<number> => EMPTY;
 
 function entrantKey(runId: string, entrantId: string): string {

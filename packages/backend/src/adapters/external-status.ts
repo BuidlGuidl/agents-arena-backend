@@ -10,47 +10,45 @@ export interface ExternalStatusOptions {
   schedule?: Schedule;
 }
 
-const owners = new WeakMap<EventJournal, ExternalStatus>();
-
-// Driver factories and routes share one owner for this journal, including test drivers.
-export function externalStatusFor(journal: EventJournal, options: ExternalStatusOptions = {}): ExternalStatus {
-  let status = owners.get(journal);
-  if (status === undefined) {
-    status = new ExternalStatus(journal, options);
-    owners.set(journal, status);
-  }
-  return status;
-}
-
 export class ExternalStatus {
-  private readonly timers = new Map<string, { handle?: unknown }>();
-  private readonly schedule: Schedule;
+  private readonly timers = new Map<string, { cancel: () => void }>();
+  private readonly schedule: (task: () => void, delay: number) => () => void;
   private readonly idleMs: number;
 
   constructor(private readonly journal: EventJournal, options: ExternalStatusOptions = {}) {
     this.idleMs = options.idleMs ?? 120_000;
-    this.schedule = options.schedule ?? ((task, delay) => {
+    const schedule = options.schedule;
+    this.schedule = schedule === undefined ? (task, delay) => {
       const timer = setTimeout(task, delay);
       timer.unref();
-      return timer;
-    });
+      return () => clearTimeout(timer);
+    } : (task, delay) => {
+      schedule(task, delay);
+      // The identity check invalidates callbacks from injected schedules.
+      return () => {};
+    };
   }
 
   touch(runId: string, entrantId: string): void {
-    const entrant = this.journal.database.select({ kind: entrants.kind }).from(entrants)
-      .where(and(eq(entrants.runId, runId), eq(entrants.id, entrantId))).get();
-    if (entrant?.kind === 'external') this.set(runId, entrantId, 'working');
+    this.set(runId, entrantId, 'working');
+  }
+
+  start(runId: string, entrantId: string): void {
+    this.journal.afterCommit(() => {
+      this.clear(runId, entrantId);
+      this.arm(runId, entrantId);
+    });
   }
 
   set(runId: string, entrantId: string, status: EntrantStatus): void {
     this.journal.transaction(() => {
       const where = and(eq(entrants.runId, runId), eq(entrants.id, entrantId));
       const current = this.journal.database.select().from(entrants).where(where).get();
-      if (current === undefined) return;
+      if (current === undefined || current.kind !== 'external') return;
       this.writeStatus(runId, entrantId, current.status, status);
       this.journal.afterCommit(() => {
         this.clear(runId, entrantId);
-        if (current.kind === 'external' && status !== 'done') this.arm(runId, entrantId);
+        if (status !== 'done') this.arm(runId, entrantId);
       });
     });
   }
@@ -59,17 +57,12 @@ export class ExternalStatus {
     const key = `${runId}:${entrantId}`;
     const timer = this.timers.get(key);
     this.timers.delete(key);
-    // Injected schedules need no cancellation API: the identity check also invalidates old callbacks.
-    if (typeof timer?.handle === 'object' && timer.handle !== null && 'unref' in timer.handle) {
-      clearTimeout(timer.handle as NodeJS.Timeout);
-    }
+    timer?.cancel();
   }
 
   close(): void {
-    for (const key of this.timers.keys()) {
-      const separator = key.lastIndexOf(':');
-      this.clear(key.slice(0, separator), key.slice(separator + 1));
-    }
+    for (const timer of this.timers.values()) timer.cancel();
+    this.timers.clear();
   }
 
   private writeStatus(runId: string, entrantId: string, current: EntrantStatus, status: EntrantStatus): void {
@@ -81,9 +74,9 @@ export class ExternalStatus {
 
   private arm(runId: string, entrantId: string): void {
     const key = `${runId}:${entrantId}`;
-    const timer: { handle?: unknown } = {};
+    const timer: { cancel: () => void } = { cancel: () => {} };
     this.timers.set(key, timer);
-    timer.handle = this.schedule(() => {
+    timer.cancel = this.schedule(() => {
       if (this.timers.get(key) !== timer) return;
       this.timers.delete(key);
       const run = this.journal.database.select().from(runs).where(eq(runs.id, runId)).get();

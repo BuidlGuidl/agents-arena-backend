@@ -1,13 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { AgentIngest, AgentInputError, AgentRateLimitError, AgentRequestLimit } from '../src/agent-ingest.js';
+import { AgentIngest } from '../src/agent-ingest.js';
+import { AgentInputError, AgentRateLimitError, AgentRequestLimit } from '../src/agent-limits.js';
 import { ExternalStatus } from '../src/adapters/external-status.js';
-import { EventJournal } from '../src/journal.js';
+import { journalHarness } from './fixtures/journal.js';
 import { RunManager } from '../src/run-manager.js';
 import { noopDriver } from './fixtures/server.js';
 
-const journals: EventJournal[] = [];
-afterEach(() => { for (const journal of journals.splice(0)) journal.close(); });
+const createJournal = journalHarness();
 
 describe('AgentRequestLimit', () => {
   it('uses token identity, a fixed window, and whole seconds rounded up', () => {
@@ -31,15 +31,33 @@ describe('AgentRequestLimit', () => {
 });
 
 describe('AgentIngest module', () => {
-  async function setup() {
-    const journal = new EventJournal(':memory:');
-    journals.push(journal);
+  async function setup(schedule: () => void = () => {}) {
+    const journal = createJournal();
     const manager = new RunManager(journal, noopDriver);
     const { run } = await manager.create({ preset: 'fake-duel' });
     const joined = await manager.join({ runId: run.id, address: '0x1234567890123456789012345678901234567890', name: 'Agent', flagsBeforeJoin: 0 });
-    const status = new ExternalStatus(journal, { schedule: () => {} });
-    return { journal, manager, identity: { runId: run.id, entrantId: joined.entrantId }, ingest: new AgentIngest(journal, status, () => undefined) };
+    const status = new ExternalStatus(journal, { schedule });
+    return { journal, manager, status, identity: { runId: run.id, entrantId: joined.entrantId }, ingest: new AgentIngest(journal, status, () => undefined) };
   }
+
+  it('applies status once per batch in event order and schedules only the final value', async () => {
+    const schedule = vi.fn();
+    const { ingest, identity, status, manager } = await setup(schedule);
+    const set = vi.spyOn(status, 'set');
+    const call = { seq: 1, type: 'tool.call', tool: 'Bash', toolCallId: 'one', detail: 'ls' };
+    const done = { seq: 2, type: 'entrant.status', status: 'done' };
+    ingest.events(identity, { events: [call, done] });
+    expect(set).toHaveBeenCalledTimes(1);
+    expect(schedule).not.toHaveBeenCalled();
+    expect(manager.snapshot(identity.runId).entrants.find((entrant) => entrant.id === identity.entrantId)?.status).toBe('done');
+    ingest.events(identity, { events: [{ ...done, seq: 3 }, { ...call, seq: 4 }] });
+    expect(set).toHaveBeenCalledTimes(2);
+    expect(schedule).toHaveBeenCalledTimes(1);
+    expect(manager.snapshot(identity.runId).entrants.find((entrant) => entrant.id === identity.entrantId)?.status).toBe('working');
+    ingest.events(identity, { events: Array.from({ length: 100 }, (_, index) => ({ ...call, seq: index + 5 })) });
+    expect(set).toHaveBeenCalledTimes(3);
+    expect(schedule).toHaveBeenCalledTimes(2);
+  });
 
   it('does not spend a request for long strings and rejects every event shape strictly', async () => {
     const { ingest, identity, journal } = await setup();

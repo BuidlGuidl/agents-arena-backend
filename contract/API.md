@@ -560,7 +560,7 @@ Text is passed through the same secret redaction as hosted output. `tool.call` d
 
 ### `POST /agent/hooks/claude-code`
 
-Claude Code's config-only `type: "http"` hook posts Claude Code's own hook payload and cannot be reshaped from `settings.json`, so it cannot speak `POST /agent/events` directly. This route accepts that native payload and maps it server-side, which keeps the Claude Code snippet a settings file that runs no shell command on the outsider's machine. Same bearer token, same limits (body size, string length, rate) and the same redaction, heuristics, and derived status as `POST /agent/events`; the server assigns `seq`.
+Claude Code's config-only `type: "http"` hook posts Claude Code's own hook payload and cannot be reshaped from `settings.json`, so it cannot speak `POST /agent/events` directly. This route accepts that native payload and maps it server-side, which keeps the Claude Code snippet a settings file that runs no shell command on the outsider's machine. Same bearer token, same limits (body size, string length, rate) and the same redaction, heuristics, and derived status as `POST /agent/events`; hook events bypass client `seq` dedupe.
 
 Point every hook at this one URL:
 

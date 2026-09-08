@@ -1,21 +1,20 @@
 import type { EventJournal } from '../journal.js';
 import {
-  matchChallenge, mayMove, savePendingGuess, recordCurrentChallenge,
-  solvedChallenges, restoreChallengeOnRollback,
+  matchChallenge, matchChallengeInProse, mayMove, savePendingGuess, recordCurrentChallenge,
+  solvedChallenges,
 } from './challenge-tracker.js';
+
+const matchers = { command: matchChallenge, message: matchChallengeInProse };
 
 export function trackProgress(
   journal: EventJournal,
-  runId: string,
-  entrantId: string,
+  { runId, entrantId }: { runId: string; entrantId: string },
   detail: string,
   via: 'command' | 'message',
   addressIndex: ReadonlyMap<string, number>,
-  matcher: typeof matchChallenge,
 ): void {
-  const guess = matcher(detail, addressIndex, solvedChallenges(runId, entrantId));
+  const guess = matchers[via](detail, addressIndex, solvedChallenges(runId, entrantId));
   if (guess === undefined) return;
-  journal.onRollback(restoreChallengeOnRollback(runId, entrantId));
   if (!mayMove(runId, entrantId, guess.challengeId, via)) {
     savePendingGuess(runId, entrantId, guess, via);
     return;

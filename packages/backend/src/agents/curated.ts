@@ -8,6 +8,10 @@ export const HARNESSES: readonly HarnessInfo[] = [
 
 // Efforts verified 2026-09-08 against the Codex model cache and Claude Code docs:
 // https://code.claude.com/docs/en/model-config.md
+// Checked with Codex CLI 0.153.4 and Claude Code 2.1.263, the versions docker/Dockerfile
+// pins. An older CLI can refuse a newer model outright (Claude Code 2.1.220 rejected
+// claude-fable-5-1 with "version 2.1.251 or newer is required"), so bump the image
+// pins whenever a row is added here, and recheck this table whenever the pins move.
 // Sonnet 4.5 and Haiku 4.5 are absent: Claude Code has no effort setting for them.
 export const CURATED_AGENTS: readonly AgentOption[] = [
   // gpt-5.5 has no max effort.

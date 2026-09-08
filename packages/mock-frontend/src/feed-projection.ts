@@ -171,7 +171,7 @@ export function deriveWaitingRoom(
     const wallet = deriveLaneWallet(events, entrant.address, runState);
     return {
       entrantId: entrant.id,
-      harness: entrant.harness,
+      harness: entrant.kind === 'hosted' ? entrant.harness : entrant.harness ?? entrant.name,
       address: wallet.address,
       wei: wallet.wei,
       funded: wallet.funded,

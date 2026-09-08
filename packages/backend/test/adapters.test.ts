@@ -24,11 +24,12 @@ import {
 } from '../src/adapters/harness-driver.js';
 import { FakeDriver } from '../src/adapters/fake.js';
 import { OpenCodeDriver, scrubOpenCodeEnvironment } from '../src/adapters/opencode.js';
+import { ExternalEntrants } from '../src/external-entrants.js';
 import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
 import {
   EntrantUnavailableError,
   type EntrantDriver,
-  type EntrantRecord,
+  type HostedEntrantRecord,
   type RunRecord,
 } from '../src/adapters/types.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
@@ -225,14 +226,14 @@ async function setup(
   watchdogMs = 10 * 60 * 1_000,
   withWallet = false,
   model?: string,
-  effort?: EntrantRecord['effort'],
+  effort?: HostedEntrantRecord['effort'],
   challengeAddresses?: HarnessDriverOptions['challengeAddresses'],
   timerOptions: Pick<HarnessDriverOptions, 'turnMaxMs' | 'logger'> = {},
 ): Promise<{
   journal: EventJournal;
   driver: EntrantDriver;
   run: RunRecord;
-  entrant: EntrantRecord;
+  entrant: HostedEntrantRecord;
   container: ControlledContainer;
   containerOptions: ContainerOptions;
   authPath?: string;
@@ -245,11 +246,14 @@ async function setup(
   const manager = new RunManager(journal, seedDriver);
   const created = await manager.create({ preset: harness === 'claude' ? 'docker-arena' : 'docker-duel' });
   const run = journal.database.select().from(runs).where(eq(runs.id, created.run.id)).get();
-  let entrant = journal.database.select().from(entrants).where(and(
+  const row = journal.database.select().from(entrants).where(and(
     eq(entrants.runId, created.run.id),
     eq(entrants.harness, harness),
   )).get();
-  if (run === undefined || entrant === undefined) throw new Error('Test run was not seeded');
+  if (run === undefined || row === undefined) throw new Error('Test run was not seeded');
+  const entrantRecord = new ExternalEntrants(journal.database).record(row);
+  if (entrantRecord.kind !== 'hosted') throw new Error('Expected hosted fixture');
+  let entrant: HostedEntrantRecord = entrantRecord;
   // Cost pricing keys off the entrant's model, so a test can swap in a model the
   // rate table lists (or one it does not).
   if (model !== undefined) entrant = { ...entrant, model };
@@ -728,7 +732,7 @@ describe('parser isolation', () => {
         eq(entrants.harness, 'codex'),
       )).get();
       if (run === undefined || entrant === undefined) throw new Error('Test run was not seeded');
-      return { run, entrant };
+      return { run, entrant: new ExternalEntrants(journal.database).record(entrant) };
     };
     const first = await seed();
     const second = await seed();
@@ -2053,7 +2057,8 @@ describe('adapter construction errors', () => {
       seededBy: null,
       idempotencyKey: null,
     };
-    const entrant: EntrantRecord = {
+    const entrant: HostedEntrantRecord = {
+      kind: 'hosted',
       runId: run.id,
       id: 'codex-1',
       harness: 'codex',
@@ -2090,7 +2095,8 @@ describe('adapter construction errors', () => {
       seededBy: null,
       idempotencyKey: null,
     };
-    const entrant: EntrantRecord = {
+    const entrant: HostedEntrantRecord = {
+      kind: 'hosted',
       runId: run.id,
       id: 'codex-1',
       harness: 'codex',
@@ -2123,7 +2129,8 @@ describe('adapter construction errors', () => {
       seededBy: null,
       idempotencyKey: null,
     };
-    const entrant: EntrantRecord = {
+    const entrant: HostedEntrantRecord = {
+      kind: 'hosted',
       runId: run.id,
       id: `${harness}-1`,
       harness,
@@ -2159,7 +2166,8 @@ describe('adapter construction errors', () => {
       seededBy: null,
       idempotencyKey: null,
     };
-    const entrant: EntrantRecord = {
+    const entrant: HostedEntrantRecord = {
+      kind: 'hosted',
       runId: run.id,
       id: 'wrong-1',
       harness: harness === 'codex' ? 'opencode' : 'codex',

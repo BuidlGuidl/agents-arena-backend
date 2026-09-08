@@ -51,6 +51,7 @@ const { app, manager } = ((): ReturnType<typeof createServer> => {
     const narration = resolveNarrationConfig();
     return createServer({
       operatorToken,
+      publicUrl: process.env.ARENA_PUBLIC_URL ?? `http://localhost:${port}`,
       siwe,
       corsOrigins,
       logger: true,

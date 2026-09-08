@@ -1,3 +1,4 @@
+import { ExternalEntrants } from '../../src/external-entrants.js';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -37,7 +38,7 @@ async function setup(): Promise<{
     eq(entrants.id, 'codex-1'),
   )).get();
   if (run === undefined || entrant === undefined) throw new Error('Missing narration fixture rows');
-  return { journal, run, entrant };
+  return { journal, run, entrant: new ExternalEntrants(journal.database).record(entrant) };
 }
 
 describe('buildNarrationWindow', () => {

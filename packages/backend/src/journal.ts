@@ -204,7 +204,7 @@ export class EventJournal {
 }
 
 function redactExactSecrets(value: string, secrets: readonly string[]): string {
-  let redacted = value;
+  let redacted = value.replace(/byoa_[0-9a-f]{48}/g, '[redacted-key]');
   for (const secret of secrets) {
     const lowerValue = redacted.toLowerCase();
     const lowerSecret = secret.toLowerCase();

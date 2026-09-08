@@ -1,8 +1,12 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
-// Per-container bearer credentials for the agent-facing routes. Kept in process
-// memory like the run wallet keys: one backend process serves one arena, and a
-// token must die with its container, not survive a restart.
+import { and, eq, isNull, notInArray } from 'drizzle-orm';
+
+import type { ArenaDatabase } from './db/index.js';
+import { externalEntrants, runs } from './db/schema.js';
+
+// Hosted credentials live in memory and die with their containers. External
+// credentials use the database-backed store below. Both resolve through one function.
 
 export interface AgentTokenRecord {
   runId: string;
@@ -32,8 +36,8 @@ export function issueAgentToken(runId: string, entrantId: string): string {
   return token;
 }
 
-export function resolveAgentToken(token: string): AgentTokenRecord | undefined {
-  return byToken.get(token);
+export function resolveAgentToken(token: string, external?: ExternalAgentTokens): AgentTokenRecord | undefined {
+  return byToken.get(token) ?? external?.resolve(token);
 }
 
 export function revokeAgentToken(runId: string, entrantId: string): void {
@@ -51,4 +55,47 @@ export function agentTokenSecrets(runId: string): readonly string[] {
     if (record.runId === runId) secrets.push(token);
   }
   return secrets;
+}
+
+// Each server owns its lookup and rate state; SQLite remains the token authority.
+export class ExternalAgentTokens {
+  private readonly states = new Map<string, AgentTokenRecord>();
+
+  constructor(private readonly database: ArenaDatabase) {}
+
+  issue(runId: string, entrantId: string): string {
+    this.revoke(runId, entrantId);
+    const token = `byoa_${randomBytes(24).toString('hex')}`;
+    this.database.update(externalEntrants).set({ tokenHash: tokenHash(token) })
+      .where(and(eq(externalEntrants.runId, runId), eq(externalEntrants.id, entrantId))).run();
+    return token;
+  }
+
+  resolve(token: string): AgentTokenRecord | undefined {
+    if (!/^byoa_[0-9a-f]{48}$/.test(token)) return undefined;
+    const hash = tokenHash(token);
+    const row = this.database.select({ runId: externalEntrants.runId, entrantId: externalEntrants.id })
+      .from(externalEntrants).innerJoin(runs, eq(runs.id, externalEntrants.runId))
+      .where(and(eq(externalEntrants.tokenHash, hash), isNull(externalEntrants.removedAt),
+        notInArray(runs.state, ['stopping', 'finished', 'failed']))).get();
+    if (row === undefined) {
+      this.states.delete(hash);
+      return undefined;
+    }
+    const state = this.states.get(hash) ?? row;
+    this.states.set(hash, state);
+    return state;
+  }
+
+  revoke(runId: string, entrantId: string): void {
+    const where = and(eq(externalEntrants.runId, runId), eq(externalEntrants.id, entrantId));
+    const previous = this.database.select({ hash: externalEntrants.tokenHash })
+      .from(externalEntrants).where(where).get();
+    if (previous?.hash != null) this.states.delete(previous.hash);
+    this.database.update(externalEntrants).set({ tokenHash: null }).where(where).run();
+  }
+}
+
+function tokenHash(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
 }

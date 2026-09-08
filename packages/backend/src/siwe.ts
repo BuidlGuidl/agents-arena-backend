@@ -51,7 +51,7 @@ export class SiweLogin {
   readonly #sessionTtlMs: number;
   readonly #nonceTtlMs: number;
   readonly #now: () => number;
-  // Only spent nonces are stored, and only a completed login spends one, so an
+  // Only spent nonces are stored, and only a signed login or join spends one, so an
   // anonymous flood of /auth/nonce writes nothing here.
   readonly #spentNonces = new Map<string, number>();
   readonly #nonceKey = randomBytes(32);
@@ -88,6 +88,17 @@ export class SiweLogin {
       throw new Error('Nonce expiry does not fit its field');
     }
     return `${random}${expiry}${this.#nonceMac(random + expiry)}`;
+  }
+
+  nonceAvailable(nonce: string): boolean {
+    this.#sweep();
+    return this.#nonceValid(nonce) && !this.#spentNonces.has(nonce);
+  }
+
+  consumeNonce(nonce: string): boolean {
+    if (!this.nonceAvailable(nonce)) return false;
+    this.#spentNonces.set(nonce, this.#nonceExpiry(nonce));
+    return true;
   }
 
   async login(attempt: LoginAttempt): Promise<LoginResult> {
@@ -137,9 +148,8 @@ export class SiweLogin {
       return { ok: false, reason: 'Signature does not match the claimed address' };
     }
 
-    // Spent only now, on a login that carried a real operator signature, so the
-    // map cannot be grown by anyone who is not already allowed to drive the run.
-    this.#spentNonces.set(nonce, this.#nonceExpiry(nonce));
+    // Recheck after signature recovery so concurrent requests cannot spend one nonce twice.
+    if (!this.consumeNonce(nonce)) return { ok: false, reason: 'Unknown or already used nonce' };
     const sessionId = randomBytes(32).toString('hex');
     const session: OperatorSession = {
       address: getAddress(claimed),

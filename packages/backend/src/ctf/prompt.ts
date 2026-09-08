@@ -41,12 +41,14 @@ function rpcLines(profile: ChainProfile): readonly string[] {
 // and how scoring works, and tells the agent to act on its own. Open-source models
 // also gave up mid-race and idled for operator hints, so the closing bullets command
 // persistence outright (ai.ctf#39).
-export function buildOpeningPrompt(
+export function buildTaskText(
   entrant: EntrantRecord,
   profile: ChainProfile,
+  options: { publicUrl: string } = { publicUrl: 'http://localhost:4177' },
 ): string {
-  const walletLine =
-    entrant.address === null
+  const walletLine = entrant.kind === 'external'
+    ? [`- Your wallet address is ${entrant.address}. You hold its private key and pay your own gas.`]
+    : entrant.address === null
       ? []
       : [
           `- Your wallet address is ${entrant.address}. Its private key is in the WALLET_PRIVATE_KEY environment variable: sign transactions with cast send --private-key "$WALLET_PRIVATE_KEY" ...`,
@@ -58,8 +60,10 @@ export function buildOpeningPrompt(
     `Your objective: mint all ${CHALLENGE_COUNT} flags to your wallet as **quickly as possible**. Challenge 1 registers your agent and must be completed first.`,
     "",
     "Your environment:",
-    "- An `node:22-bookworm` container with bash, git, and [Foundry](https://www.getfoundry.sh/introduction/agents) (forge, cast, solc via `forge build`, which fetches the compiler version your pragma needs).",
-    ...rpcLines(profile),
+    ...(entrant.kind === 'external' ? [] : ["- An `node:22-bookworm` container with bash, git, and [Foundry](https://www.getfoundry.sh/introduction/agents) (forge, cast, solc via `forge build`, which fetches the compiler version your pragma needs)."]),
+    ...(entrant.kind === 'hosted' ? rpcLines(profile) : [
+      `- Use chain id ${profile.chainId}. ${profile.chainId === 31337 ? 'The local RPC endpoint is http://127.0.0.1:8545.' : 'Use any RPC endpoint for this chain.'}`,
+    ]),
     ...walletLine,
     "",
     "The challenges:",
@@ -73,5 +77,11 @@ export function buildOpeningPrompt(
     // prompt, which is journalled verbatim as entrant.prompt.
     '- Always report the challenge you are working on: when you start one (before you read or write anything for it), and again whenever you switch or move to the next. Report it with: curl -fsS -X POST "$ARENA_API_URL/agent/progress" -H "authorization: Bearer $ARENA_AGENT_TOKEN" -H "content-type: application/json" -d \'{"challengeId": N}\' with N replaced by the challenge number.',
     `- Do not stop until your address holds all ${CHALLENGE_COUNT} flags.`,
-  ].join("\n");
+  ].join("\n").replace('$ARENA_API_URL', () => entrant.kind === 'hosted'
+    ? '$ARENA_API_URL' : options.publicUrl.replace(/\/$/, ''));
+}
+
+export function buildOpeningPrompt(entrant: EntrantRecord, profile: ChainProfile): string {
+  if (entrant.kind !== 'hosted') throw new Error('Opening prompt requires a hosted entrant');
+  return buildTaskText(entrant, profile);
 }

@@ -1,8 +1,9 @@
+import { ExternalEntrants } from '../../src/external-entrants.js';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
 import type { EntrantDriver } from '../../src/adapters/types.js';
-import { createFundingGate } from '../../src/chain/funding-gate.js';
+import { createFundingGate, runLocalDevFaucet } from '../../src/chain/funding-gate.js';
 import { entrants, runs } from '../../src/db/schema.js';
 import { EventJournal } from '../../src/journal.js';
 import { RunManager } from '../../src/run-manager.js';
@@ -28,10 +29,26 @@ async function seedRun(preset: 'docker-arena' | 'fake-duel') {
   if (run === undefined) {
     throw new Error('Test run was not seeded');
   }
-  return { journal, run, runEntrants };
+  return { journal, run, runEntrants: runEntrants.map((row) => new ExternalEntrants(journal.database).record(row)) };
 }
 
 describe('funding gate', () => {
+  it('ignores external wallets in the funding gate and local faucet', async () => {
+    const { journal, run } = await seedRun('docker-arena');
+    try {
+      const external = {
+        kind: 'external' as const, runId: run.id, id: 'ext-1', name: 'External',
+        address: null, status: 'idle' as const, joinedAt: new Date().toISOString(),
+        removedAt: null, flagsBeforeJoin: 0,
+      };
+      await createFundingGate(journal)(run, [external]);
+      await runLocalDevFaucet(run, [external]);
+      expect(journal.after(run.id, 0).filter((event) => event.type === 'funding.balance')).toEqual([]);
+    } finally {
+      journal.close();
+    }
+  });
+
   it('does nothing for a fake substrate', async () => {
     const { journal, run, runEntrants } = await seedRun('fake-duel');
     try {

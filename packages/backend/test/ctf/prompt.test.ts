@@ -1,10 +1,13 @@
+import { activeChainProfile } from '../../src/chain/profile.js';
+import type { ExternalEntrantRecord } from '../../src/adapters/types.js';
 import { describe, expect, it } from 'vitest';
 
 import type { EntrantRecord } from '../../src/adapters/types.js';
 import type { ChainProfile } from '../../src/chain/profile.js';
-import { buildOpeningPrompt } from '../../src/ctf/prompt.js';
+import { buildOpeningPrompt, buildTaskText } from '../../src/ctf/prompt.js';
 
 const entrant: EntrantRecord = {
+  kind: 'hosted',
   runId: 'run-1',
   id: 'entrant-1',
   harness: 'codex',
@@ -123,5 +126,40 @@ describe('buildOpeningPrompt', () => {
     const prompt = buildOpeningPrompt({ ...entrant, address }, profile);
 
     expect(prompt).toContain(address);
+  });
+});
+
+describe('external task text', () => {
+  const external: ExternalEntrantRecord = {
+    kind: 'external', runId: 'run-1', id: 'ext-1', name: 'My agent',
+    address: '0x1234567890123456789012345678901234567890', status: 'idle',
+    joinedAt: '2026-09-08T00:00:00.000Z', removedAt: null, flagsBeforeJoin: 2,
+  };
+
+  it.each([31337, 8453])('uses the external wallet and public API for chain %s', (chainId) => {
+    const profile = { ...activeChainProfile, chainId };
+    const text = buildTaskText(external, profile, { publicUrl: 'https://arena.test/' });
+    expect(text).toContain(external.address);
+    expect(text).toContain('You hold its private key and pay your own gas');
+    expect(text).toContain(`chain id ${chainId}`);
+    expect(text).toContain('https://arena.test/agent/progress');
+    expect(text).toContain('$ARENA_AGENT_TOKEN');
+    expect(text).not.toContain('WALLET_PRIVATE_KEY');
+    expect(text).not.toContain('ETH_RPC_URL');
+    expect(text).not.toContain('node:22-bookworm');
+    expect(text).not.toContain('not the chain');
+    if (chainId === 31337) expect(text).toContain('http://127.0.0.1:8545');
+    else {
+      expect(text).toContain('Use any RPC endpoint for this chain');
+      expect(text).not.toContain('http://127.0.0.1:8545');
+    }
+    const hosted = buildOpeningPrompt(entrant, profile);
+    expect(text.slice(text.indexOf('The challenges:'), text.indexOf('- Always report')))
+      .toBe(hosted.slice(hosted.indexOf('The challenges:'), hosted.indexOf('- Always report')));
+    expect(text.split('\n').at(-1)).toBe(hosted.split('\n').at(-1));
+  });
+
+  it('refuses an external entrant on the hosted opening prompt entry point', () => {
+    expect(() => buildOpeningPrompt(external, activeChainProfile)).toThrow('requires a hosted entrant');
   });
 });

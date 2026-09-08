@@ -241,11 +241,11 @@ describe('operator wallet login', () => {
     expect(session.json()).toEqual({ authenticated: false, configured: true });
   });
 
-  it('answers 503 on the login routes when no operator address is configured', async () => {
+  it('issues nonces but keeps verify disabled when no operator address is configured', async () => {
     const server = startServer({ addresses: [] });
 
     const nonce = await server.app.inject({ method: 'GET', url: '/auth/nonce', headers: { host: HOST } });
-    expect(nonce.statusCode).toBe(503);
+    expect(nonce.statusCode).toBe(200);
     const verify = await server.app.inject({
       method: 'POST',
       url: '/auth/verify',

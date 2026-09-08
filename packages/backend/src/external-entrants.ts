@@ -1,0 +1,62 @@
+import { and, eq } from 'drizzle-orm';
+
+import type { ExternalEntrantRecord, EntrantRecord } from './adapters/types.js';
+import type { ArenaDatabase } from './db/index.js';
+import { entrants, externalEntrants } from './db/schema.js';
+
+export class ExternalEntrants {
+  constructor(private readonly database: ArenaDatabase) {}
+
+  private find(runId: string, id: string) {
+    return this.database.select().from(externalEntrants)
+      .where(and(eq(externalEntrants.runId, runId), eq(externalEntrants.id, id))).get();
+  }
+
+  register(entrant: ExternalEntrantRecord): void {
+    if (entrant.address === null) throw new Error('External entrant needs a wallet address');
+    const values = {
+      runId: entrant.runId, id: entrant.id, address: entrant.address, name: entrant.name,
+      harness: entrant.harness ?? null, model: entrant.model ?? null,
+      effort: entrant.effort ?? null, url: entrant.url ?? null,
+      flagsBeforeJoin: entrant.flagsBeforeJoin, joinedAt: entrant.joinedAt,
+      removedAt: entrant.removedAt,
+    };
+    this.database.insert(externalEntrants).values(values).onConflictDoUpdate({
+      target: [externalEntrants.runId, externalEntrants.id], set: values,
+    }).run();
+  }
+
+  markRemoved(runId: string, id: string, removedAt: string): void {
+    this.database.update(externalEntrants).set({ removedAt, tokenHash: null })
+      .where(and(eq(externalEntrants.runId, runId), eq(externalEntrants.id, id))).run();
+  }
+
+  record(row: typeof entrants.$inferSelect): EntrantRecord {
+    if (row.kind === 'hosted') {
+      if (row.harness === null) throw new Error(`Hosted entrant ${row.id} has no harness`);
+      return { ...row, kind: 'hosted', harness: row.harness };
+    }
+    const external = this.find(row.runId, row.id);
+    if (external === undefined) throw new Error(`External entrant ${row.id} has no registration`);
+    return {
+      runId: row.runId, id: row.id, kind: 'external', status: row.status,
+      address: external.address, name: external.name, joinedAt: external.joinedAt,
+      removedAt: external.removedAt, flagsBeforeJoin: external.flagsBeforeJoin,
+      ...declaredFields(external),
+    };
+  }
+}
+
+export function declaredFields(input: {
+  harness?: string | null | undefined;
+  model?: string | null | undefined;
+  effort?: string | null | undefined;
+  url?: string | null | undefined;
+}) {
+  return {
+    ...(input.harness == null ? {} : { harness: input.harness }),
+    ...(input.model == null ? {} : { model: input.model }),
+    ...(input.effort == null ? {} : { effort: input.effort }),
+    ...(input.url == null ? {} : { url: input.url }),
+  };
+}

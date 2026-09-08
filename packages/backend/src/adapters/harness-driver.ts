@@ -23,7 +23,10 @@ import {
   solvedChallenges,
 } from '../ctf/challenge-tracker.js';
 import type { ChallengePackAccess, ChallengePackResolver } from '../ctf/resolve.js';
-import { EntrantUnavailableError, type EntrantDriver, type EntrantRecord, type RunRecord } from './types.js';
+import {
+  assertHosted, EntrantUnavailableError,
+  type EntrantDriver, type EntrantRecord, type HostedEntrantRecord, type RunRecord,
+} from './types.js';
 import type {
   HarnessLineParser,
   ParsedArenaEvent,
@@ -52,7 +55,7 @@ export interface HarnessDriverOptions {
 
 interface EntrantRuntimeState {
   run: RunRecord;
-  entrant: EntrantRecord;
+  entrant: HostedEntrantRecord;
   container: EntrantContainer;
   queuedSteers: string[];
   running: boolean;
@@ -111,6 +114,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   }
 
   async prepare(run: RunRecord, entrant: EntrantRecord): Promise<void> {
+    assertHosted(entrant);
     this.assertHarness(entrant);
     const key = this.key(run.id, entrant.id);
     if (this.states.has(key)) throw new Error(`Entrant ${entrant.id} is already prepared`);
@@ -156,6 +160,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   }
 
   async start(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {
+    assertHosted(entrant);
     this.assertHarness(entrant);
     const state = this.requireState(run.id, entrant.id);
     if (state.running) throw new Error(`Entrant ${entrant.id} already has a turn in flight`);
@@ -163,6 +168,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   }
 
   async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<SteerDelivery> {
+    assertHosted(entrant);
     this.assertHarness(entrant);
     const state = this.requireState(run.id, entrant.id);
     if (state.stopping) throw new EntrantUnavailableError(`Entrant ${entrant.id} is stopping`);
@@ -193,6 +199,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   // against finishTurn), so a steer racing that launch is answered `queued` and
   // then dropped if the launch never lands.
   async restart(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {
+    assertHosted(entrant);
     this.assertHarness(entrant);
     const state = this.requireState(run.id, entrant.id);
     if (state.stopping) throw new EntrantUnavailableError(`Entrant ${entrant.id} is stopping`);
@@ -234,6 +241,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   }
 
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {
+    assertHosted(entrant);
     this.assertHarness(entrant);
     const key = this.key(run.id, entrant.id);
     const state = this.states.get(key);
@@ -256,12 +264,12 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   }
 
   protected abstract harnessName(): string;
-  protected abstract assertHarness(entrant: EntrantRecord): void;
-  protected abstract createContainer(run: RunRecord, entrant: EntrantRecord): Promise<EntrantContainer>;
+  protected abstract assertHarness(entrant: HostedEntrantRecord): void;
+  protected abstract createContainer(run: RunRecord, entrant: HostedEntrantRecord): Promise<EntrantContainer>;
   protected abstract versionArgv(): string[];
-  protected abstract startArgv(entrant: EntrantRecord, prompt: string): string[];
-  protected abstract resumeArgv(entrant: EntrantRecord, sessionId: string, text: string): string[];
-  protected abstract createParser(entrant: EntrantRecord): HarnessLineParser;
+  protected abstract startArgv(entrant: HostedEntrantRecord, prompt: string): string[];
+  protected abstract resumeArgv(entrant: HostedEntrantRecord, sessionId: string, text: string): string[];
+  protected abstract createParser(entrant: HostedEntrantRecord): HarnessLineParser;
 
   protected watchdogMs(): number | undefined {
     const durationMs = this.options.turnWatchdogMs ?? 20 * 60 * 1_000;
@@ -446,7 +454,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   // Must not throw — a housekeeping failure is not a turn failure.
   protected async afterTurn(
     _run: RunRecord,
-    _entrant: EntrantRecord,
+    _entrant: HostedEntrantRecord,
     _container: EntrantContainer,
   ): Promise<void> {}
 
@@ -454,7 +462,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
   // their durable session transcript after a killed process has unwound.
   protected async recoveredUsage(
     _run: RunRecord,
-    _entrant: EntrantRecord,
+    _entrant: HostedEntrantRecord,
     _container: EntrantContainer,
     _sessionId: string | undefined,
   ): Promise<RecoveredUsage | undefined> {

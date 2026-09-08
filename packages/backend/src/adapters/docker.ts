@@ -56,6 +56,7 @@ export class DockerEntrantDriver implements EntrantDriver {
   }
 
   private driver(entrant: EntrantRecord): EntrantDriver {
+    if (entrant.kind !== 'hosted') throw new Error('Docker driver requires a hosted entrant');
     if (entrant.harness === 'claude') return this.claude;
     if (entrant.harness === 'codex') return this.codex;
     if (entrant.harness === 'opencode') return this.opencode;

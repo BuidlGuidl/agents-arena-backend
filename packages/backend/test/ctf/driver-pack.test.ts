@@ -68,6 +68,7 @@ const run: RunRecord = {
 };
 
 const entrant: EntrantRecord = {
+  kind: 'hosted',
   runId: run.id,
   id: 'entrant-pack',
   harness: 'codex',

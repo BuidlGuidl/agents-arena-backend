@@ -33,6 +33,7 @@ export class EventJournal {
   private readonly sqlite: ReturnType<typeof openArenaDatabase>['sqlite'];
   private readonly subscribers = new Map<string, Set<Subscriber>>();
   private readonly pendingNotifications: ArenaEvent[][] = [];
+  private readonly transactionEffects: { commit: (() => void)[]; rollback: (() => void)[] }[] = [];
 
   constructor(path = process.env.ARENA_DB ?? './arena.db') {
     const opened = openArenaDatabase(path);
@@ -118,15 +119,27 @@ export class EventJournal {
 
   transaction<T>(action: () => T): T {
     const notifications: ArenaEvent[] = [];
+    const effects = { commit: [] as (() => void)[], rollback: [] as (() => void)[] };
+    this.transactionEffects.push(effects);
     this.pendingNotifications.push(notifications);
     let result: T;
     try {
       result = this.database.transaction(action);
     } catch (error) {
       this.pendingNotifications.pop();
+      this.transactionEffects.pop();
+      for (const undo of effects.rollback.reverse()) undo();
       throw error;
     }
     this.pendingNotifications.pop();
+    this.transactionEffects.pop();
+    const parentEffects = this.transactionEffects.at(-1);
+    if (parentEffects === undefined) {
+      for (const commit of effects.commit) commit();
+    } else {
+      parentEffects.commit.push(...effects.commit);
+      parentEffects.rollback.push(...effects.rollback);
+    }
     const parent = this.pendingNotifications.at(-1);
     if (parent === undefined) {
       for (const event of notifications) this.notify(event);
@@ -134,6 +147,17 @@ export class EventJournal {
       parent.push(...notifications);
     }
     return result;
+  }
+
+  // Memory follows the outer transaction, before subscribers read the committed batch.
+  afterCommit(action: () => void): void {
+    const effects = this.transactionEffects.at(-1);
+    if (effects === undefined) action();
+    else effects.commit.push(action);
+  }
+
+  onRollback(action: () => void): void {
+    this.transactionEffects.at(-1)?.rollback.push(action);
   }
 
   after(runId: string, afterId: number): ArenaEvent[] {

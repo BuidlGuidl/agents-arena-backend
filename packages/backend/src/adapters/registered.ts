@@ -1,6 +1,6 @@
 import { activeChainProfile } from '../chain/profile.js';
 import type { SteerDelivery } from '../contract.js';
-import { createChallengePackResolver } from '../ctf/resolve.js';
+import { createChallengePackResolver, type ChallengePackAccess } from '../ctf/resolve.js';
 import type { EventJournal } from '../journal.js';
 import { presetSubstrate, UnknownPresetError } from '../run-manager.js';
 import { ExternalDriver } from './external.js';
@@ -19,12 +19,12 @@ export class RegisteredEntrantDriver implements EntrantDriver {
     schedule?: Schedule,
     tokens?: ExternalAgentTokens,
     private readonly hosted?: EntrantDriver,
+    pack: ChallengePackAccess = createChallengePackResolver(activeChainProfile),
   ) {
-    this.external = new ExternalDriver(journal, tokens);
+    this.external = new ExternalDriver(journal, tokens, schedule === undefined ? {} : { schedule });
     this.fake = new FakeDriver(journal, schedule);
     // Same profile the funding gate and the opening prompt read. A profile with
     // a briefing URL has no resolver and mounts nothing (ADR-0009).
-    const pack = createChallengePackResolver(activeChainProfile);
     this.docker = new DockerEntrantDriver(
       journal,
       {

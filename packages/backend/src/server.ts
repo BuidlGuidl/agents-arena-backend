@@ -4,6 +4,10 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { getAddress, isAddressEqual, recoverMessageAddress, type Address, type Hex } from 'viem';
 import { z } from 'zod';
 
+import { AgentIngest, AgentInputError, AgentBatchTooLargeError, AgentRateLimitError, AGENT_BODY_LIMIT } from './agent-ingest.js';
+import { AgentInbox } from './inbox.js';
+import { externalStatusFor } from './adapters/external-status.js';
+import { createChallengePackResolver, type ChallengePackAccess } from './ctf/resolve.js';
 import { declaredFields } from './external-entrants.js';
 import { flagsHeld } from './chain/flags-held.js';
 import { activeChainProfile } from './chain/profile.js';
@@ -15,6 +19,7 @@ import {
   ROSTER_EFFORTS,
   ROSTER_MODELS,
   type ArenaEvent,
+  type AgentTaskResponse,
   type BroadcastResponse,
   type CreateRunRequest,
   type RestartResponse,
@@ -168,6 +173,8 @@ export interface ServerOptions {
   siwe?: SiweLoginOptions;
   dbPath?: string;
   schedule?: Schedule;
+  externalIdleMs?: number;
+  challengePack?: ChallengePackAccess;
   driverFactory?: (journal: EventJournal) => EntrantDriver;
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
   solveWatchFactory?: (journal: EventJournal) => SolveWatch;
@@ -206,8 +213,15 @@ export function createServer(options: ServerOptions): ArenaServer {
     .all()
     .map((row) => row.challengeId)));
   const externalTokens = new ExternalAgentTokens(journal.database);
+  const externalStatus = externalStatusFor(journal, {
+    ...(options.schedule === undefined ? {} : { schedule: options.schedule }),
+    ...(options.externalIdleMs === undefined ? {} : { idleMs: options.externalIdleMs }),
+  });
+  const pack = options.challengePack ?? createChallengePackResolver(activeChainProfile);
+  const ingest = new AgentIngest(journal, externalStatus, pack.addressesFor);
+  const inbox = new AgentInbox(journal);
   const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(
-    journal, options.schedule, externalTokens,
+    journal, options.schedule, externalTokens, undefined, pack,
   );
   const runManagerOptions: RunManagerOptions = {
     externalTokens,
@@ -240,6 +254,15 @@ export function createServer(options: ServerOptions): ArenaServer {
   );
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof AgentRateLimitError) {
+      return reply.status(429).header('Retry-After', error.retryAfter).send({ error: error.message });
+    }
+    if (error instanceof AgentBatchTooLargeError) {
+      return reply.status(413).send({ error: error.message });
+    }
+    if (error instanceof AgentInputError) {
+      return reply.status(400).send({ error: error.message });
+    }
     if (error instanceof JoinAuthenticationError) {
       return reply.status(401).send({ error: error.message });
     }
@@ -472,6 +495,28 @@ export function createServer(options: ServerOptions): ArenaServer {
     return reply.status(202).send(response);
   });
 
+  function agentIdentity(request: FastifyRequest) {
+    const token = bearerToken(request.headers.authorization);
+    const identity = token === undefined ? undefined : resolveAgentToken(token, externalTokens);
+    if (identity === undefined) throw new JoinAuthenticationError('Agent token required');
+    return identity;
+  }
+
+  app.get('/agent/task', async (request): Promise<AgentTaskResponse> => {
+    const identity = agentIdentity(request);
+    return manager.agentTask(identity.runId, identity.entrantId);
+  });
+
+  app.post('/agent/events', { bodyLimit: AGENT_BODY_LIMIT }, async (request) =>
+    ingest.events(agentIdentity(request), request.body));
+
+  app.post('/agent/hooks/claude-code', { bodyLimit: AGENT_BODY_LIMIT }, async (request) => {
+    ingest.hook(agentIdentity(request), request.body);
+    return {};
+  });
+
+  app.get('/agent/inbox', async (request) => inbox.read(agentIdentity(request), request.query));
+
   // The agent-facing channel: authenticated by the per-entrant token the driver
   // injects as ARENA_AGENT_TOKEN, never by the operator credential. The agent's
   // announcement of the challenge it works on journals as entrant.challenge.
@@ -502,13 +547,13 @@ export function createServer(options: ServerOptions): ArenaServer {
     }
     // State moves only after the journal accepts the event: an append that
     // throws must leave the retry journalling, not deduping into silence.
-    journal.append(identity.runId, identity.entrantId, 'entrant.challenge', {
-      entrantId: identity.entrantId,
-      challengeId,
-      via: 'self',
-      evidence: 'announced',
+    journal.transaction(() => {
+      journal.append(identity.runId, identity.entrantId, 'entrant.challenge', {
+        entrantId: identity.entrantId, challengeId, via: 'self', evidence: 'announced',
+      });
+      externalStatus.touch(identity.runId, identity.entrantId);
+      journal.afterCommit(() => recordCurrentChallenge(identity.runId, identity.entrantId, challengeId, 'self'));
     });
-    recordCurrentChallenge(identity.runId, identity.entrantId, challengeId, 'self');
     identity.lastAnnouncedAtMs = now;
     return { ok: true, changed: true };
   });
@@ -589,6 +634,7 @@ export function createServer(options: ServerOptions): ArenaServer {
   });
 
   app.addHook('onClose', async () => {
+    externalStatus.close();
     journal.close();
   });
 

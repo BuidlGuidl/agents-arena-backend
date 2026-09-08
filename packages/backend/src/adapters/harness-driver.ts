@@ -15,13 +15,10 @@ import { activeChainProfile } from '../chain/profile.js';
 import {
   challengeAddressIndex,
   dropCurrentChallenge,
-  savePendingGuess,
-  mayMove,
   matchChallenge,
   matchChallengeInProse,
-  recordCurrentChallenge,
-  solvedChallenges,
 } from '../ctf/challenge-tracker.js';
+import { trackProgress } from '../ctf/track-progress.js';
 import type { ChallengePackAccess, ChallengePackResolver } from '../ctf/resolve.js';
 import {
   assertHosted, EntrantUnavailableError,
@@ -622,19 +619,7 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     state.addressIndex ??= challengeAddressIndex(this.challengeAddresses?.(state.run.id) ?? {});
     const runId = state.run.id;
     const entrantId = state.entrant.id;
-    const guess = matcher(detail, state.addressIndex, solvedChallenges(runId, entrantId));
-    if (guess === undefined) return;
-    if (!mayMove(runId, entrantId, guess.challengeId, via)) {
-      savePendingGuess(runId, entrantId, guess, via);
-      return;
-    }
-    this.journal.append(runId, entrantId, 'entrant.challenge', {
-      entrantId,
-      challengeId: guess.challengeId,
-      via,
-      evidence: guess.evidence,
-    });
-    recordCurrentChallenge(runId, entrantId, guess.challengeId, via);
+    trackProgress(this.journal, runId, entrantId, detail, via, state.addressIndex, matcher);
   }
 
   private appendError(state: EntrantRuntimeState, message: string): void {

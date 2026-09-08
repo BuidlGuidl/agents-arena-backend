@@ -1,7 +1,5 @@
-import { and, eq } from 'drizzle-orm';
-
 import { ExternalAgentTokens } from '../agent-auth.js';
-import { entrants } from '../db/schema.js';
+import { externalStatusFor, type ExternalStatus, type ExternalStatusOptions } from './external-status.js';
 import { enqueueMessage } from '../inbox.js';
 import type { EventJournal } from '../journal.js';
 import {
@@ -10,10 +8,15 @@ import {
 } from './types.js';
 
 export class ExternalDriver implements EntrantDriver {
+  private readonly status: ExternalStatus;
+
   constructor(
     private readonly journal: EventJournal,
     private readonly tokens = new ExternalAgentTokens(journal.database),
-  ) {}
+    statusOptions: ExternalStatusOptions = {},
+  ) {
+    this.status = externalStatusFor(journal, statusOptions);
+  }
 
   async prepare(_run: RunRecord, entrant: EntrantRecord): Promise<void> {
     assertExternal(entrant);
@@ -23,6 +26,7 @@ export class ExternalDriver implements EntrantDriver {
     assertExternal(entrant);
     if (entrant.removedAt !== null) return;
     this.journal.append(run.id, entrant.id, 'entrant.prompt', { entrantId: entrant.id, text: openingPrompt });
+    this.status.set(run.id, entrant.id, entrant.status);
   }
 
   async steer(run: RunRecord, entrant: EntrantRecord, text: string, origin: 'steer' | 'broadcast' = 'steer'): Promise<'queued'> {
@@ -45,11 +49,7 @@ export class ExternalDriver implements EntrantDriver {
   private finish(runId: string, entrantId: string): void {
     this.journal.transaction(() => {
       this.tokens.revoke(runId, entrantId);
-      const where = and(eq(entrants.runId, runId), eq(entrants.id, entrantId));
-      const current = this.journal.database.select({ status: entrants.status }).from(entrants).where(where).get();
-      if (current?.status === 'done') return;
-      this.journal.database.update(entrants).set({ status: 'done' }).where(where).run();
-      this.journal.append(runId, entrantId, 'entrant.status', { entrantId, status: 'done' });
+      this.status.set(runId, entrantId, 'done');
     });
   }
 }

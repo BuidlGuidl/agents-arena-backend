@@ -11,6 +11,7 @@ import { TERMINAL_RUN_STATES } from './contract.js';
 import { DEFAULT_PUBLIC_URL } from './config.js';
 import type {
   CreateRunRequest,
+  AgentTaskResponse,
   JoinRunRequest,
   EntrantSolve,
   EntrantSummary,
@@ -294,6 +295,15 @@ export class RunManager {
     return { run: this.snapshot(id), created: true };
   }
 
+  agentTask(runId: string, entrantId: string): AgentTaskResponse {
+    const run = this.requireRun(runId);
+    const entrant = this.requireEntrant(runId, entrantId);
+    return {
+      runId, entrantId, state: run.state, startedAt: run.startedAt, deadlineAt: run.deadlineAt,
+      task: run.state === 'running' ? this.promptBuilder(entrant) : null,
+    };
+  }
+
   assertJoinable(runId: string): RunRecord {
     const run = this.requireRun(runId);
     if (TERMINAL_RUN_STATES.includes(run.state)) {
@@ -340,6 +350,10 @@ export class RunManager {
     });
     if (result.run.state === 'running') {
       await this.driver.start(result.run, result.entrant, this.promptBuilder(result.entrant));
+      const controller = this.narrationWatchControllers.get(input.runId);
+      if (result.created && controller !== undefined && !controller.signal.aborted) {
+        this.narrationWatch(result.run, [result.entrant], controller.signal);
+      }
     }
     return { entrantId, token: result.token, run: this.snapshot(input.runId), created: result.created };
   }

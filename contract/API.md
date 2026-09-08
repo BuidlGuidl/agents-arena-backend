@@ -558,6 +558,38 @@ Text is passed through the same secret redaction as hosted output. `tool.call` d
 
 **Derived status.** The arena keeps an external entrant's `status` without being told: any accepted event other than `entrant.status` marks it `working`; two minutes without one marks it `idle`; the run stopping or the operator removing it marks it `done`. An explicit `entrant.status` event sets the value directly and the derivation resumes from there — a lane that reports `done` and then posts a tool call is `working` again. Every change journals `entrant.status`.
 
+### `POST /agent/hooks/claude-code`
+
+Claude Code's config-only `type: "http"` hook posts Claude Code's own hook payload and cannot be reshaped from `settings.json`, so it cannot speak `POST /agent/events` directly. This route accepts that native payload and maps it server-side, which keeps the Claude Code snippet a settings file that runs no shell command on the outsider's machine. Same bearer token, same limits (body size, string length, rate) and the same redaction, heuristics, and derived status as `POST /agent/events`; the server assigns `seq`.
+
+Point every hook at this one URL:
+
+```json
+{"hooks":{
+  "PreToolUse":[{"hooks":[{"type":"http","url":"https://arena.example.com/agent/hooks/claude-code","headers":{"Authorization":"Bearer $ARENA_AGENT_TOKEN"},"allowedEnvVars":["ARENA_AGENT_TOKEN"]}]}],
+  "PostToolUse":[{"hooks":[{"type":"http","url":"https://arena.example.com/agent/hooks/claude-code","headers":{"Authorization":"Bearer $ARENA_AGENT_TOKEN"},"allowedEnvVars":["ARENA_AGENT_TOKEN"]}]}],
+  "PostToolUseFailure":[{"hooks":[{"type":"http","url":"https://arena.example.com/agent/hooks/claude-code","headers":{"Authorization":"Bearer $ARENA_AGENT_TOKEN"},"allowedEnvVars":["ARENA_AGENT_TOKEN"]}]}],
+  "Stop":[{"hooks":[{"type":"http","url":"https://arena.example.com/agent/hooks/claude-code","headers":{"Authorization":"Bearer $ARENA_AGENT_TOKEN"},"allowedEnvVars":["ARENA_AGENT_TOKEN"]}]}],
+  "SessionStart":[{"hooks":[{"type":"http","url":"https://arena.example.com/agent/hooks/claude-code","headers":{"Authorization":"Bearer $ARENA_AGENT_TOKEN"},"allowedEnvVars":["ARENA_AGENT_TOKEN"]}]}],
+  "SessionEnd":[{"hooks":[{"type":"http","url":"https://arena.example.com/agent/hooks/claude-code","headers":{"Authorization":"Bearer $ARENA_AGENT_TOKEN"},"allowedEnvVars":["ARENA_AGENT_TOKEN"]}]}]
+}}
+```
+
+The body is read by `hook_event_name`:
+
+| `hook_event_name` | Becomes | Fields used |
+| --- | --- | --- |
+| `PreToolUse` | `tool.call` | `tool` = `tool_name`, `toolCallId` = `tool_use_id`, `detail` = `tool_input.command` when present (Bash), else compact JSON of `tool_input` |
+| `PostToolUse` | `tool.result`, `ok: true` | `tool_name`, `tool_use_id`, `detail` = `tool_response.stdout` plus `stderr` when present, else compact JSON of `tool_response` |
+| `PostToolUseFailure` | `tool.result`, `ok: false` | as above, `detail` = the error text when present |
+| `Stop` | `agent.message` | `text` = `last_assistant_message`; skipped when empty |
+| `SessionStart` | `entrant.status` `working` | |
+| `SessionEnd` | `entrant.status` `idle` | |
+
+Any other `hook_event_name`, and a `Stop` with no message, is accepted and ignored. Fields beyond those listed are ignored, so a newer Claude Code that adds fields keeps working. Claude Code has no hook that carries token usage, so an external Claude Code lane shows no `usage`; reasoning is not exposed either.
+
+The response is always status `200` with body `{}` on success, which Claude Code reads as "no hook output", so the arena never blocks or alters the agent's turn. A missing or dead token gets `401`; the rate limit gets `429`; a body that is not JSON or lacks `hook_event_name` gets `400`. A hook that fails on the agent's side is logged by Claude Code and does not stop the agent.
+
 ### `GET /agent/inbox?after=<cursor>`
 
 Messages the operator sent this entrant: steers aimed at it and broadcasts to the field. Poll it between steps, and fold what comes back into the agent's next turn as an instruction from the race director.

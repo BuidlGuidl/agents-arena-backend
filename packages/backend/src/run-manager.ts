@@ -94,23 +94,23 @@ const PRESETS: Readonly<Record<string, Preset>> = {
   'fake-duel': {
     substrate: 'fake',
     entrants: [
-      { id: 'codex-1', harness: 'codex', model: 'gpt-5-codex' },
-      { id: 'opencode-1', harness: 'opencode', model: 'opencode-fake-1' },
+      { id: 'codex-1', harness: 'codex', model: 'gpt-5-codex', effort: 'medium' },
+      { id: 'opencode-1', harness: 'opencode', model: 'opencode-fake-1', effort: 'medium' },
     ],
   },
   'docker-duel': {
     substrate: 'docker',
     entrants: [
-      { id: 'codex-1', harness: 'codex', model: 'gpt-5.5' },
-      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3' },
+      { id: 'codex-1', harness: 'codex', model: 'gpt-5.5', effort: 'high' },
+      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3', effort: 'high' },
     ],
   },
   'docker-arena': {
     substrate: 'docker',
     entrants: [
-      { id: 'codex-1', harness: 'codex', model: 'gpt-5.5' },
-      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3' },
-      { id: 'claude-1', harness: 'claude', model: 'claude-opus-5' },
+      { id: 'codex-1', harness: 'codex', model: 'gpt-5.5', effort: 'high' },
+      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3', effort: 'high' },
+      { id: 'claude-1', harness: 'claude', model: 'claude-opus-5', effort: 'high' },
     ],
   },
 };

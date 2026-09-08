@@ -82,6 +82,41 @@ The cookie is `HttpOnly; SameSite=Strict; Path=/`, plus `Secure` unless the requ
 
 A session lasts 12 hours. Sessions and nonces live in the backend process, so a restart signs the operator out — the same restart already drops the run it was driving.
 
+## Agents
+
+### `GET /agents`
+
+Open read. Returns the harnesses and curated agents in display order with `Cache-Control: public, max-age=60`. An agent is a harness plus a model the arena can run, with its accepted efforts. An entrant places an agent in a run with an id, a pinned effort, and a wallet. Every agent has at least one effort.
+
+Example response excerpt:
+
+```json
+{
+  "harnesses": [
+    {"id":"codex","label":"Codex CLI","customModels":false},
+    {"id":"claude","label":"Claude Code","customModels":false},
+    {"id":"opencode","label":"OpenCode","customModels":true}
+  ],
+  "agents": [
+    {"harness":"codex","model":"gpt-5.5","label":"GPT-5.5","vendor":"OpenAI","efforts":["low","medium","high","xhigh"]}
+  ]
+}
+```
+
+`customModels` reports this deployment's support for models outside the curated list. Without an OpenRouter source, every harness reports `false`.
+
+### `GET /agents/search?harness=opencode&q=gemini`
+
+Open read. `harness` must be `codex`, `claude`, or `opencode`. `q` must contain at least two characters after trimming. Unknown query parameters return `400 {"error":"Unknown query parameter: NAME"}`. Invalid query values return `400 {"error":"Invalid harness query value"}` or `400 {"error":"Invalid q query value"}`.
+
+The search matches model ids, labels, and vendors without regard to case. It returns curated matches first, then custom matches sorted by model id, with at most 20 results. For OpenCode with `customModels: true`, it also searches OpenRouter's public model list; no key is required. Search returns OpenRouter models that support reasoning and tools, produce text only, and are not a `:` variant or a `~` alias.
+
+```json
+{"agents":[{"harness":"opencode","model":"openrouter/google/gemini-3.1-pro-preview","label":"Gemini 3.1 Pro Preview","vendor":"Google","efforts":["low","medium","high"]}]}
+```
+
+Successful responses carry `Cache-Control: public, max-age=60`. The backend caches OpenRouter's model list for ten minutes and serves stale data if a refresh fails. Without cached data, an OpenRouter failure returns `503 {"error":"OpenRouter model list is unavailable"}`.
+
 ## Runs
 
 ### `POST /runs`
@@ -94,26 +129,35 @@ Creates a run from a required preset. The preset selects the fake or Docker subs
 
 The backend stores `durationMs` when it creates the run. When the run enters `running`, it sets `deadlineAt` to that transition time plus `durationMs`. The deadline is display only. The backend does not stop or enforce the run at that time; the operator stops it manually. If `durationMs` is absent, `deadlineAt` stays `null`.
 
-An optional `roster` replaces the preset entrants. It accepts 1–10 entries:
+An optional `roster` replaces the preset entrants. It accepts 1 to 10 entries:
 
 ```json
 {
   "preset":"fake-duel",
   "autoStart":true,
   "roster":[
-    {"id":"claude-a","harness":"claude","model":"claude-opus-5"},
-    {"id":"claude-b","harness":"claude","model":"claude-sonnet-5"}
+    {"id":"claude-a","harness":"claude","model":"claude-opus-5","effort":"high"},
+    {"id":"claude-b","harness":"claude","model":"claude-sonnet-5","effort":"high"}
   ]
 }
 ```
 
-Each `id` must match `^[a-z][a-z0-9-]*$`, contain at most 20 characters, and be unique within the roster. Docker names allow 63 characters; `arena-`, the 36-character run UUID, and their separator leave 20 characters for the entrant ID. The ID `run` is reserved for run-level feed events. `harness` must be `codex`, `opencode`, or `claude`. The `model` must appear in the selected harness's allowlist:
+Each entrant id must match `^[a-z][a-z0-9-]*$` and contain at most 20 characters. Docker names allow 63 characters; `arena-`, the 36-character run UUID, and their separator leave 20 characters for the entrant ID.
+Ids must be unique within the roster and cannot be `run`, the reserved source for run-level feed events.
+Each entry must name an agent from `GET /agents`, or for `opencode` an OpenRouter model that supports reasoning.
+`effort` is required and must be one of the agent's `efforts`.
+This pins each entrant's effort so a race cannot depend on a vendor default.
 
-- `codex`: `gpt-5.5`
-- `claude`: `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`
-- `opencode`: `openrouter/z-ai/glm-5.3`, `openrouter/moonshotai/kimi-k3`, `openrouter/deepseek/deepseek-v4-pro-0813`, `openrouter/qwen/qwen3.8-2.4t-a95b`
+An invalid body returns `400` with `{ error, issues: [{ path, message }] }`.
+Each issue's path points to the rejected field. Agent validation collects issues across all entries.
+For example, `max` on `gpt-5.5` returns:
 
-All three harnesses accept the optional `effort` field. Codex and Claude accept `low`, `medium`, `high`, `xhigh`, or `max`. OpenCode accepts `low`, `medium`, or `high` because OpenRouter supports only those effort levels.
+```json
+{"error":"Invalid request body","issues":[{"path":["roster",0,"effort"],"message":"gpt-5.5 accepts effort low, medium, high, xhigh"}]}
+```
+
+If OpenRouter cannot verify a custom model, the request returns `400` with an issue at that entry's `model` path.
+The message asks the operator to retry or pick a listed model. Curated agents work without OpenRouter.
 
 The response has status `201` for a new run and status `200` for an existing idempotent run.
 The chainless `fake-duel` preset skips wallet seeding. The `docker-duel` preset uses the seed and funding gates.

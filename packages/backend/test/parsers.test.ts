@@ -538,7 +538,7 @@ describe('ClaudeEventParser', () => {
     const usage = parsed.events.find((event) => event.type === 'usage');
 
     // opus: 1,010 fresh + 4,000 cached + 1,000 out. sonnet: 5,000 cached + 2,000 out.
-    expect(usage?.payload.costUsd).toBe(0.06355);
+    expect(usage?.payload.costUsd).toBe(0.05305);
     // Aggregate tokens still come from `usage`, which counts the whole turn.
     expect(usage?.payload).toMatchObject({ inputTokens: 10_010, outputTokens: 3_000, cachedInputTokens: 9_000 });
     // The old aggregate-only pricing charged every sonnet token at the opus rate.

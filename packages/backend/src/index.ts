@@ -1,6 +1,8 @@
 import closeWithGrace from 'close-with-grace';
 import Docker from 'dockerode';
 
+import { createAgentRegistry } from './agents/registry.js';
+import { createOpenRouterModelSource } from './agents/openrouter.js';
 import { createFundingGate, runLocalDevFaucet } from './chain/funding-gate.js';
 import { activeChainProfile } from './chain/profile.js';
 import { createSolveWatch } from './chain/solve-poller.js';
@@ -51,6 +53,7 @@ const { app, manager } = ((): ReturnType<typeof createServer> => {
     const narration = resolveNarrationConfig();
     return createServer({
       operatorToken,
+      agentRegistry: createAgentRegistry({ openRouter: createOpenRouterModelSource({ logger: console }) }),
       siwe,
       corsOrigins,
       logger: true,

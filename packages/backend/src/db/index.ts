@@ -29,7 +29,7 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
       id TEXT NOT NULL,
       kind TEXT NOT NULL DEFAULT 'hosted',
       harness TEXT,
-      model TEXT NOT NULL,
+      model TEXT,
       effort TEXT,
       address TEXT,
       status TEXT NOT NULL,
@@ -60,16 +60,16 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
     sqlite.exec("ALTER TABLE entrants ADD COLUMN kind TEXT NOT NULL DEFAULT 'hosted'");
   }
   // SQLite cannot drop NOT NULL in place. Rebuild only legacy entrant tables.
-  if (entrantColumns.some((column) => column.name === 'harness' && column.notnull === 1)) {
+  if (entrantColumns.some((column) => (column.name === 'harness' || column.name === 'model') && column.notnull === 1)) {
     const hasRunReference = sqlite.prepare('PRAGMA foreign_key_list(entrants)').all().length > 0;
     sqlite.transaction(() => {
       sqlite.exec(`
         CREATE TABLE entrants_next (
           run_id TEXT NOT NULL, id TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'hosted',
-          harness TEXT, model TEXT NOT NULL, effort TEXT, address TEXT, status TEXT NOT NULL
+          harness TEXT, model TEXT, effort TEXT, address TEXT, status TEXT NOT NULL
           ${hasRunReference ? ', FOREIGN KEY (run_id) REFERENCES runs(id)' : ''}
         );
-        INSERT INTO entrants_next SELECT run_id, id, kind, harness, model, effort, address, status FROM entrants;
+        INSERT INTO entrants_next SELECT run_id, id, kind, harness, CASE WHEN kind = 'external' THEN NULL ELSE model END, effort, address, status FROM entrants;
         DROP TABLE entrants;
         ALTER TABLE entrants_next RENAME TO entrants;
         CREATE UNIQUE INDEX entrants_run_id_id ON entrants (run_id, id);

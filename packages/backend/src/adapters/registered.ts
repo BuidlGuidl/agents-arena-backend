@@ -42,8 +42,8 @@ export class RegisteredEntrantDriver implements EntrantDriver {
     await this.driver(run, entrant).start(run, entrant, openingPrompt);
   }
 
-  async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<SteerDelivery> {
-    return this.driver(run, entrant).steer(run, entrant, text);
+  async steer(run: RunRecord, entrant: EntrantRecord, text: string, origin: 'steer' | 'broadcast' = 'steer'): Promise<SteerDelivery> {
+    return this.driver(run, entrant).steer(run, entrant, text, origin);
   }
 
   async restart(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {

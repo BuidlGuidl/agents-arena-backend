@@ -1,4 +1,4 @@
-import { ExternalEntrants } from '../../src/external-entrants.js';
+import { toEntrantRecord } from '../../src/external-entrants.js';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
@@ -29,7 +29,7 @@ async function seedRun(preset: 'docker-arena' | 'fake-duel') {
   if (run === undefined) {
     throw new Error('Test run was not seeded');
   }
-  return { journal, run, runEntrants: runEntrants.map((row) => new ExternalEntrants(journal.database).record(row)) };
+  return { journal, run, runEntrants: runEntrants.map((row) => toEntrantRecord({ entrants: row, external_entrants: null })) };
 }
 
 describe('funding gate', () => {

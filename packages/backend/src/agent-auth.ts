@@ -2,8 +2,15 @@ import { createHash, randomBytes } from 'node:crypto';
 
 import { and, eq, isNull, notInArray } from 'drizzle-orm';
 
+import { TERMINAL_RUN_STATES } from './contract.js';
 import type { ArenaDatabase } from './db/index.js';
 import { externalEntrants, runs } from './db/schema.js';
+
+export const EXTERNAL_TOKEN_PATTERN = /byoa_[0-9a-f]{48}/;
+
+export function mintExternalToken(): string {
+  return `byoa_${randomBytes(24).toString('hex')}`;
+}
 
 // Hosted credentials live in memory and die with their containers. External
 // credentials use the database-backed store below. Both resolve through one function.
@@ -65,19 +72,19 @@ export class ExternalAgentTokens {
 
   issue(runId: string, entrantId: string): string {
     this.revoke(runId, entrantId);
-    const token = `byoa_${randomBytes(24).toString('hex')}`;
+    const token = mintExternalToken();
     this.database.update(externalEntrants).set({ tokenHash: tokenHash(token) })
       .where(and(eq(externalEntrants.runId, runId), eq(externalEntrants.id, entrantId))).run();
     return token;
   }
 
   resolve(token: string): AgentTokenRecord | undefined {
-    if (!/^byoa_[0-9a-f]{48}$/.test(token)) return undefined;
+    if (token.match(EXTERNAL_TOKEN_PATTERN)?.[0] !== token) return undefined;
     const hash = tokenHash(token);
     const row = this.database.select({ runId: externalEntrants.runId, entrantId: externalEntrants.id })
       .from(externalEntrants).innerJoin(runs, eq(runs.id, externalEntrants.runId))
       .where(and(eq(externalEntrants.tokenHash, hash), isNull(externalEntrants.removedAt),
-        notInArray(runs.state, ['stopping', 'finished', 'failed']))).get();
+        notInArray(runs.state, TERMINAL_RUN_STATES))).get();
     if (row === undefined) {
       this.states.delete(hash);
       return undefined;

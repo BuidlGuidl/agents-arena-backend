@@ -56,7 +56,7 @@ export const entrants = sqliteTable('entrants', {
   id: text('id').notNull(),
   kind: text('kind', { enum: ['hosted', 'external'] }).notNull().default('hosted'),
   harness: text('harness', { enum: HARNESS_IDS }),
-  model: text('model').notNull(),
+  model: text('model'),
   effort: text('effort', { enum: ROSTER_EFFORTS }),
   address: text('address'),
   status: text('status', { enum: entrantStatuses }).notNull(),

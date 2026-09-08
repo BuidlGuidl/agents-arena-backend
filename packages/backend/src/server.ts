@@ -9,7 +9,7 @@ import { flagsHeld } from './chain/flags-held.js';
 import { activeChainProfile } from './chain/profile.js';
 import { buildTaskText } from './ctf/prompt.js';
 import {
-  JOIN_MESSAGE_TEMPLATE,
+  joinMessage,
   HARNESS_IDS,
   OPENCODE_EFFORTS,
   ROSTER_EFFORTS,
@@ -34,6 +34,7 @@ import {
   sessionCookie,
 } from './auth.js';
 import { SiweLogin, type SiweLoginOptions } from './siwe.js';
+import { DEFAULT_PUBLIC_URL } from './config.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
 import { EntrantOperationError, EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
 import { eventTypes, scores } from './db/schema.js';
@@ -205,13 +206,13 @@ export function createServer(options: ServerOptions): ArenaServer {
     .all()
     .map((row) => row.challengeId)));
   const externalTokens = new ExternalAgentTokens(journal.database);
-  const driver = new RegisteredEntrantDriver(
-    journal, options.schedule, externalTokens, options.driverFactory?.(journal),
+  const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(
+    journal, options.schedule, externalTokens,
   );
   const runManagerOptions: RunManagerOptions = {
     externalTokens,
     promptBuilder: (entrant) => buildTaskText(entrant, activeChainProfile, {
-      publicUrl: options.publicUrl ?? 'http://localhost:4177',
+      publicUrl: options.publicUrl ?? DEFAULT_PUBLIC_URL,
     }),
     operatorAddresses: options.siwe?.operatorAddresses ?? [],
     ...(options.solveWatchFactory === undefined
@@ -311,8 +312,7 @@ export function createServer(options: ServerOptions): ArenaServer {
     if (body === undefined) return;
     const run = manager.assertJoinable(body.runId);
     if (!login.nonceAvailable(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
-    const message = JOIN_MESSAGE_TEMPLATE.replace('{runId}', () => body.runId)
-      .replace('{address}', () => body.address).replace('{nonce}', () => body.nonce);
+    const message = joinMessage(body);
     const recovered = await recoverMessageAddress({ message, signature: body.signature as Hex }).catch(() => undefined);
     if (recovered === undefined || !isAddressEqual(recovered, body.address as Address)) {
       throw new JoinAuthenticationError('Signature does not match the claimed address');
@@ -441,7 +441,7 @@ export function createServer(options: ServerOptions): ArenaServer {
 
   app.post('/runs/:id/entrants/:entrantId/remove', async (request, reply) => {
     const { id, entrantId } = request.params as { id: string; entrantId: string };
-    manager.remove(id, entrantId);
+    await manager.remove(id, entrantId);
     return reply.status(202).send({ accepted: true });
   });
 

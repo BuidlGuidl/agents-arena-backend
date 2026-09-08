@@ -5,10 +5,10 @@ import { getAddress, recoverTypedDataAddress, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
 import { ExternalAgentTokens } from './agent-auth.js';
-import { ExternalDriver } from './adapters/external.js';
 import { EntrantOperationError } from './adapters/types.js';
-import { ExternalEntrants, declaredFields } from './external-entrants.js';
-import { withInboxKind } from './inbox.js';
+import { ExternalEntrants, declaredFields, toEntrantRecord } from './external-entrants.js';
+import { TERMINAL_RUN_STATES } from './contract.js';
+import { DEFAULT_PUBLIC_URL } from './config.js';
 import type {
   CreateRunRequest,
   JoinRunRequest,
@@ -22,7 +22,7 @@ import type {
   SweepResult,
   SweepResponse,
 } from './contract.js';
-import { entrants, events, runs, scores } from './db/schema.js';
+import { entrants, externalEntrants, events, runs, scores } from './db/schema.js';
 import { ensureChainTables } from './chain/storage.js';
 import { activeChainProfile } from './chain/profile.js';
 import {
@@ -42,7 +42,7 @@ import { buildTaskText, type OpeningPromptBuilder } from './ctf/prompt.js';
 import { roundUsd } from './pricing.js';
 import type { EventJournal } from './journal.js';
 import { dropCredentialSecrets } from './adapters/credential-secrets.js';
-import type { EntrantDriver, EntrantRecord, RunRecord } from './adapters/types.js';
+import type { EntrantDriver, EntrantRecord, HostedEntrantRecord, RunRecord } from './adapters/types.js';
 import { normalizeOperatorAddresses } from './siwe.js';
 
 export const LEGAL_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> = {
@@ -202,7 +202,7 @@ export const passThroughNarrationWatch: NarrationWatch = () => {};
 // The prompt names the chain's RPC and says where the challenge briefing lives,
 // so it follows the same profile the funding gate resolves (ADR-0009).
 export const profilePromptBuilder: OpeningPromptBuilder = (entrant) =>
-  buildTaskText(entrant, activeChainProfile);
+  buildTaskText(entrant, activeChainProfile, { publicUrl: DEFAULT_PUBLIC_URL });
 
 export class RunManager {
   private readonly external: ExternalEntrants;
@@ -296,7 +296,7 @@ export class RunManager {
 
   assertJoinable(runId: string): RunRecord {
     const run = this.requireRun(runId);
-    if (['stopping', 'finished', 'failed'].includes(run.state)) {
+    if (TERMINAL_RUN_STATES.includes(run.state)) {
       throw new JoinConflictError('The run has stopped');
     }
     return run;
@@ -322,11 +322,11 @@ export class RunManager {
         status: previous?.status ?? 'idle' as const, name: input.name,
         ...declaredFields(input),
         joinedAt: previous?.kind === 'external' ? previous.joinedAt : new Date().toISOString(),
-        removedAt: null, flagsBeforeJoin: input.flagsBeforeJoin,
+        removedAt: null, flagsBeforeJoin: previous?.kind === 'external' ? previous.flagsBeforeJoin : input.flagsBeforeJoin,
       };
       if (previous === undefined) {
         this.journal.database.insert(entrants).values({
-          runId: run.id, id: entrantId, kind: 'external', address, harness: null, model: '', status: 'idle',
+          runId: run.id, id: entrantId, kind: 'external', address, harness: null, model: null, status: 'idle',
         }).run();
       }
       this.external.register(entrant);
@@ -344,14 +344,15 @@ export class RunManager {
     return { entrantId, token: result.token, run: this.snapshot(input.runId), created: result.created };
   }
 
-  remove(runId: string, entrantId: string): void {
+  async remove(runId: string, entrantId: string): Promise<void> {
+    const run = this.requireRun(runId);
+    const entrant = this.requireEntrant(runId, entrantId);
+    if (entrant.kind === 'hosted') throw new EntrantOperationError('Hosted entrants cannot be removed; stop the run');
+    if (entrant.removedAt !== null) throw new JoinConflictError('Entrant was already removed');
+    await this.driver.stop(run, entrant);
     this.journal.transaction(() => {
-      this.requireRun(runId);
-      const entrant = this.requireEntrant(runId, entrantId);
-      if (entrant.kind === 'hosted') throw new EntrantOperationError('Hosted entrants cannot be removed; stop the run');
-      if (entrant.removedAt !== null) throw new JoinConflictError('Entrant was already removed');
-      new ExternalDriver(this.journal, this.externalTokens).finish(runId, entrantId);
       this.external.markRemoved(runId, entrantId, new Date().toISOString());
+      // A set address means the solve poller must still watch this wallet.
       this.journal.database.update(entrants).set({ address: null })
         .where(and(eq(entrants.runId, runId), eq(entrants.id, entrantId))).run();
       this.journal.append(runId, entrantId, 'entrant.removed', { entrantId });
@@ -479,8 +480,8 @@ export class RunManager {
     if (this.inFlightStarts.has(runId)) {
       throw new SweepConflictError(`Cannot sweep run ${runId} while a start is in flight`);
     }
-    const runEntrants = this.entrants(runId).filter(
-      (entrant): entrant is EntrantRecord & { address: string } => entrant.kind === 'hosted' && entrant.address !== null,
+    const runEntrants = this.hostedEntrants(runId).filter(
+      (entrant): entrant is HostedEntrantRecord & { address: string } => entrant.address !== null,
     );
     if (run.seededBy === null || runEntrants.length === 0) {
       throw new SweepConflictError('Run has no seeded wallets to sweep');
@@ -685,7 +686,7 @@ export class RunManager {
       throw new SeedStateConflictError('Run is not awaiting a seed signature');
     }
 
-    const runEntrants = this.entrants(runId).filter((entrant) => entrant.kind === 'hosted');
+    const runEntrants = this.hostedEntrants(runId);
     let addresses: ReadonlyMap<string, string>;
     try {
       addresses = deriveEntrantKeys(
@@ -808,7 +809,7 @@ export class RunManager {
         }
         run = this.transition(runId, 'awaiting_funding');
         await withPhaseTimeout(
-          this.fundingGate(run, runEntrants.filter((entrant) => entrant.kind === 'hosted'), controller.signal),
+          this.fundingGate(run, this.hostedEntrants(runId), controller.signal),
           this.fundingTimeoutMs,
           'funding',
           controller,
@@ -995,8 +996,7 @@ export class RunManager {
     label: 'Steer' | 'Broadcast',
   ): Promise<SteerDelivery> {
     try {
-      return await withInboxKind(label === 'Broadcast' ? 'broadcast' : 'steer',
-        () => this.driver.steer(run, entrant, text));
+      return await this.driver.steer(run, entrant, text, label === 'Broadcast' ? 'broadcast' : 'steer');
     } catch (error) {
       this.journal.append(run.id, entrant.id, 'entrant.error', {
         entrantId: entrant.id,
@@ -1122,12 +1122,13 @@ export class RunManager {
     const entrant = this.journal.database
       .select()
       .from(entrants)
+      .leftJoin(externalEntrants, and(eq(externalEntrants.runId, entrants.runId), eq(externalEntrants.id, entrants.id)))
       .where(and(eq(entrants.runId, runId), eq(entrants.id, entrantId)))
       .get();
     if (entrant === undefined) {
       throw new EntrantNotFoundError(`Entrant ${entrantId} does not exist in run ${runId}`);
     }
-    return this.external.record(entrant);
+    return toEntrantRecord(entrant);
   }
 
   private requireRun(runId: string): RunRecord {
@@ -1227,13 +1228,18 @@ export class RunManager {
     }]));
   }
 
+  private hostedEntrants(runId: string): HostedEntrantRecord[] {
+    return this.entrants(runId).filter((entrant) => entrant.kind === 'hosted');
+  }
+
   private entrants(runId: string): EntrantRecord[] {
     return this.journal.database
       .select()
       .from(entrants)
+      .leftJoin(externalEntrants, and(eq(externalEntrants.runId, entrants.runId), eq(externalEntrants.id, entrants.id)))
       .where(eq(entrants.runId, runId))
       .orderBy(asc(entrants.id))
-      .all().map((row) => this.external.record(row));
+      .all().map(toEntrantRecord);
   }
 }
 

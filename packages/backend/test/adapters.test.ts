@@ -24,7 +24,7 @@ import {
 } from '../src/adapters/harness-driver.js';
 import { FakeDriver } from '../src/adapters/fake.js';
 import { OpenCodeDriver, scrubOpenCodeEnvironment } from '../src/adapters/opencode.js';
-import { ExternalEntrants } from '../src/external-entrants.js';
+import { toEntrantRecord } from '../src/external-entrants.js';
 import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
 import {
   EntrantUnavailableError,
@@ -251,7 +251,7 @@ async function setup(
     eq(entrants.harness, harness),
   )).get();
   if (run === undefined || row === undefined) throw new Error('Test run was not seeded');
-  const entrantRecord = new ExternalEntrants(journal.database).record(row);
+  const entrantRecord = toEntrantRecord({ entrants: row, external_entrants: null });
   if (entrantRecord.kind !== 'hosted') throw new Error('Expected hosted fixture');
   let entrant: HostedEntrantRecord = entrantRecord;
   // Cost pricing keys off the entrant's model, so a test can swap in a model the
@@ -732,7 +732,7 @@ describe('parser isolation', () => {
         eq(entrants.harness, 'codex'),
       )).get();
       if (run === undefined || entrant === undefined) throw new Error('Test run was not seeded');
-      return { run, entrant: new ExternalEntrants(journal.database).record(entrant) };
+      return { run, entrant: toEntrantRecord({ entrants: entrant, external_entrants: null }) };
     };
     const first = await seed();
     const second = await seed();

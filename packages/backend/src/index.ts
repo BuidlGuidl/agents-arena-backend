@@ -6,6 +6,8 @@ import { activeChainProfile } from './chain/profile.js';
 import { createSolveWatch } from './chain/solve-poller.js';
 import {
   InvalidNarrationConfigError,
+  MissingPublicUrlError,
+  resolvePublicUrl,
   resolveListenHost,
   resolveNarrationConfig,
 } from './config.js';
@@ -51,7 +53,7 @@ const { app, manager } = ((): ReturnType<typeof createServer> => {
     const narration = resolveNarrationConfig();
     return createServer({
       operatorToken,
-      publicUrl: process.env.ARENA_PUBLIC_URL ?? `http://localhost:${port}`,
+      publicUrl: resolvePublicUrl(activeChainProfile.name, port, process.env.ARENA_PUBLIC_URL),
       siwe,
       corsOrigins,
       logger: true,
@@ -88,6 +90,10 @@ const { app, manager } = ((): ReturnType<typeof createServer> => {
       console.error(
         'ARENA_SIWE_DOMAINS is required for wallet login. Set it to the hostname the wallet will show, such as the frontend host.',
       );
+      process.exit(1);
+    }
+    if (error instanceof MissingPublicUrlError) {
+      console.error(error.message);
       process.exit(1);
     }
     if (error instanceof InvalidNarrationConfigError) {

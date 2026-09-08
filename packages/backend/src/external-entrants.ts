@@ -7,11 +7,6 @@ import { entrants, externalEntrants } from './db/schema.js';
 export class ExternalEntrants {
   constructor(private readonly database: ArenaDatabase) {}
 
-  private find(runId: string, id: string) {
-    return this.database.select().from(externalEntrants)
-      .where(and(eq(externalEntrants.runId, runId), eq(externalEntrants.id, id))).get();
-  }
-
   register(entrant: ExternalEntrantRecord): void {
     if (entrant.address === null) throw new Error('External entrant needs a wallet address');
     const values = {
@@ -30,21 +25,23 @@ export class ExternalEntrants {
     this.database.update(externalEntrants).set({ removedAt, tokenHash: null })
       .where(and(eq(externalEntrants.runId, runId), eq(externalEntrants.id, id))).run();
   }
+}
 
-  record(row: typeof entrants.$inferSelect): EntrantRecord {
-    if (row.kind === 'hosted') {
-      if (row.harness === null) throw new Error(`Hosted entrant ${row.id} has no harness`);
-      return { ...row, kind: 'hosted', harness: row.harness };
-    }
-    const external = this.find(row.runId, row.id);
-    if (external === undefined) throw new Error(`External entrant ${row.id} has no registration`);
-    return {
-      runId: row.runId, id: row.id, kind: 'external', status: row.status,
-      address: external.address, name: external.name, joinedAt: external.joinedAt,
-      removedAt: external.removedAt, flagsBeforeJoin: external.flagsBeforeJoin,
-      ...declaredFields(external),
-    };
+export function toEntrantRecord({ entrants: row, external_entrants: external }: {
+  entrants: typeof entrants.$inferSelect;
+  external_entrants: typeof externalEntrants.$inferSelect | null;
+}): EntrantRecord {
+  if (row.kind === 'hosted') {
+    if (row.harness === null || row.model === null) throw new Error(`Hosted entrant ${row.id} has no harness or model`);
+    return { ...row, kind: 'hosted', harness: row.harness, model: row.model };
   }
+  if (external === null) throw new Error(`External entrant ${row.id} has no registration`);
+  return {
+    runId: row.runId, id: row.id, kind: 'external', status: row.status,
+    address: external.address, name: external.name, joinedAt: external.joinedAt,
+    removedAt: external.removedAt, flagsBeforeJoin: external.flagsBeforeJoin,
+    ...declaredFields(external),
+  };
 }
 
 export function declaredFields(input: {

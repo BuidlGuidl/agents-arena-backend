@@ -28,24 +28,14 @@ import { entrants, runs } from '../src/db/schema.js';
 import { capEvent, EVENT_TEXT_LIMIT } from '../src/journal.js';
 import { createServer, type ArenaServer } from '../src/server.js';
 
-const servers: ArenaServer[] = [];
+import { noopDriver, serverHarness } from './fixtures/server.js';
+
+const servers = serverHarness();
 const OPERATOR_TOKEN = 'test-operator-token';
 const operatorHeaders = { authorization: `Bearer ${OPERATOR_TOKEN}` };
 const LOCAL_DEV_OPERATOR = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
 const SECP256K1_N =
   0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
-const noopDriver: EntrantDriver = {
-  async prepare() {},
-  async start() {},
-  async steer() { return 'injected'; },
-  async restart() {},
-  async stop() {},
-};
-
-afterEach(async () => {
-  await Promise.all(servers.splice(0).map(async ({ app }) => app.close()));
-});
-
 describe('agent self-announce', () => {
   async function announceSetup() {
     const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
@@ -1520,7 +1510,14 @@ describe('sweep endpoint', () => {
       payload: { signature },
     });
 
+    // Success checks derivation for the hosted wallets despite the unrelated external address.
     expect(response.statusCode).toBe(200);
+    expect(server.manager.snapshot(run.id).entrants).toContainEqual(expect.objectContaining({
+      kind: 'external', address: LOCAL_DEV_OPERATOR.address,
+    }));
+    expect(chain.getBalance).not.toHaveBeenCalledWith(LOCAL_DEV_OPERATOR.address);
+    expect(response.json().results.map((result: { entrantId: string }) => result.entrantId))
+      .toEqual(['codex-1', 'opencode-1']);
     expect(response.json()).toEqual({
       runId: run.id,
       to: operator.address,

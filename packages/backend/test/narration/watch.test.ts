@@ -1,4 +1,4 @@
-import { ExternalEntrants } from '../../src/external-entrants.js';
+import { toEntrantRecord } from '../../src/external-entrants.js';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -49,7 +49,7 @@ async function setup(): Promise<Fixture> {
     eq(entrants.runId, created.run.id), eq(entrants.id, 'codex-1'),
   )).get();
   if (run === undefined || entrant === undefined) throw new Error('Missing watcher fixture rows');
-  return { journal, run, entrant: new ExternalEntrants(journal.database).record(entrant) };
+  return { journal, run, entrant: toEntrantRecord({ entrants: entrant, external_entrants: null }) };
 }
 
 function setStatus(fixture: Fixture, status: EntrantStatus): void {

@@ -5,13 +5,9 @@ import { entrants } from '../db/schema.js';
 import { enqueueMessage } from '../inbox.js';
 import type { EventJournal } from '../journal.js';
 import {
-  EntrantOperationError, EntrantUnavailableError,
-  type EntrantDriver, type EntrantRecord, type ExternalEntrantRecord, type RunRecord,
+  assertExternal, EntrantOperationError, EntrantUnavailableError,
+  type EntrantDriver, type EntrantRecord, type RunRecord,
 } from './types.js';
-
-function assertExternal(entrant: EntrantRecord): asserts entrant is ExternalEntrantRecord {
-  if (entrant.kind !== 'external') throw new Error('Expected an external entrant');
-}
 
 export class ExternalDriver implements EntrantDriver {
   constructor(
@@ -29,10 +25,10 @@ export class ExternalDriver implements EntrantDriver {
     this.journal.append(run.id, entrant.id, 'entrant.prompt', { entrantId: entrant.id, text: openingPrompt });
   }
 
-  async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<'queued'> {
+  async steer(run: RunRecord, entrant: EntrantRecord, text: string, origin: 'steer' | 'broadcast' = 'steer'): Promise<'queued'> {
     assertExternal(entrant);
     if (entrant.removedAt !== null) throw new EntrantUnavailableError('Entrant was removed');
-    enqueueMessage(this.journal.database, run.id, entrant.id, text);
+    enqueueMessage(this.journal.database, run.id, entrant.id, text, origin);
     return 'queued';
   }
 
@@ -46,7 +42,7 @@ export class ExternalDriver implements EntrantDriver {
     this.finish(run.id, entrant.id);
   }
 
-  finish(runId: string, entrantId: string): void {
+  private finish(runId: string, entrantId: string): void {
     this.journal.transaction(() => {
       this.tokens.revoke(runId, entrantId);
       const where = and(eq(entrants.runId, runId), eq(entrants.id, entrantId));

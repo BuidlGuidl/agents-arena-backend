@@ -10,25 +10,28 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ExternalAgentTokens, resolveAgentToken } from '../src/agent-auth.js';
-import type { EntrantDriver } from '../src/adapters/types.js';
+import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
+import { ExternalDriver } from '../src/adapters/external.js';
+import { noopDriver, serverHarness } from './fixtures/server.js';
 import { activeChainProfile } from '../src/chain/profile.js';
+import { recordSolve } from '../src/chain/storage.js';
 import { SolvePoller } from '../src/chain/solve-poller.js';
 import { dropRunKeys, getWallet } from '../src/chain/wallet.js';
 import { dropCurrentChallenge } from '../src/ctf/challenge-tracker.js';
-import { JOIN_MESSAGE_TEMPLATE, type JoinRunRequest, type JoinRunResponse } from '../src/contract.js';
+import { joinMessage, type JoinRunRequest, type JoinRunResponse } from '../src/contract.js';
 import { entrants, externalEntrants, inboxMessages } from '../src/db/schema.js';
 import { createServer, type ArenaServer, type ServerOptions } from '../src/server.js';
 
 const account = privateKeyToAccount('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
 const stranger = privateKeyToAccount('0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba');
 const headers = { authorization: 'Bearer operator' };
-const servers: ArenaServer[] = [];
+const servers = serverHarness((target) => {
+  for (const run of target.manager.list(200)) {
+    for (const entrant of target.manager.snapshot(run.id).entrants) dropCurrentChallenge(run.id, entrant.id);
+    dropRunKeys(run.id);
+  }
+});
 const directories: string[] = [];
-const noopDriver: EntrantDriver = {
-  async prepare() {}, async start() {}, async steer() { return 'injected'; },
-  async restart() {}, async stop() {},
-};
-
 function server(options: Partial<ServerOptions> = {}): ArenaServer {
   const result = createServer({ dbPath: ':memory:', operatorToken: 'operator', schedule: () => {}, ...options });
   servers.push(result);
@@ -36,13 +39,6 @@ function server(options: Partial<ServerOptions> = {}): ArenaServer {
 }
 
 afterEach(async () => {
-  for (const target of servers.splice(0)) {
-    for (const run of target.manager.list(200)) {
-      for (const entrant of target.manager.snapshot(run.id).entrants) dropCurrentChallenge(run.id, entrant.id);
-      dropRunKeys(run.id);
-    }
-    await target.app.close();
-  }
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -50,8 +46,7 @@ async function signed(target: ArenaServer, runId: string, overrides: Partial<Joi
   const response = await target.app.inject({ method: 'GET', url: '/auth/nonce' });
   expect(response.statusCode).toBe(200);
   const input = { runId, address: account.address, name: 'My agent', nonce: response.json().nonce as string, ...overrides };
-  const message = JOIN_MESSAGE_TEMPLATE.replace('{runId}', () => input.runId)
-    .replace('{address}', () => input.address).replace('{nonce}', () => input.nonce);
+  const message = joinMessage(input);
   return { ...input, signature: overrides.signature ?? await account.signMessage({ message }) };
 }
 
@@ -72,7 +67,7 @@ async function setup(options: Partial<ServerOptions> = {}) {
 }
 
 describe('external entrant join', () => {
-  it('resolves a persisted token in a new server and keeps per-token progress rate state', async () => {
+  it('resolves a persisted token in a new server', async () => {
     const directory = await mkdtemp(joinPath(tmpdir(), 'arena-external-'));
     directories.push(directory);
     const dbPath = joinPath(directory, 'arena.db');
@@ -84,9 +79,35 @@ describe('external entrant join', () => {
     servers.splice(servers.indexOf(first), 1);
     const second = server({ dbPath });
     expect((await progress(second, body.token, 1)).statusCode).toBe(200);
-    expect((await progress(second, body.token, 2)).statusCode).toBe(429);
-    expect((await remove(second, run.id, body.entrantId)).statusCode).toBe(202);
-    expect((await progress(second, body.token, 1)).statusCode).toBe(401);
+
+  });
+
+  it('keeps per-token progress rate state', async () => {
+    const { target, runId } = await setup();
+    const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
+    expect((await progress(target, body.token, 1)).statusCode).toBe(200);
+    expect((await progress(target, body.token, 2)).statusCode).toBe(429);
+  });
+
+  it('revokes a token on removal', async () => {
+    const { target, runId } = await setup();
+    const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
+    await remove(target, runId, body.entrantId);
+    expect((await progress(target, body.token)).statusCode).toBe(401);
+  });
+
+  it('removes through the injected driver stop seam', async () => {
+    const stop = vi.fn<ExternalDriver['stop']>();
+    const { target, runId } = await setup({ driverFactory: (journal) => {
+      const driver = new ExternalDriver(journal);
+      stop.mockImplementation((run, entrant) => driver.stop(run, entrant));
+      return { ...noopDriver, stop };
+    } });
+    const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
+    expect((await remove(target, runId, body.entrantId)).statusCode).toBe(202);
+    expect(stop).toHaveBeenCalledWith(expect.objectContaining({ id: runId }), expect.objectContaining({ id: body.entrantId }));
+    expect(target.manager.snapshot(runId).entrants.find((entrant) => entrant.id === body.entrantId))
+      .toMatchObject({ status: 'done', removedAt: expect.any(String) });
   });
 
   it('registers a lane, journals its declared fields, and stores only a token hash', async () => {
@@ -121,16 +142,22 @@ describe('external entrant join', () => {
     expect(history.json().events).toHaveLength(1);
   });
 
-  it('replaces declared fields and the token while retaining the original join time', async () => {
-    const { target, runId } = await setup();
+  it('replaces declared fields and the token while retaining the first join time and flag baseline', async () => {
+    const flagsHeld = vi.fn(async () => 2);
+    const { target, runId } = await setup({ flagsHeld });
     const first = (await join(target, await signed(target, runId, { harness: 'first' }))).json<JoinRunResponse>();
     expect((await progress(target, first.token)).statusCode).toBe(200);
+    recordSolve(target.journal.database, target.journal, {
+      runId, entrantId: first.entrantId, entrantAddress: account.address, challengeId: 3,
+      tokenId: '3', txHash: `0x${'ab'.repeat(32)}`, blockNumber: 1,
+    });
+    flagsHeld.mockResolvedValue(3);
     const response = await join(target, await signed(target, runId, { name: 'Renamed', model: 'new', address: account.address.toLowerCase() }));
     expect(response.statusCode).toBe(200);
     const second = response.json<JoinRunResponse>();
     expect(second.entrantId).toBe(first.entrantId);
     const lane = second.run.entrants.find((entrant) => entrant.id === second.entrantId);
-    expect(lane).toMatchObject({ name: 'Renamed', model: 'new', task: { ctfFlagsBeforeJoin: 0 } });
+    expect(lane).toMatchObject({ name: 'Renamed', model: 'new', flags: 1, task: { ctfFlagsBeforeJoin: 2 } });
     expect(lane).not.toHaveProperty('harness');
     const original = first.run.entrants.find((entrant) => entrant.id === first.entrantId);
     if (original?.kind !== 'external' || lane?.kind !== 'external') throw new Error('Missing external lane');
@@ -325,7 +352,7 @@ describe('external lane lifecycle', () => {
     const start = vi.fn(async () => {});
     const funding = vi.fn(async () => {});
     const watch = vi.fn(() => {});
-    const target = server({ driverFactory: () => ({ ...noopDriver, prepare, start }), fundingGateFactory: () => funding, solveWatchFactory: () => watch, flagsHeld: async () => 0 });
+    const target = server({ driverFactory: (journal) => new RegisteredEntrantDriver(journal, () => {}, undefined, { ...noopDriver, prepare, start }), fundingGateFactory: () => funding, solveWatchFactory: () => watch, flagsHeld: async () => 0 });
     const { run } = await target.manager.create({ preset: 'docker-duel', roster: [{ id: 'host', harness: 'codex', model: 'gpt-5.5' }] });
     const starting = target.manager.start(run.id);
     await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
@@ -346,7 +373,7 @@ describe('external lane lifecycle', () => {
   it('revokes a join during preparation if preparation fails', async () => {
     let fail!: (error: Error) => void;
     const prepare = vi.fn(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
-    const { target, runId } = await setup({ driverFactory: () => ({ ...noopDriver, prepare }) });
+    const { target, runId } = await setup({ driverFactory: (journal) => new RegisteredEntrantDriver(journal, () => {}, undefined, { ...noopDriver, prepare }) });
     // One hosted lane makes the preparation failure deterministic.
     target.journal.database.delete(entrants).where(eq(entrants.id, 'opencode-1')).run();
     const starting = target.manager.start(runId).catch(() => undefined);

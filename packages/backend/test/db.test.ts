@@ -20,6 +20,7 @@ describe('openArenaDatabase', () => {
       const columns = (table: string) => sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; notnull: number }>;
       expect(columns('entrants')).toContainEqual(expect.objectContaining({ name: 'kind', notnull: 1 }));
       expect(columns('entrants')).toContainEqual(expect.objectContaining({ name: 'harness', notnull: 0 }));
+      expect(columns('entrants')).toContainEqual(expect.objectContaining({ name: 'model', notnull: 0 }));
       expect(columns('external_entrants').map((column) => column.name)).toEqual([
         'run_id', 'id', 'address', 'name', 'harness', 'model', 'effort', 'url', 'token_hash',
         'flags_before_join', 'joined_at', 'removed_at',
@@ -32,7 +33,7 @@ describe('openArenaDatabase', () => {
     }
   });
 
-  it('preserves legacy entrants and their foreign key while allowing a null harness', async () => {
+  it('preserves legacy entrants and their foreign key while allowing null harness and model', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'arena-db-test-'));
     temporaryPaths.push(directory);
     const path = join(directory, 'arena.db');
@@ -50,7 +51,7 @@ describe('openArenaDatabase', () => {
     try {
       expect(sqlite.prepare('SELECT kind, harness, effort FROM entrants').get())
         .toEqual({ kind: 'hosted', harness: 'codex', effort: null });
-      sqlite.exec("INSERT INTO entrants (run_id, id, kind, harness, model, status) VALUES ('run-1', 'ext-1', 'external', NULL, '', 'idle')");
+      sqlite.exec("INSERT INTO entrants (run_id, id, kind, harness, model, status) VALUES ('run-1', 'ext-1', 'external', NULL, NULL, 'idle')");
       expect(sqlite.prepare('PRAGMA foreign_key_list(entrants)').all()).toHaveLength(1);
       expect(sqlite.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     } finally {
@@ -59,6 +60,29 @@ describe('openArenaDatabase', () => {
     const reopened = openArenaDatabase(path);
     expect(reopened.sqlite.prepare('SELECT count(*) AS n FROM entrants').get()).toEqual({ n: 2 });
     reopened.sqlite.close();
+  });
+
+  it('migrates slice A external models from empty strings to null', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'arena-db-test-'));
+    temporaryPaths.push(directory);
+    const path = join(directory, 'arena.db');
+    const legacy = new Database(path);
+    legacy.exec(`
+      CREATE TABLE entrants (run_id TEXT NOT NULL, id TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'hosted', harness TEXT, model TEXT NOT NULL,
+        effort TEXT, address TEXT, status TEXT NOT NULL);
+      INSERT INTO entrants VALUES ('run-1', 'ext-1', 'external', NULL, '', NULL, NULL, 'idle');
+      INSERT INTO entrants VALUES ('run-1', 'host', 'hosted', 'codex', 'gpt-5.5', NULL, NULL, 'idle');
+    `);
+    legacy.close();
+    const { sqlite } = openArenaDatabase(path);
+    try {
+      expect(sqlite.prepare('SELECT id, model FROM entrants ORDER BY id').all()).toEqual([
+        { id: 'ext-1', model: null }, { id: 'host', model: 'gpt-5.5' },
+      ]);
+    } finally {
+      sqlite.close();
+    }
   });
 
   it('adds duration_ms and seeded_by to an existing runs table', async () => {

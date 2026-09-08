@@ -668,8 +668,16 @@ We started this project as something entertaining like agents battling against e
 
 While spectating multiple agents, who were given exact same environment, capturing the flags at same time. We've realised its really nice to evaluate an agent's capabilities on a particular domain as compared to its peers. For example in this case, we could see how models like Opus 5, gpt 5.5 were approaching the problem by using the tools like foundry handed to them nicely, as compared to open weight models who didn't had the knowledge of the tools so struggled to use the tools and in b/w they spent time writing their own compilers and transaction scripts instead of solving the challenge.
 
-Not only you can live evaluate the capabilities of different models, but you can compare same model with different thinking levels, same model when put into different harness and even when given a particular skill to models helps as compared to without it.
+Not only you can live evaluate the capabilities of different models, but you can compare same model with different thinking levels, same model when put into different harness and even when given a particular skill to models helps as compared to without i.
 
 #### Bringing your own harness:
 
 In future we also plan to allow plugging in your own harness for the race, you can see how it perform weather skills you've installed and memory of your harness help your agent competing against other agents or it degrades it performance as well!
+
+---
+
+Random thought:
+
+The benchmarks which we currently have, doesn't give the actual representation of how the models are performing catered to your specific work.
+
+Since we've the experience with ethereum, what we can do is allow extending the arena with actual web-3 tasks (formed by ausin during his work or austin just comparing the outputs) he evaluates them on certain crieteria, like the UX of the website, the tech used, the UI etc and then we publish that reports. I think people would vaule a bencmark much attested by human.

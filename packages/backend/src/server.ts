@@ -1,10 +1,12 @@
 import fastifyCors from '@fastify/cors';
 import { and, eq } from 'drizzle-orm';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
-import { getAddress, isAddressEqual, recoverMessageAddress, type Address, type Hex } from 'viem';
+import { getAddress, type Address, type Hex } from 'viem';
 import { z } from 'zod';
 
 import { AgentIngest } from './agent-ingest.js';
+import { AgentProgress, AgentProgressRateLimitError } from './agent-progress.js';
+import { JoinAuthenticationError, verifySignedMessage } from './signed-message.js';
 import { AgentInputError, AgentBatchTooLargeError, AgentRateLimitError, AGENT_BODY_LIMIT } from './agent-limits.js';
 import { AgentInbox } from './inbox.js';
 import { ExternalStatus } from './adapters/external-status.js';
@@ -31,7 +33,7 @@ import {
 } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
 import { ExternalAgentTokens, resolveAgentToken } from './agent-auth.js';
-import { mayMove, recordCurrentChallenge, useSolvedLookup } from './ctf/challenge-tracker.js';
+import { useSolvedLookup } from './ctf/challenge-tracker.js';
 import {
   bearerToken,
   isSecureRequest,
@@ -105,8 +107,6 @@ const rosterEntrySchema = z.object({
   }
 });
 
-class JoinAuthenticationError extends Error {}
-
 const joinSchema = z.object({
   runId: z.string().min(1),
   address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
@@ -137,12 +137,6 @@ const createRunSchema = z.object({
 
 // Steer and broadcast carry the same body; only the fan-out differs.
 const textSchema = z.object({ text: z.string().min(1) }).strict();
-const agentProgressSchema = z.object({
-  challengeId: z.number().int().min(1).max(12),
-}).strict();
-// Journalled announcements are rate limited; repeats of the same value are
-// deduped before the limit so they stay cheap instead of burning the budget.
-const AGENT_ANNOUNCE_INTERVAL_MS = 1_000;
 const seedSchema = z.object({
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
 }).strict();
@@ -221,6 +215,7 @@ export function createServer(options: ServerOptions): ArenaServer {
   const pack = options.challengePack ?? createChallengePackResolver(activeChainProfile);
   const ingest = new AgentIngest(journal, externalStatus, pack.addressesFor);
   const inbox = new AgentInbox(journal);
+  const progress = new AgentProgress(journal, externalStatus);
   const driver = options.driverFactory?.(journal, externalStatus) ?? new RegisteredEntrantDriver(
     journal, { status: externalStatus, schedule: options.schedule, tokens: externalTokens, pack },
   );
@@ -255,6 +250,9 @@ export function createServer(options: ServerOptions): ArenaServer {
   );
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof AgentProgressRateLimitError) {
+      return reply.status(429).send({ error: error.message });
+    }
     if (error instanceof AgentRateLimitError) {
       return reply.status(429).header('Retry-After', error.retryAfter).send({ error: error.message });
     }
@@ -335,12 +333,7 @@ export function createServer(options: ServerOptions): ArenaServer {
     const body = parseBody(joinSchema, request.body, reply);
     if (body === undefined) return;
     const run = manager.assertJoinable(body.runId);
-    if (!login.nonceAvailable(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
-    const message = joinMessage(body);
-    const recovered = await recoverMessageAddress({ message, signature: body.signature as Hex }).catch(() => undefined);
-    if (recovered === undefined || !isAddressEqual(recovered, body.address as Address)) {
-      throw new JoinAuthenticationError('Signature does not match the claimed address');
-    }
+    await verifySignedMessage(login, body.nonce, joinMessage(body), body.signature as Hex, body.address as Address);
     let flagsBeforeJoin = 0;
     try {
       flagsBeforeJoin = options.flagsHeld !== undefined
@@ -530,33 +523,7 @@ export function createServer(options: ServerOptions): ArenaServer {
         .header('WWW-Authenticate', 'Bearer realm="agents-arena-agent"')
         .send({ error: 'Agent token required' });
     }
-    const body = agentProgressSchema.safeParse(request.body);
-    if (!body.success) {
-      return reply.status(400).send({ error: 'challengeId must be an integer from 1 to 12' });
-    }
-
-    const { challengeId } = body.data;
-    if (!mayMove(identity.runId, identity.entrantId, challengeId, 'self')) {
-      return { ok: true, changed: false };
-    }
-    const now = Date.now();
-    if (
-      identity.lastAnnouncedAtMs !== undefined
-      && now - identity.lastAnnouncedAtMs < AGENT_ANNOUNCE_INTERVAL_MS
-    ) {
-      return reply.status(429).send({ error: 'Announcing too fast; try again in a second' });
-    }
-    // State moves only after the journal accepts the event: an append that
-    // throws must leave the retry journalling, not deduping into silence.
-    journal.transaction(() => {
-      journal.append(identity.runId, identity.entrantId, 'entrant.challenge', {
-        entrantId: identity.entrantId, challengeId, via: 'self', evidence: 'announced',
-      });
-      externalStatus.touch(identity.runId, identity.entrantId);
-      journal.afterCommit(() => recordCurrentChallenge(identity.runId, identity.entrantId, challengeId, 'self'));
-    });
-    identity.lastAnnouncedAtMs = now;
-    return { ok: true, changed: true };
+    return progress.announce(identity, request.body);
   });
 
   app.get('/runs/:id/events', async (request, reply) => {

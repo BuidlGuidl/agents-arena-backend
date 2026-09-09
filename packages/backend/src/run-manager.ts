@@ -115,6 +115,16 @@ const PRESETS: Readonly<Record<string, Preset>> = {
   },
 };
 
+export const PRESET_NAMES: readonly string[] = Object.keys(PRESETS);
+
+export function presetEntrants(name: string): readonly RosterEntry[] {
+  const preset = PRESETS[name];
+  if (preset === undefined) {
+    throw new UnknownPresetError(`Unknown preset: ${name}`);
+  }
+  return preset.entrants;
+}
+
 export function presetSubstrate(name: string): PresetSubstrate {
   const preset = PRESETS[name];
   if (preset === undefined) {
@@ -230,15 +240,20 @@ export class RunManager {
     ensureChainTables(journal.database);
   }
 
+  findByIdempotencyKey(key: string): RunSnapshot | undefined {
+    const existing = this.journal.database
+      .select({ id: runs.id })
+      .from(runs)
+      .where(eq(runs.idempotencyKey, key))
+      .get();
+    return existing === undefined ? undefined : this.snapshot(existing.id);
+  }
+
   async create(input: CreateRunRequest): Promise<CreateRunResult> {
     if (input.idempotencyKey !== undefined) {
-      const existing = this.journal.database
-        .select({ id: runs.id })
-        .from(runs)
-        .where(eq(runs.idempotencyKey, input.idempotencyKey))
-        .get();
+      const existing = this.findByIdempotencyKey(input.idempotencyKey);
       if (existing !== undefined) {
-        return { run: this.snapshot(existing.id), created: false };
+        return { run: existing, created: false };
       }
     }
 

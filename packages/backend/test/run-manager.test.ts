@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { privateKeyToAccount } from 'viem/accounts';
 
 import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
+import { createAgentRegistry } from '../src/agents/registry.js';
 import { FakeDriver } from '../src/adapters/fake.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import { activeChainProfile } from '../src/chain/profile.js';
@@ -15,6 +16,8 @@ import {
   EntrantNotFoundError,
   InvalidTransitionError,
   LEGAL_TRANSITIONS,
+  PRESET_NAMES,
+  presetEntrants,
   presetSubstrate,
   RunManager,
   RunNotFoundError,
@@ -172,11 +175,28 @@ describe('RunManager state machine', () => {
 });
 
 describe('run presets', () => {
+  it('resolves every docker preset entrant and effort through the curated registry', async () => {
+    const registry = createAgentRegistry();
+    let checked = 0;
+    for (const name of PRESET_NAMES) {
+      // fake-duel uses fake model ids on purpose.
+      if (presetSubstrate(name) !== 'docker') continue;
+      for (const entrant of presetEntrants(name)) {
+        const agent = await registry.resolve(entrant.harness, entrant.model);
+        expect(agent, `${name}: ${entrant.model}`).not.toBeNull();
+        expect(agent?.efforts, `${name}: ${entrant.model}`).toContain(entrant.effort);
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
   it('looks up each preset substrate', () => {
     expect(presetSubstrate('fake-duel')).toBe('fake');
     expect(presetSubstrate('docker-duel')).toBe('docker');
     expect(presetSubstrate('docker-arena')).toBe('docker');
     expect(() => presetSubstrate('missing')).toThrow(UnknownPresetError);
+    expect(() => presetEntrants('missing')).toThrow(UnknownPresetError);
   });
 
   it('creates the three-entrant docker arena lineup', async () => {

@@ -319,6 +319,10 @@ export function createServer(options: ServerOptions): ArenaServer {
   app.post('/runs', async (request, reply) => {
     const body = parseBody(createRunSchema, request.body, reply);
     if (body === undefined) return;
+    if (body.idempotencyKey !== undefined) {
+      const run = manager.findByIdempotencyKey(body.idempotencyKey);
+      if (run !== undefined) return reply.status(200).send({ run });
+    }
     if (body.roster !== undefined) {
       const issues = await rosterIssues(registry, body.roster);
       if (issues.length > 0) return reply.status(400).send({ error: 'Invalid request body', issues });

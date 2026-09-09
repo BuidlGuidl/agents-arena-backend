@@ -1345,7 +1345,7 @@ describe('adapter guardrails', () => {
     }
   });
 
-  it('writes OpenCode reasoning effort to the project config when set', async () => {
+  it('passes OpenCode reasoning effort through the container env when set', async () => {
     const context = await setup(
       'opencode',
       undefined,
@@ -1354,23 +1354,18 @@ describe('adapter guardrails', () => {
       'high',
     );
     try {
-      expect(context.containerOptions.credentialFiles).toEqual([
-        {
-          path: '/work/opencode.json',
-          content: `${JSON.stringify({
-            provider: {
-              openrouter: {
-                models: {
-                  'z-ai/glm-5.3': {
-                    options: { reasoning: { effort: 'high' } },
-                  },
-                },
+      expect(context.containerOptions.env?.OPENCODE_CONFIG_CONTENT).toBe(JSON.stringify({
+        provider: {
+          openrouter: {
+            models: {
+              'z-ai/glm-5.3': {
+                options: { reasoning: { effort: 'high' } },
               },
             },
-          }, null, 2)}\n`,
-          mode: 0o644,
+          },
         },
-      ]);
+      }));
+      expect(context.containerOptions.credentialFiles).toBeUndefined();
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();
@@ -1413,6 +1408,7 @@ describe('adapter guardrails', () => {
     const context = await setup('opencode', undefined, false, undefined, null);
     try {
       expect(context.containerOptions.credentialFiles).toBeUndefined();
+      expect(context.containerOptions.env).not.toHaveProperty('OPENCODE_CONFIG_CONTENT');
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();

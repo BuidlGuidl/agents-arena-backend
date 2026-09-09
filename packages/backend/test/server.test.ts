@@ -1589,6 +1589,29 @@ function setup(state: 'listed' | 'absent' | 'offline' = 'listed') {
 }
 
 describe('run rosters', () => {
+  it('returns an idempotent roster retry when OpenRouter is offline', async () => {
+    const list = vi.fn().mockResolvedValue([custom]);
+    const agentRegistry = createAgentRegistry({ openRouter: { list } });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN, agentRegistry });
+    servers.push(server);
+    const request = {
+      method: 'POST' as const, url: '/runs', headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel', idempotencyKey: 'roster-retry',
+        roster: [{ id: 'entrant', harness: 'opencode', model, effort: 'high' }],
+      },
+    };
+    const first = await server.app.inject(request);
+    expect(first.statusCode).toBe(201);
+    list.mockRejectedValue(new OpenRouterUnavailableError());
+
+    const retry = await server.app.inject(request);
+
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json().run.id).toBe(first.json().run.id);
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
   it.each([59_999, 86_400_001])('rejects durationMs %i', async (durationMs) => {
     const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);

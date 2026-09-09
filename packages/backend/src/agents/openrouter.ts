@@ -45,7 +45,10 @@ export function createOpenRouterModelSource(options: {
       const response = await fetchModels(options.url ?? 'https://openrouter.ai/api/v1/models', {
         signal: timeout,
       });
-      if (!response.ok) throw new Error(`OpenRouter returned ${response.status}`);
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error(`OpenRouter returned ${response.status}`);
+      }
       const body = responseSchema.parse(await response.json());
       const agents: AgentOption[] = [];
       for (const row of body.data) {
@@ -53,6 +56,8 @@ export function createOpenRouterModelSource(options: {
         if (!parsed.success) continue;
         const model = parsed.data;
         // Reasoning supports effort selection; tools let the coding harness act.
+        // `reasoning` alone is enough: OpenRouter maps an effort to a token budget for
+        // models that lack `reasoning_effort` (rehearsed with minimax-m2.7, ADR-0023).
         // Text-only output fits the harness; ':' variants are rate-capped or asynchronous.
         // No '~' aliases: a pinned id must never change identity under the arena.
         if (!model.supported_parameters?.includes('reasoning')
@@ -70,6 +75,7 @@ export function createOpenRouterModelSource(options: {
           efforts: ['low', 'medium', 'high'],
         });
       }
+      if (agents.length === 0) throw new Error('OpenRouter returned no usable models');
       failedAt = undefined;
       cached = agents;
       fetchedAt = Date.now();

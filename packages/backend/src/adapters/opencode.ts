@@ -50,9 +50,11 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
     }
     const exaApiKey = this.exaApiKey === undefined || this.exaApiKey.length === 0 ? undefined : this.exaApiKey;
     registerCredentialSecrets(run.id, exaApiKey === undefined ? [apiKey] : [apiKey, exaApiKey]);
+    // Inline config applies after the project file, so the entrant cannot change
+    // its effort by editing /work/opencode.json.
     const config = entrant.effort === null
       ? undefined
-      : `${JSON.stringify({
+      : JSON.stringify({
         provider: {
           openrouter: {
             models: {
@@ -62,14 +64,12 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
             },
           },
         },
-      }, null, 2)}\n`;
+      });
     return this.containerFactory({
       runId: run.id,
       entrantId: entrant.id,
-      ...(config === undefined ? {} : {
-        credentialFiles: [{ path: '/work/opencode.json', content: config, mode: 0o644 }],
-      }),
       env: scrubOpenCodeEnvironment({
+        ...(config === undefined ? {} : { OPENCODE_CONFIG_CONTENT: config }),
         OPENROUTER_API_KEY: apiKey,
         // opencode clamps every model's output limit to 32k unless this lifts it.
         // OpenRouter counts reasoning inside that limit, so a long think at 32k

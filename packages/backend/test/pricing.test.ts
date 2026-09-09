@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { CURATED_AGENTS } from '../src/agents/curated.js';
+import { PRESET_NAMES, presetEntrants } from '../src/run-manager.js';
 import { costForModelUsage, costForTokens, MODEL_RATES } from '../src/pricing.js';
 
 describe('costForTokens', () => {
@@ -61,7 +62,8 @@ describe('costForTokens', () => {
 
   it('has a rate for every codex and claude agent', () => {
     // OpenCode entrants report their own cost. Codex and claude rely on the table.
-    for (const { model } of CURATED_AGENTS.filter((agent) => agent.harness !== 'opencode')) {
+    const agents = [...CURATED_AGENTS, ...PRESET_NAMES.flatMap(presetEntrants)];
+    for (const { model } of agents.filter((agent) => agent.harness !== 'opencode')) {
       expect(MODEL_RATES[model], `missing rate for ${model}`).toBeDefined();
     }
   });

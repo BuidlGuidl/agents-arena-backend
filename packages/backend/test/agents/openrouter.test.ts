@@ -7,6 +7,29 @@ const response = () => Response.json({ data: [row] });
 afterEach(() => vi.useRealTimers());
 
 describe('OpenRouter model source', () => {
+  it('rejects a cold list with no usable models', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json({
+      data: [{ ...row, supported_parameters: [] }, { name: 'No id' }],
+    }));
+    const source = createOpenRouterModelSource({ fetch });
+    await expect(source.list()).rejects.toBeInstanceOf(OpenRouterUnavailableError);
+  });
+
+  it('keeps the cached list and warns when a refresh has no usable models', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(response())
+      .mockResolvedValueOnce(Response.json({ data: [{ ...row, supported_parameters: [] }, { name: 'No id' }] }));
+    const warn = vi.fn();
+    const source = createOpenRouterModelSource({ fetch, ttlMs: 100, logger: { warn } });
+    const first = await source.list();
+    vi.advanceTimersByTime(100);
+
+    expect(await source.list()).toBe(first);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it('filters unstable and non-reasoning models and parses names defensively', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json({ data: [
       row,

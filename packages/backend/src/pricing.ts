@@ -29,6 +29,8 @@ export const MODEL_RATES: Readonly<Record<string, ModelRate>> = {
   'claude-sonnet-5': { inputPerMillion: 2, cachedInputPerMillion: 0.2, outputPerMillion: 10 },
   'claude-sonnet-4-6': { inputPerMillion: 3, cachedInputPerMillion: 0.3, outputPerMillion: 15 },
   'claude-fable-5': { inputPerMillion: 10, cachedInputPerMillion: 1, outputPerMillion: 50 },
+  // Not a typo: claude.com/pricing lists Fable 5.1 cache reads at $0.25/MTok, a
+  // fortieth of input, while Fable 5 stays at the usual tenth (read 2026-09-09).
   'claude-fable-5-1': { inputPerMillion: 10, cachedInputPerMillion: 0.25, outputPerMillion: 50 },
   // Not an agent on the list: claude's Task subagents run on it, and their tokens land in the delegating entrant's modelUsage (#38).
   'claude-haiku-4-5': { inputPerMillion: 1, cachedInputPerMillion: 0.1, outputPerMillion: 5 },

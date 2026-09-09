@@ -13,12 +13,17 @@ export interface AgentRegistry {
 }
 
 export function createAgentRegistry(options: { openRouter?: OpenRouterModelSource } = {}): AgentRegistry {
+  // The source behind custom models for a harness, or undefined when the harness
+  // takes none or no source is configured. Returning the source keeps the null check
+  // visible to the compiler at each call site.
+  const customModelSource = (harness: HarnessId): OpenRouterModelSource | undefined =>
+    HARNESSES.some((entry) => entry.id === harness && entry.customModels) ? options.openRouter : undefined;
   return {
     list() {
       return {
         harnesses: HARNESSES.map((harness) => ({
           ...harness,
-          customModels: harness.customModels && options.openRouter !== undefined,
+          customModels: customModelSource(harness.id) !== undefined,
         })),
         agents: [...CURATED_AGENTS],
       };
@@ -29,20 +34,21 @@ export function createAgentRegistry(options: { openRouter?: OpenRouterModelSourc
       const matches = (agent: AgentOption) => agent.harness === harness
         && [agent.model, agent.label, agent.vendor].some((value) => value.toLowerCase().includes(needle));
       const curated = CURATED_AGENTS.filter(matches);
-      if (!HARNESSES.find((entry) => entry.id === harness)?.customModels || !options.openRouter) {
-        return curated.slice(0, 20);
-      }
+      const source = customModelSource(harness);
+      if (source === undefined || curated.length >= 20) return curated.slice(0, 20);
       const ids = new Set(CURATED_AGENTS.filter((agent) => agent.harness === harness).map((agent) => agent.model));
-      const custom = (await options.openRouter.list())
+      const custom = (await source.list())
         .filter((agent) => matches(agent) && !ids.has(agent.model))
-        .sort((a, b) => a.model.localeCompare(b.model));
+        // The order must not depend on the runtime locale.
+        .sort((a, b) => a.model < b.model ? -1 : a.model > b.model ? 1 : 0);
       return [...curated, ...custom].slice(0, 20);
     },
     async resolve(harness, model) {
       const curated = CURATED_AGENTS.find((agent) => agent.harness === harness && agent.model === model);
       if (curated) return curated;
-      if (harness !== 'opencode' || !model.startsWith(OPENROUTER_MODEL_PREFIX) || !options.openRouter) return null;
-      return (await options.openRouter.list()).find((agent) => agent.model === model) ?? null;
+      const source = customModelSource(harness);
+      if (source === undefined || !model.startsWith(OPENROUTER_MODEL_PREFIX)) return null;
+      return (await source.list()).find((agent) => agent.model === model) ?? null;
     },
   };
 }

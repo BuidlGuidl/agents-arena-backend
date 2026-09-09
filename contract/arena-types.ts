@@ -416,3 +416,6 @@ export interface VerifyResponse {
 export type SessionResponse =
   | { authenticated: false; configured: boolean }
   | { authenticated: true; address: string; expiresAt: string };
+
+// Public arena tools, in the order returned by the MCP server.
+export const AGENT_MCP_TOOLS = ['join_run', 'get_task', 'report_progress', 'post_note', 'read_inbox'] as const;

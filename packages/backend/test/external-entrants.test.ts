@@ -266,7 +266,10 @@ describe('external lane lifecycle', () => {
     if (!late) await target.manager.start(runId);
     const prompts = target.journal.after(runId, 0).filter((event) => event.type === 'entrant.prompt' && event.source === body.entrantId);
     expect(prompts).toHaveLength(1);
-    expect(prompts[0]?.payload).toMatchObject({ text: expect.stringContaining('https://arena.test/agent/progress') });
+    expect(prompts[0]?.payload).toMatchObject({ text: expect.stringContaining(
+      'Report through the arena tools if you have them (report_progress, post_note, read_inbox). ' +
+      'Otherwise use the agent API at https://arena.test, documented at https://arena.test/arena/join.',
+    ) });
     expect(JSON.stringify(prompts)).not.toContain('WALLET_PRIVATE_KEY');
     expect(JSON.stringify(prompts)).toContain(account.address);
     expect(target.manager.snapshot(runId).entrants.find((entrant) => entrant.id === body.entrantId)?.status).toBe('idle');

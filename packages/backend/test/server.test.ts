@@ -186,7 +186,9 @@ describe('browser CORS', () => {
     expect(response.headers['access-control-allow-origin']).toBe('http://localhost:3000');
     expect(response.headers['access-control-allow-credentials']).toBe('true');
     expect(response.headers['access-control-allow-methods']).toBe('GET, POST, HEAD, OPTIONS');
-    expect(response.headers['access-control-allow-headers']).toBe('Content-Type, Authorization');
+    expect(response.headers['access-control-allow-headers']).toBe(
+      'Content-Type, Authorization, MCP-Protocol-Version, Mcp-Method, Mcp-Name',
+    );
     expect(response.headers['access-control-expose-headers']).toBeUndefined();
   });
 

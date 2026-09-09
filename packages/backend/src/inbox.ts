@@ -1,4 +1,4 @@
-import { and, asc, eq, gt } from 'drizzle-orm';
+import { and, asc, count, eq, gt, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { AgentTokenRecord } from './agent-auth.js';
@@ -24,6 +24,12 @@ export class AgentInbox {
 
   constructor(private readonly journal: EventJournal, now = Date.now) {
     this.polls = new AgentRequestLimit(1, 1000, now);
+  }
+
+  unread(identity: AgentTokenRecord): number {
+    return this.journal.database.select({ count: count() }).from(inboxMessages)
+      .where(and(eq(inboxMessages.runId, identity.runId), eq(inboxMessages.entrantId, identity.entrantId),
+        isNull(inboxMessages.deliveredAt))).get()!.count;
   }
 
   read(identity: AgentTokenRecord, query: unknown): AgentInboxResponse {

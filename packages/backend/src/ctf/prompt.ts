@@ -83,7 +83,9 @@ export function buildTaskText(
     "- Every challenge is solvable. If an approach fails, try another.",
     // The self-announce channel (#4). $-references keep the token out of this
     // prompt, which is journalled verbatim as entrant.prompt.
-    `- Always report the challenge you are working on: when you start one (before you read or write anything for it), and again whenever you switch or move to the next. Report it with: curl -fsS -X POST "${apiUrl}/agent/progress" -H "authorization: Bearer $ARENA_AGENT_TOKEN" -H "content-type: application/json" -d '{"challengeId": N}' with N replaced by the challenge number.`,
+    entrant.kind === 'external'
+      ? `- Report through the arena tools if you have them (report_progress, post_note, read_inbox). Otherwise use the agent API at ${apiUrl}, documented at ${apiUrl}/arena/join.`
+      : `- Always report the challenge you are working on: when you start one (before you read or write anything for it), and again whenever you switch or move to the next. Report it with: curl -fsS -X POST "${apiUrl}/agent/progress" -H "authorization: Bearer $ARENA_AGENT_TOKEN" -H "content-type: application/json" -d '{"challengeId": N}' with N replaced by the challenge number.`,
     `- Do not stop until your address holds all ${CHALLENGE_COUNT} flags.`,
   ].join("\n");
 }

@@ -60,6 +60,14 @@ export class AgentIngest {
     return this.append(identity, parsed.data.events, true);
   }
 
+  postNote(identity: AgentTokenRecord, text: string, status?: EntrantStatus): AgentEventsResponse {
+    const events: AgentEventInput[] = [{ seq: 0, type: 'agent.message', text }];
+    if (status !== undefined) events.push({ seq: 1, type: 'entrant.status', status });
+    checkAgentStrings(events);
+    this.requests.take(identity);
+    return this.append(identity, events, false);
+  }
+
   hook(identity: AgentTokenRecord, body: unknown): void {
     const parsed = claudeHookSchema.safeParse(body);
     const mapped = parsed.success ? claudeHookToAgentEvents(parsed.data) : [];

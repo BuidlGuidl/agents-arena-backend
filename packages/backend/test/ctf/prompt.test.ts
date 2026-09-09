@@ -152,8 +152,10 @@ describe('external task text', () => {
     expect(text).toContain(external.address);
     expect(text).toContain('You hold its private key and pay your own gas');
     expect(text).toContain(`chain id ${chainId}`);
-    expect(text).toContain('https://arena.test/agent/progress');
-    expect(text).toContain('$ARENA_AGENT_TOKEN');
+    expect(text).toContain(
+      'Report through the arena tools if you have them (report_progress, post_note, read_inbox). ' +
+      'Otherwise use the agent API at https://arena.test, documented at https://arena.test/arena/join.',
+    );
     expect(text).not.toContain('WALLET_PRIVATE_KEY');
     expect(text).not.toContain('ETH_RPC_URL');
     expect(text).not.toContain('node:22-bookworm');
@@ -163,7 +165,7 @@ describe('external task text', () => {
       expect(text).toContain('Use any RPC endpoint for this chain');
       expect(text).not.toContain('http://127.0.0.1:8545');
     }
-    expect(text.split('https://arena.test')).toHaveLength(2);
+    expect(text.split('https://arena.test')).toHaveLength(3);
     expect(text).not.toContain('$ARENA_API_URL');
     expect(text).not.toContain('/ctf/BRIEFING.md');
     expect(text).not.toContain('/ctf/contracts');

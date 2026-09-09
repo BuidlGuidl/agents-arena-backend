@@ -4,6 +4,7 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { getAddress, type Address, type Hex } from 'viem';
 import { z } from 'zod';
 
+import { agentMcpOriginGuard, mountAgentMcp } from './agent-mcp.js';
 import { AgentIngest } from './agent-ingest.js';
 import { AgentProgress, AgentProgressRateLimitError } from './agent-progress.js';
 import { JoinAuthenticationError, verifySignedMessage } from './signed-message.js';
@@ -23,6 +24,7 @@ import {
   ROSTER_MODELS,
   type ArenaEvent,
   type AgentTaskResponse,
+  type JoinRunRequest,
   type BroadcastResponse,
   type CreateRunRequest,
   type RestartResponse,
@@ -32,7 +34,7 @@ import {
   type SweepResponse,
 } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
-import { ExternalAgentTokens, resolveAgentToken, requireLane, NotInRunError } from './agent-auth.js';
+import { ExternalAgentTokens, resolveAgentToken, requireLane, NotInRunError, type AgentIdentityRecord } from './agent-auth.js';
 import { useSolvedLookup } from './ctf/challenge-tracker.js';
 import {
   bearerToken,
@@ -193,12 +195,13 @@ export interface ArenaServer {
 
 export function createServer(options: ServerOptions): ArenaServer {
   const app = Fastify({ logger: options.logger ?? false });
+  app.addHook('onRequest', agentMcpOriginGuard(options.corsOrigins ?? []));
   if (options.corsOrigins !== undefined && options.corsOrigins.length > 0) {
     void app.register(fastifyCors, {
       origin: [...options.corsOrigins],
       credentials: true,
       methods: ['GET', 'POST', 'HEAD', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'MCP-Protocol-Version', 'Mcp-Method', 'Mcp-Name'],
     });
   }
   const login = new SiweLogin(options.siwe ?? { operatorAddresses: [] });
@@ -346,11 +349,8 @@ export function createServer(options: ServerOptions): ArenaServer {
       .send({ address: result.address, token: result.token, expiresAt: result.expiresAt });
   });
 
-  app.post('/agent/join', async (request, reply) => {
-    const identity = agentIdentity(request);
+  async function joinAgent(identity: AgentIdentityRecord, body: JoinRunRequest) {
     if (identity.address === undefined) throw new JoinAuthenticationError('Wallet token required');
-    const body = parseBody(joinSchema, request.body, reply);
-    if (body === undefined) return;
     const run = manager.selectJoinRun(body.runId, identity.address);
     let flagsBeforeJoin = 0;
     try {
@@ -360,10 +360,23 @@ export function createServer(options: ServerOptions): ArenaServer {
     } catch {
       app.log.warn('Could not read flags held at join; recording zero');
     }
-    const result = await manager.join({
+    return manager.join({
       runId: run.id, address: identity.address, name: body.name, ...declaredFields(body), flagsBeforeJoin,
     });
+  }
+
+  app.post('/agent/join', async (request, reply) => {
+    const identity = agentIdentity(request);
+    const body = parseBody(joinSchema, request.body, reply);
+    if (body === undefined) return;
+    const result = await joinAgent(identity, { name: body.name, ...declaredFields(body),
+      ...(body.runId === undefined ? {} : { runId: body.runId }) });
     return reply.status(result.created ? 201 : 200).send({ entrantId: result.entrantId, run: result.run });
+  });
+
+  mountAgentMcp(app, {
+    externalTokens, manager, ingest, inbox, progress, join: joinAgent,
+    publicUrl: options.publicUrl ?? DEFAULT_PUBLIC_URL,
   });
 
   app.post('/auth/verify', async (request, reply) => {

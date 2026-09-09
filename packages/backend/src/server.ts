@@ -173,7 +173,6 @@ export interface ServerOptions {
   siwe?: SiweLoginOptions;
   dbPath?: string;
   schedule?: Schedule;
-  externalIdleMs?: number;
   challengePack?: ChallengePackAccess;
   driverFactory?: (journal: EventJournal, status: ExternalStatus) => EntrantDriver;
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
@@ -214,10 +213,7 @@ export function createServer(options: ServerOptions): ArenaServer {
     .all()
     .map((row) => row.challengeId)));
   const externalTokens = new ExternalAgentTokens(journal.database);
-  const externalStatus = new ExternalStatus(journal, {
-    ...(options.schedule === undefined ? {} : { schedule: options.schedule }),
-    ...(options.externalIdleMs === undefined ? {} : { idleMs: options.externalIdleMs }),
-  });
+  const externalStatus = new ExternalStatus(journal);
   const pack = options.challengePack ?? createChallengePackResolver(activeChainProfile);
   const ingest = new AgentIngest(journal, externalStatus, pack.addressesFor);
   const inbox = new AgentInbox(journal);
@@ -533,11 +529,6 @@ export function createServer(options: ServerOptions): ArenaServer {
   app.post('/agent/events', { bodyLimit: AGENT_BODY_LIMIT }, async (request) =>
     ingest.events(requireLane(agentIdentity(request)), request.body));
 
-  app.post('/agent/hooks/claude-code', { bodyLimit: AGENT_BODY_LIMIT }, async (request) => {
-    ingest.hook(requireLane(agentIdentity(request)), request.body);
-    return {};
-  });
-
   app.get('/agent/inbox', async (request) => inbox.read(requireLane(agentIdentity(request)), request.query));
 
   // The agent-facing channel: authenticated by the per-entrant token the driver
@@ -631,7 +622,6 @@ export function createServer(options: ServerOptions): ArenaServer {
   });
 
   app.addHook('onClose', async () => {
-    externalStatus.close();
     journal.close();
   });
 

@@ -9,34 +9,18 @@ import { challengeAddressIndex } from './ctf/challenge-tracker.js';
 import type { ChallengePackAccess } from './ctf/resolve.js';
 import { trackProgress } from './ctf/track-progress.js';
 import type { EventJournal } from './journal.js';
-import { claudeHookToAgentEvents, claudeHookSchema } from './claude-hooks.js';
 
 const seq = z.number().int();
 const text = z.string().max(AGENT_STRING_LIMIT);
 const eventSchema = z.discriminatedUnion('type', [
   z.object({ seq, type: z.literal('agent.message'), text }).strict(),
-  z.object({ seq, type: z.literal('agent.reasoning'), text }).strict(),
-  z.object({ seq, type: z.literal('tool.call'), tool: text, toolCallId: text, detail: text }).strict(),
-  z.object({ seq, type: z.literal('tool.result'), tool: text, toolCallId: text, ok: z.boolean(), detail: text }).strict(),
-  z.object({
-    seq, type: z.literal('usage'), inputTokens: z.number().finite(), outputTokens: z.number().finite(),
-    cachedInputTokens: z.number().finite().optional(), costUsd: z.number().finite().nullable().optional(),
-  }).strict(),
   z.object({ seq, type: z.literal('entrant.status'), status: z.enum(['working', 'idle', 'blocked', 'done']) }).strict(),
-]).transform((event): AgentEventInput => {
-  if (event.type !== 'usage') return event;
-  const { cachedInputTokens, costUsd, ...required } = event;
-  return {
-    ...required,
-    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
-    ...(costUsd === undefined ? {} : { costUsd }),
-  };
-}) satisfies z.ZodType<AgentEventInput, z.ZodTypeDef, unknown>;
+]) satisfies z.ZodType<AgentEventInput, z.ZodTypeDef, unknown>;
 const requestSchema = z.object({ events: z.array(eventSchema).min(1).max(AGENT_BATCH_LIMIT) }).strict();
 
 export class AgentIngest {
   private readonly requests: AgentRequestLimit;
-  // ExternalAgentTokens.states preserves record identity; a rejoined token gets fresh dedupe state.
+  // Rejoins preserve record identity and dedupe state; rotation starts a fresh window.
   private readonly sequences = new WeakMap<AgentTokenRecord, Set<number>>();
 
   constructor(
@@ -68,15 +52,6 @@ export class AgentIngest {
     return this.append(identity, events, false);
   }
 
-  hook(identity: AgentTokenRecord, body: unknown): void {
-    const parsed = claudeHookSchema.safeParse(body);
-    const mapped = parsed.success ? claudeHookToAgentEvents(parsed.data) : [];
-    checkAgentStrings(mapped);
-    this.requests.take(identity);
-    if (!parsed.success) throw new AgentInputError('Invalid Claude Code hook');
-    this.append(identity, mapped, false);
-  }
-
   private append(identity: AgentTokenRecord, events: AgentEventInput[], dedupe: boolean): AgentEventsResponse {
     const { runId, entrantId } = identity;
     // Set insertion order is the accepted sequence order, including out-of-order client numbers.
@@ -86,6 +61,7 @@ export class AgentIngest {
     const index = challengeAddressIndex(this.addressesFor(runId) ?? {});
     this.journal.transaction(() => {
       let pending: EntrantStatus | undefined;
+      let activity = false;
       for (const event of events) {
         if (dedupe && sequences.has(event.seq)) {
           duplicates += 1;
@@ -94,32 +70,9 @@ export class AgentIngest {
         if (event.type === 'entrant.status') {
           pending = event.status;
         } else {
-          pending = 'working';
-          switch (event.type) {
-            case 'usage':
-              this.journal.append(runId, entrantId, event.type, {
-                entrantId, inputTokens: event.inputTokens, outputTokens: event.outputTokens,
-                cachedInputTokens: event.cachedInputTokens ?? 0, costUsd: event.costUsd ?? null,
-              });
-              break;
-            case 'agent.message':
-            case 'agent.reasoning':
-              this.journal.append(runId, entrantId, event.type, { entrantId, text: event.text });
-              if (event.type === 'agent.message') {
-                trackProgress(this.journal, identity, event.text, 'message', index);
-              }
-              break;
-            case 'tool.call':
-              this.journal.append(runId, entrantId, event.type, {
-                entrantId, tool: event.tool, toolCallId: event.toolCallId, detail: event.detail,
-              });
-              trackProgress(this.journal, identity, event.detail, 'command', index);
-              break;
-            case 'tool.result':
-              this.journal.append(runId, entrantId, event.type, {
-                entrantId, tool: event.tool, toolCallId: event.toolCallId, detail: event.detail, ok: event.ok,
-              });
-          }
+          activity = true;
+          this.journal.append(runId, entrantId, event.type, { entrantId, text: event.text });
+          trackProgress(this.journal, identity, event.text, 'message', index);
         }
         accepted += 1;
         if (dedupe) {
@@ -128,6 +81,7 @@ export class AgentIngest {
         }
       }
       if (pending !== undefined) this.status.set(runId, entrantId, pending);
+      else if (activity) this.status.touch(runId, entrantId);
       if (dedupe) this.journal.afterCommit(() => this.sequences.set(identity, sequences));
     });
     return { accepted, duplicates };

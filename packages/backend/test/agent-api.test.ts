@@ -1,5 +1,4 @@
 import { privateKeyToAccount } from 'viem/accounts';
-import { createSiweMessage } from 'viem/siwe';
 
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -43,25 +42,12 @@ async function setup(options: Partial<ServerOptions> = {}) {
   const { token } = new ExternalAgentTokens(server.journal.database).register(address, () => {});
   const headers = { authorization: `Bearer ${token}` };
   const post = (events: unknown[]) => server.app.inject({ method: 'POST', url: '/agent/events', headers, payload: { events } });
-  let cookie: string | undefined;
-  const hook = async (payload: object) => {
-    // The hook now needs an operator session as well as the lane bearer.
-    if (cookie === undefined) {
-      const nonce = (await server.app.inject({ url: '/auth/nonce' })).json().nonce as string;
-      const message = createSiweMessage({ address: operator.address, chainId: 8453, domain: 'arena.test', nonce, uri: 'https://arena.test/', version: '1' });
-      const response = await server.app.inject({ method: 'POST', url: '/auth/verify', payload: { message, signature: await operator.signMessage({ message }) } });
-      expect(response.statusCode).toBe(200);
-      cookie = String(response.headers['set-cookie']).split(';')[0]!;
-    }
-    return server.app.inject({ method: 'POST', url: '/agent/hooks/claude-code', headers: { ...headers, cookie }, payload });
-  };
   const inbox = (after?: string | number) => server.app.inject({ method: 'GET', url: `/agent/inbox${after === undefined ? '' : `?after=${after}`}`, headers });
   const lane = () => server.manager.snapshot(run.id).entrants.find((entrant) => entrant.id === joined.entrantId)!;
   const events = () => server.journal.after(run.id, 0).filter((event) => event.source === joined.entrantId);
-  return { ...server, runId: run.id, ...joined, token, headers, post, hook, inbox, lane, events };
+  return { ...server, runId: run.id, ...joined, token, headers, post, inbox, lane, events };
 }
 const message = (seq = 1, text = 'hello'): AgentEventInput => ({ seq, type: 'agent.message', text });
-const call = (seq = 1, detail = 'forge test'): AgentEventInput => ({ seq, type: 'tool.call', tool: 'Bash', toolCallId: 'call-1', detail });
 
 describe('agent task', () => {
   it('requires a token and returns null before running, then shared external and hosted text', async () => {
@@ -84,17 +70,36 @@ describe('agent task', () => {
 });
 
 describe('event ingest', () => {
-  it('journals six kinds in the entrant source with default usage fields', async () => {
+  it('journals messages and explicit status in the entrant source', async () => {
     const f = await setup();
-    const batch: AgentEventInput[] = [message(), { seq: 2, type: 'agent.reasoning', text: 'thinking' }, call(3),
-      { seq: 4, type: 'tool.result', tool: 'Bash', toolCallId: 'call-1', ok: true, detail: 'ok' },
-      { seq: 5, type: 'usage', inputTokens: 10, outputTokens: 20 }, { seq: 6, type: 'entrant.status', status: 'blocked' }];
-    expect((await f.post(batch)).json()).toEqual({ accepted: 6, duplicates: 0 });
-    const events = f.events().slice(1);
-    expect(events.map((event) => event.type)).toEqual(['agent.message', 'agent.reasoning', 'tool.call', 'tool.result', 'usage', 'entrant.status']);
-    for (const event of events) expect(event.payload).toMatchObject({ entrantId: f.entrantId });
-    expect(events.find((event) => event.type === 'usage')?.payload).toEqual({ entrantId: f.entrantId, inputTokens: 10, outputTokens: 20, cachedInputTokens: 0, costUsd: null });
+    expect((await f.post([message(), { seq: 2, type: 'entrant.status', status: 'blocked' }])).json())
+      .toEqual({ accepted: 2, duplicates: 0 });
+    expect(f.events().slice(1).map((event) => ({ type: event.type, payload: event.payload }))).toEqual([
+      { type: 'agent.message', payload: { entrantId: f.entrantId, text: 'hello' } },
+      { type: 'entrant.status', payload: { entrantId: f.entrantId, status: 'blocked' } },
+    ]);
     expect(f.lane().status).toBe('blocked');
+  });
+
+  it.each([
+    { type: 'agent.reasoning', text: 'thinking' },
+    { type: 'tool.call', tool: 'Bash', toolCallId: 'call-1', detail: 'ls' },
+    { type: 'tool.result', tool: 'Bash', toolCallId: 'call-1', ok: true, detail: 'ok' },
+    { type: 'usage', inputTokens: 10, outputTokens: 20 },
+  ])('rejects the removed event type $type with 400', async (event) => {
+    const f = await setup();
+    const before = f.events();
+    expect((await f.post([message(), { seq: 2, ...event }])).statusCode).toBe(400);
+    expect(f.events()).toEqual(before);
+    expect(f.lane().status).toBe('idle');
+  });
+
+  it('does not register the Claude Code hook route', async () => {
+    const f = await setup();
+    await f.app.ready();
+    expect(f.app.hasRoute({ method: 'POST', url: '/agent/hooks/claude-code' })).toBe(false);
+    expect((await f.app.inject({ method: 'POST', url: '/agent/hooks/claude-code',
+      headers: { authorization: 'Bearer operator' }, payload: {} })).statusCode).toBe(404);
   });
 
   it('dedupes retries and repeated seqs within a batch while accepting out-of-order seqs', async () => {
@@ -148,37 +153,11 @@ describe('event ingest', () => {
     expect((await f.post([message(40)])).statusCode).toBe(200);
   });
 
-  it('shares the request rate with hooks and ignores unknown native hooks', async () => {
+  it('tracks prose, respecting pending guesses behind self-reports', async () => {
     const f = await setup();
-    const before = f.events();
-    expect((await f.hook({ hook_event_name: 'FutureEvent', extra: { flag: true } })).json()).toEqual({});
-    expect(f.events()).toEqual(before);
-    for (let i = 0; i < 29; i++) expect((await f.post([message(i)])).statusCode).toBe(200);
-    const response = await f.hook({ hook_event_name: 'SessionStart' });
-    expect(response.statusCode).toBe(429);
-    expect(response.headers['retry-after']).toBe('10');
-  });
-
-  it('validates native hook bodies and maps their activity without dedupe', async () => {
-    const f = await setup();
-    expect((await f.hook({})).statusCode).toBe(400);
-    expect((await f.hook({ hook_event_name: 1 })).statusCode).toBe(400);
-    expect((await f.hook([])).statusCode).toBe(400);
-    const hook = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: 'toolu_1', tool_input: { command: `cast call ${address}`, description: 'Read challenge' }, extra: true };
-    for (let i = 0; i < 2; i++) {
-      const response = await f.hook(hook);
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({});
-    }
-    expect(f.events().filter((event) => event.type === 'tool.call')).toHaveLength(2);
-    expect(f.lane()).toMatchObject({ status: 'working', currentChallengeId: 3 });
-  });
-
-  it('tracks commands and prose, respecting pending guesses behind self-reports', async () => {
-    const f = await setup();
-    await f.post([call(1, `cast call ${address}`)]);
+    await f.post([message(1, 'Starting challenge 3.')]);
     expect(f.lane().currentChallengeId).toBe(3);
-    expect(f.events().filter((event) => event.type === 'entrant.challenge').at(-1)?.payload).toMatchObject({ via: 'command' });
+    expect(f.events().filter((event) => event.type === 'entrant.challenge').at(-1)?.payload).toMatchObject({ via: 'message' });
     await f.post([message(2, 'Starting challenge 7.')]);
     expect(f.lane().currentChallengeId).toBe(7);
     expect(f.events().at(-1)?.payload).toMatchObject({ via: 'message' });
@@ -197,18 +176,6 @@ describe('event ingest', () => {
     expect(takePendingGuess(f.runId, f.entrantId)).toBeUndefined();
   });
 
-
-  it('accepts ignored hook fields beyond the mapped string limit', async () => {
-    const f = await setup();
-    expect((await f.hook({ hook_event_name: 'Stop', last_assistant_message: 'hello', transcript_path: 'a'.repeat(20_000) })).statusCode).toBe(200);
-    expect(f.events().find((event) => event.type === 'agent.message')?.payload).toMatchObject({ text: 'hello' });
-  });
-
-  it('uses stdout and stderr for failure hooks without error text', async () => {
-    const f = await setup();
-    expect((await f.hook({ hook_event_name: 'PostToolUseFailure', tool_response: { stdout: 'output', stderr: 'failure' } })).statusCode).toBe(200);
-    expect(f.events().find((event) => event.type === 'tool.result')?.payload).toMatchObject({ ok: false, detail: 'output\nfailure' });
-  });
 
   it('redacts echoed byoa tokens', async () => {
     const f = await setup();
@@ -233,64 +200,58 @@ describe('event ingest', () => {
     expect((await f.post([message()])).json()).toEqual({ accepted: 0, duplicates: 1 });
   });
 
-  it('sums external usage and projects challenge and narration without pricing the declared model', async () => {
+  it('projects challenge and narration from an external message', async () => {
     const f = await setup();
-    await f.post([{ seq: 1, type: 'usage', inputTokens: 100, outputTokens: 10 },
-      { seq: 2, type: 'usage', inputTokens: 200, outputTokens: 20, costUsd: 0.75 },
-      { seq: 3, type: 'usage', inputTokens: 300, outputTokens: 30, costUsd: 0.25 }, message(4, 'Challenge 7')]);
+    await f.post([message(1, 'Challenge 7')]);
     const head = f.events().at(-1)!.id;
     f.journal.append(f.runId, f.entrantId, 'entrant.narration', { entrantId: f.entrantId, text: 'Trying seven.', basedOnEventId: head });
-    expect(f.lane()).toMatchObject({ inputTokens: 600, outputTokens: 60, costUsd: 1, currentChallengeId: 7, narration: { text: 'Trying seven.', basedOnEventId: head } });
+    expect(f.lane()).toMatchObject({ inputTokens: 0, outputTokens: 0, costUsd: null, currentChallengeId: 7, narration: { text: 'Trying seven.', basedOnEventId: head } });
     expect(f.manager.list(1)[0]?.agentCount).toBe(3);
   });
 });
 
 describe('external status', () => {
-  const timed = { externalIdleMs: 120, schedule: (task: () => void, delay: number) => setTimeout(task, delay) };
-
-  it('writes working once, re-arms on activity, then writes idle', async () => {
-    const f = await setup(timed);
+  it('keeps working without reports after a year of fake time', async () => {
+    const f = await setup();
     await f.post([message()]);
     expect(f.lane().status).toBe('working');
-    await vi.advanceTimersByTimeAsync(100);
-    await f.post([call(2)]);
-    expect(f.events().filter((event) => event.type === 'entrant.status')).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(119);
+    const before = f.events();
+    await vi.advanceTimersByTimeAsync(365 * 24 * 60 * 60 * 1000);
     expect(f.lane().status).toBe('working');
-    await vi.advanceTimersByTimeAsync(1);
-    expect(f.lane().status).toBe('idle');
-    expect(f.events().at(-1)?.payload).toEqual({ entrantId: f.entrantId, status: 'idle' });
+    expect(f.events()).toEqual(before);
   });
 
-  it('resumes derivation after done and expires an explicit blocked status', async () => {
-    const f = await setup(timed);
-    await f.post([{ seq: 1, type: 'entrant.status', status: 'done' }]);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(f.lane().status).toBe('done');
-    await f.post([call(2)]);
-    expect(f.lane().status).toBe('working');
-    await f.post([{ seq: 3, type: 'entrant.status', status: 'blocked' }]);
-    await vi.advanceTimersByTimeAsync(120);
+  it.each(['blocked', 'done'] as const)('preserves %s through messages and progress until an explicit status', async (status) => {
+    const f = await setup();
+    await f.post([{ seq: 1, type: 'entrant.status', status }]);
+    await f.post([message(2)]);
+    expect(f.lane().status).toBe(status);
+    expect((await f.app.inject({ method: 'POST', url: '/agent/progress', headers: f.headers,
+      payload: { challengeId: 5 } })).json()).toEqual({ ok: true, changed: true });
+    expect(f.lane().status).toBe(status);
+    await vi.advanceTimersByTimeAsync(86400000);
+    expect(f.lane().status).toBe(status);
+    await f.post([{ seq: 3, type: 'entrant.status', status: 'idle' }]);
     expect(f.lane().status).toBe('idle');
+    await f.post([message(4)]);
+    expect(f.lane().status).toBe('working');
   });
 
-  it('touches only accepted progress changes, and duplicate events do not postpone idle', async () => {
-    const f = await setup(timed);
+  it('touches only accepted progress changes and messages', async () => {
+    const f = await setup();
     const progress = () => f.app.inject({ method: 'POST', url: '/agent/progress', headers: f.headers, payload: { challengeId: 5 } });
     expect((await progress()).json()).toEqual({ ok: true, changed: true });
     expect(f.lane().status).toBe('working');
-    await vi.advanceTimersByTimeAsync(120);
+    await f.post([message(), { seq: 2, type: 'entrant.status', status: 'idle' }]);
     expect((await progress()).json()).toEqual({ ok: true, changed: false });
-    expect(f.lane().status).toBe('idle');
     await f.post([message()]);
-    await vi.advanceTimersByTimeAsync(100);
-    await f.post([message()]);
-    await vi.advanceTimersByTimeAsync(20);
     expect(f.lane().status).toBe('idle');
+    await f.post([message(3)]);
+    expect(f.lane().status).toBe('working');
   });
 
-  it.each(['stop', 'remove'] as const)('clears the timer on %s', async (action) => {
-    const f = await setup(timed);
+  it.each(['stop', 'remove'] as const)('sets done on %s', async (action) => {
+    const f = await setup();
     await f.manager.start(f.runId);
     await f.post([message()]);
     if (action === 'stop') await f.manager.stop(f.runId);
@@ -303,7 +264,7 @@ describe('external status', () => {
   });
 
   it('rejects an invalid batch without replacing a pending challenge guess', async () => {
-    const f = await setup(timed);
+    const f = await setup();
     await f.app.inject({ method: 'POST', url: '/agent/progress', headers: f.headers, payload: { challengeId: 5 } });
     await f.post([message(1, 'Starting challenge 7.')]);
     const before = f.events();
@@ -318,9 +279,9 @@ describe('external status', () => {
   });
 
   it('rejects an invalid batch without changing journal, status, challenge memory, or dedupe', async () => {
-    const f = await setup(timed);
+    const f = await setup();
     const before = f.events();
-    const batch = [message(1, 'Starting challenge 7.'), { seq: 2, type: 'agent.reasoning', text: 'think' }];
+    const batch = [message(1, 'Starting challenge 7.'), message(2, 'think')];
     expect((await f.post([batch[0], { ...batch[1], text: 42 }])).statusCode).toBe(400);
     expect(f.events()).toEqual(before);
     expect(f.lane()).toMatchObject({ status: 'idle', currentChallengeId: null });

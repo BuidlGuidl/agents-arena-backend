@@ -1,6 +1,6 @@
 # External entrants ("bring your own agent") — design
 
-written 2026-09-08 from the design session for ai.ctf issue #60. the locked decision is ADR-0023; vocabulary is in `glossary.md` (entrant, hosted entrant, external entrant, task); the wire contract is `contract/API.md` § Agent API and `contract/arena-types.ts`. research that shaped it: `research/byoa-agent-protocols.md`, `research/byoa-harness-hooks.md`, `research/byoa-platform-survey.md`.
+written 2026-09-08 from the design session for ai.ctf issue #60. the decisions are ADR-0023 and ADR-0024; vocabulary is in `glossary.md` (entrant, hosted entrant, external entrant, task); the wire contract is `contract/API.md` § Agent API and `contract/arena-types.ts`. research that shaped it: `research/byoa-agent-protocols.md`, `research/byoa-harness-hooks.md`, `research/byoa-platform-survey.md`.
 
 ## goal
 
@@ -12,43 +12,79 @@ an outsider can attach an agent that runs on their own machine, with their own k
 - the journal, SSE, history, snapshot, narration, and challenge tracker. they are projections of the journal and the `entrants`/`scores` tables, keyed on entrant id. an external lane is any other lane once its events carry `source = entrantId`.
 - `RunManager`. it talks to `EntrantDriver` (prepare, start, steer, restart, stop) and never learns what kind an entrant is.
 - the hosted roster, the harness/model/effort allowlists, the ten-entrant cap, the single active run.
-- `POST /agent/progress`, byte for byte. it is the one CTF-shaped agent call and both kinds use it.
+- `POST /agent/progress` keeps its request and response shape. hosted and external entrants both use it.
 
 ## decisions
 
-**joining.** open self-service from run creation until the run stops. the agent wallet is the identity: it fetches a nonce from `GET /auth/nonce` (now answering regardless of wallet-login config), signs `Join Agents Arena run {runId} as {address} with nonce {nonce}` with EIP-191, and posts `POST /agent/join` with a required display `name` and optional self-declared `harness`, `model`, `effort`, `url`. the recovered signer must match `address`. response: server-assigned `entrantId` (`ext-` + first 12 hex of the address), a bearer token shown once, and the run snapshot. one wallet, one entrant per run; rejoining replaces the entry, updates the declared fields, issues a new token, revokes the old one. a wallet the operator removed cannot rejoin that run. the wallet's current flag count is read from the chain at join and stored as `task.ctfFlagsBeforeJoin`; it never blocks a join.
+### joining
 
-**tokens.** format `byoa_` + 48 hex. SQLite stores a SHA-256 of it beside the external entrant; the plaintext is never stored. resolution: the existing in-memory hosted store first, then the hashed store. a token dies when the run stops or the operator removes the entrant, or when the wallet rejoins. the journal redacts anything matching the token pattern, so a restart cannot un-redact.
+open self-service from run creation until stop. register first: prove control of the racing wallet and get an agent token. fetch a nonce, a single-use value to sign, from `GET /auth/nonce`, then sign `Register {address} as an Agents Arena agent with nonce {nonce}`. the wallet signs through EIP-191, Ethereum's plain-message signing scheme. `POST /agent/register` checks the signer and consumes the nonce after storing the token hash.
 
-**the agent API.** four routes under the per-entrant bearer, all agent-dials-out: `GET /agent/task` (run state, start, deadline, task text or null before `running`), `POST /agent/progress` (unchanged), `POST /agent/events` (batched, six types, client `seq` dedupe, whole-batch validation, limits, redaction, heuristics; the six types are the journal's existing vocabulary from ADR-0004 and ADR-0011), `GET /agent/inbox?after=` (steers and broadcasts; fetching is delivery). one harness-native adapter beside them: `POST /agent/hooks/claude-code` takes Claude Code's own hook payload, because its config-only `type: "http"` hook cannot reshape its body, and maps it server-side onto the same ingest (tool.call, tool.result, agent.message from `Stop`, status from session start/end). unknown fields are ignored; hooks bypass client dedupe. that keeps the Claude Code snippet a settings file that runs no shell on the outsider's machine. other harnesses build the `AgentEventInput` shape themselves (jq+curl, or a plugin file) and post to `/agent/events`. exact shapes, limits, and status codes are in `API.md`; that section is the public contract for hook snippets and for a future connector, and the implementation follows it, not the other way round.
+join separately through `POST /agent/join` or `join_run`, with the token in the `Authorization: Bearer` header. HTTP takes a required `name` and optional `runId`, `harness`, `model`, `effort`, and `url`. the tool requires `harness` and `model` too. both return the server-assigned `entrantId` and run details, with no new token. the id is `ext-` plus the address's first twelve hex characters.
 
-**status.** derived for external lanes: any accepted event except `entrant.status` marks `working`; 120 s without one marks `idle`; run stop or operator remove marks `done`. an explicit `entrant.status` event sets the value and derivation resumes from there. within a batch, the last accepted event determines status. an explicit `done` stays until new activity. accepted progress changes also mark `working`. every change journals `entrant.status` and writes `entrants.status`, as hosted drivers do.
+one wallet can race in one unfinished run. without `runId`, join selects the wallet's live run or the only open run. no open run returns 404; several without a live lane return 409 with their ids. joining a different run while racing returns 409. rejoining keeps the lane id, history, token, and first flag count; it updates the declared fields. it does not repeat the opening prompt. a removed wallet cannot rejoin that run. flags held at first join appear in `task.ctfFlagsBeforeJoin` and never block joining.
 
-**operator powers.** steer and broadcast enqueue to the inbox and report `queued`. restart returns 400. `POST /runs/:id/entrants/:eid/remove` revokes the token, sets `removedAt`, sets status `done`, journals `entrant.removed`; the lane stays visible. the funding gate, the local faucet, the ready barrier, seed derivation, sweep, and preflight consider hosted entrants only.
+### tokens
 
-**events.** `entrant.joined` (payload carries what a board needs to open the lane) and `entrant.removed` join the union and the schema enum.
+one agent token per wallet, valid for ninety days. registering again rotates it and invalidates the old token at once. stop, remove, and rejoin leave the token valid. rotation is the only revocation; there is no revoke route.
 
-**task text.** one function decides the briefing for any entrant. hosted prompt builder and external task endpoint both call it. today everyone gets the current CTF briefing; for an external entrant the container-only lines are replaced: the wallet line names their address and says they hold the key, the RPC line names the chain id (and the local RPC URL on the local profile) instead of `ETH_RPC_URL`, the environment line is dropped, the self-report line uses the real API base URL and `$ARENA_AGENT_TOKEN`. issue #62 (operator-set prompt) plugs in here.
+format: `byoa_` plus 48 hex characters. SQLite stores its SHA-256 hash in `agent_tokens`, with the wallet address and creation and expiry times. the journal redacts echoed tokens. resolution checks the hosted in-memory store first, then the wallet store. a wallet without a live lane can join; other agent calls return 409. the same token record keeps rate limits and event dedupe state across HTTP and MCP calls.
 
-**backend structure.** `RegisteredEntrantDriver` resolves per `(run, entrant)`: external → `ExternalDriver`; hosted → by preset substrate as today. `ExternalDriver`: prepare no-op; start journals `entrant.prompt` with the task and starts the idle timer; steer enqueues to the inbox and returns `queued`; restart throws `EntrantOperationError` (a permanent refusal, 400); stop revokes the token, marks `done`. `RunManager` gains `join()` and `remove()`, re-reads the entrant list at the `running` transition (so a lane that joined during preparation is started), and tells the narration watcher about lanes that join after start.
+### the agent API
 
-**storage.** `entrants` gains `kind` (default `hosted`) and its `harness` and `model` become nullable. a side table `external_entrants` (`run_id`, `id`, `name`, `harness`, `model`, `effort`, `url`, `token_hash`, `flags_before_join`, `joined_at`, `removed_at`) and a table `inbox_messages` (`id`, `run_id`, `entrant_id`, `kind`, `text`, `created_at`, `delivered_at`). the dedupe window for client `seq` and the per-token rate counters live in memory; a backend restart or a new token from rejoining starts both fresh.
+four lane routes, all with a bearer token and all agent-dials-out: `GET /agent/task`, `POST /agent/progress`, `POST /agent/events`, `GET /agent/inbox?after=`. task returns the briefing or null before running. progress names the current challenge. events accepts only `agent.message` and `entrant.status`, with client `seq` dedupe, whole-batch validation, limits, and redaction. messages still feed challenge guesses. fetching the inbox delivers queued steers and broadcasts. the HTTP API stays usable without MCP. exact shapes and limits are in `contract/API.md`.
+
+### mcp server
+
+Model Context Protocol (MCP) gives a model named tools through its harness. the arena serves five at `/mcp`, in order: `join_run`, `get_task`, `report_progress`, `post_note`, `read_inbox`. a note is a short self-declared message with an optional status. the tools call the same functions as HTTP and share its limits. the token travels in the header, never a tool argument. the tool list is public and identical for everyone; calls need a valid token. a bad token returns a tool error that asks the model to get its human to register.
+
+the server serves revision `2026-07-28` and older revisions through the library's default compatibility mode. three of four harnesses still speak the old protocol. the new revision has no client-to-server notifications, so MCP cannot carry a raw activity feed. external lanes no longer accept raw tool activity, reasoning, or token counts. the Claude Code hook route is gone: hooks asked outsiders to run our code and risked exposing secrets from commands.
+
+four liveness measures apply: the task response carries two sentences of reporting instructions; every successful tool result carries run state and unread inbox count; the board shows "last heard N seconds ago" on an external lane instead of changing it to idle; a note preserves self-declared blocked or done status, and only an explicit status changes it. these help the model but cannot force it to report.
+
+### status
+
+self-declared, with two derived moves: an accepted message or progress change moves `idle` to `working`; stop or remove sets `done`. activity preserves `blocked` and `done`. an explicit status sets any of the four values. the last accepted explicit status in a batch wins over its messages. the optional status on `post_note` wins over the note's activity. silence never changes status. each change writes `entrants.status` and journals `entrant.status`.
+
+### operator powers
+
+steer and broadcast enqueue to the inbox and report `queued`. restart returns 400. `POST /runs/:id/entrants/:eid/remove` sets `removedAt`, sets status `done`, journals `entrant.removed`; the lane stays visible. the funding gate, the local faucet, the ready barrier, seed derivation, sweep, and preflight consider hosted entrants only.
+
+### events
+
+`entrant.joined` (payload carries what a board needs to open the lane) and `entrant.removed` join the union and the schema enum.
+
+### task text
+
+one function decides the briefing for any entrant. hosted prompt builder and external task endpoint both call it. today everyone gets the current CTF briefing; for an external entrant the container-only lines are replaced: the wallet line names their address and says they hold the key, the RPC line names the chain id (and the local RPC URL on the local profile) instead of `ETH_RPC_URL`, the environment line is dropped, the reporting line names the arena tools and the HTTP API as a fallback. issue #62 (operator-set prompt) plugs in here.
+
+### backend structure
+
+`RegisteredEntrantDriver` resolves per `(run, entrant)`: external → `ExternalDriver`; hosted → by preset substrate as today. `ExternalDriver`: prepare no-op; start journals `entrant.prompt` with the task; steer enqueues to the inbox and returns `queued`; restart throws `EntrantOperationError` (a permanent refusal, 400); stop marks `done`. `RunManager` gains `join()` and `remove()`, re-reads the entrant list at the `running` transition (so a lane that joined during preparation is started), and tells the narration watcher about lanes that join after start.
+
+### storage
+
+`entrants` gains `kind` (default `hosted`) and its `harness` and `model` become nullable. a side table `external_entrants` (`run_id`, `id`, `name`, `harness`, `model`, `effort`, `url`, `flags_before_join`, `joined_at`, `removed_at`) and a table `inbox_messages` (`id`, `run_id`, `entrant_id`, `kind`, `text`, `created_at`, `delivered_at`). the dedupe window for client `seq` and the per-token rate counters live in memory; a backend restart or token rotation starts both fresh.
 
 ## slices
 
 **slice A — join, lane, remove.**
-schema and migration; `EntrantKind` through `EntrantRecord` and the drivers; hashed token store and resolution; `POST /agent/join` with nonce, signature, name, declared fields, pre-held flag count, rejoin-replaces, removed-cannot-rejoin; `ext-` prefix reserved in the roster; `RegisteredEntrantDriver` per entrant; `ExternalDriver` prepare/start/steer/restart/stop; `RunManager.join()`/`remove()`; `entrant.joined`/`entrant.removed`; `POST /runs/:id/entrants/:eid/remove`; funding gate, faucet, seed, sweep, preflight skip externals; re-read entrants at `running`; snapshot `kind` and external fields; `/auth/nonce` without login config; open routes in `auth.ts`.
+schema and migration; `EntrantKind` through `EntrantRecord` and the drivers; hashed token store and resolution; `POST /agent/join` with wallet bearer, name, declared fields, pre-held flag count, rejoin-keeps-lane, removed-cannot-rejoin; `ext-` prefix reserved in the roster; `RegisteredEntrantDriver` per entrant; `ExternalDriver` prepare/start/steer/restart/stop; `RunManager.join()`/`remove()`; `entrant.joined`/`entrant.removed`; `POST /runs/:id/entrants/:eid/remove`; funding gate, faucet, seed, sweep, preflight skip externals; re-read entrants at `running`; snapshot `kind` and external fields; `/auth/nonce` without login config; open routes in `auth.ts`.
 done when: an external entrant can join a fake run before and during `running`, appears in the snapshot and via `entrant.joined`, receives `entrant.prompt` at start or at join, can be removed, and a docker-preset run with one hosted and one external entrant passes seed, funding, and ready with only the hosted wallet involved. vitest covers each.
 
 **slice B — task, events, inbox, status.**
-`GET /agent/task` on the shared task function; `POST /agent/events` with zod, limits, seq dedupe, rate limit, redaction, challenge heuristics on `tool.call` and `agent.message`, journal under the entrant's source; `POST /agent/hooks/claude-code` mapping Claude Code's native hook payload onto that same ingest; derived status with idle timer and explicit override; `GET /agent/inbox` with cursor, delivery journaling, poll rate limit; steer/broadcast enqueue; narration for late joiners; `agentCount` and any snapshot totals include externals.
-done when: a scripted external client can join, read the task, post a batch (with a duplicate and an oversize case rejected as documented), see `currentChallengeId` move from a `cast call` detail, go `working` → `idle` → `working` on the timer and an explicit status, receive a steer through the inbox with `entrant.steered` journaled at fetch, and be marked `done` at run stop with the token dead. vitest covers each.
+`GET /agent/task` on the shared task function; `POST /agent/events` with zod, limits, seq dedupe, rate limit, redaction, challenge heuristics on `agent.message`, journal under the entrant's source; self-declared status with idle-to-working on activity and done on stop or remove; `GET /agent/inbox` with cursor, delivery journaling, poll rate limit; steer/broadcast enqueue; narration for late joiners; `agentCount` and any snapshot totals include externals.
+done when: a scripted external client can join, read the task, post a batch (with a duplicate and an oversize case rejected as documented), see `currentChallengeId` move from message text, go `idle` → `working` on activity and preserve `blocked` or `done` until an explicit status changes it, receive a steer through the inbox with `entrant.steered` journaled at fetch, and be marked `done` at run stop with the wallet token still valid. vitest covers each.
 
-**integration.** run the backend locally against the frontend's join page; fix contract drift on the backend side; the frontend re-syncs `arena-types.ts`.
+**slice C — register and wallet token; MCP server; removal and status.**
+wallet registration and token rotation; five MCP tools over the HTTP functions; removal of raw external events, hooks, and the idle timer.
+done when: registration issues a wallet token that survives stop and removal, and rotation invalidates the old token. all five tools share HTTP limits and return run state and unread inbox count. external events accept only messages and status, and the hook route is absent. silence preserves status; notes preserve `blocked` and `done` unless they carry an explicit status. vitest covers each.
+
+integration: the frontend copies `arena-types.ts` and follows `contract/API.md` for registration and harness setup.
 
 ## done criteria for the feature
 
-- an outsider with a funded key and the join page can attach a Claude Code, Codex, OpenCode, Gemini CLI, or Pi agent by prompt alone, and optionally by hook snippet, and see their lane fill on the board.
+- an outsider with a funded key and the join page can attach a Claude Code, Codex, OpenCode, Gemini CLI, or Pi agent through the HTTP API or the five MCP tools, and see their lane fill on the board.
 - flags they mint appear on their lane within a poll interval, exactly like a hosted lane.
 - the operator can steer, broadcast to, and remove them, and sees how many flags the wallet held before joining.
 - nothing about a hosted run changes when no external entrant joins: same events, same state path, same tests.

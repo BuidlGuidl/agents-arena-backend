@@ -127,7 +127,7 @@ describe('joining with a wallet token', () => {
     }
   });
 
-  it('returns 409 on each lane route before joining and gates hooks through operator auth', async () => {
+  it('returns 409 on each lane route before joining', async () => {
     const server = setup();
     const token = await credential(server);
     for (const [method, url, payload] of [
@@ -138,7 +138,6 @@ describe('joining with a wallet token', () => {
       expect(response.statusCode).toBe(409);
       expect(response.json()).toEqual({ error: 'Not in a run. Join first.' });
     }
-    expect((await server.app.inject({ method: 'POST', url: '/agent/hooks/claude-code', headers: { authorization: `Bearer ${token}` }, payload: {} })).statusCode).toBe(401);
   });
 
   it('selects the only open run, or names missing and ambiguous runs', async () => {

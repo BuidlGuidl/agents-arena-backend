@@ -31,32 +31,32 @@ describe('AgentRequestLimit', () => {
 });
 
 describe('AgentIngest module', () => {
-  async function setup(schedule: () => void = () => {}) {
+  async function setup() {
     const journal = createJournal();
     const manager = new RunManager(journal, noopDriver);
     const { run } = await manager.create({ preset: 'fake-duel' });
     const joined = await manager.join({ runId: run.id, address: '0x1234567890123456789012345678901234567890', name: 'Agent', flagsBeforeJoin: 0 });
-    const status = new ExternalStatus(journal, { schedule });
+    const status = new ExternalStatus(journal);
     return { journal, manager, status, identity: { runId: run.id, entrantId: joined.entrantId }, ingest: new AgentIngest(journal, status, () => undefined) };
   }
 
-  it('applies status once per batch in event order and schedules only the final value', async () => {
-    const schedule = vi.fn();
-    const { ingest, identity, status, manager } = await setup(schedule);
+  it('uses the last explicit status regardless of message order', async () => {
+    const { ingest, identity, status, manager } = await setup();
     const set = vi.spyOn(status, 'set');
-    const call = { seq: 1, type: 'tool.call', tool: 'Bash', toolCallId: 'one', detail: 'ls' };
+    const message = { seq: 1, type: 'agent.message', text: 'hello' };
     const done = { seq: 2, type: 'entrant.status', status: 'done' };
-    ingest.events(identity, { events: [call, done] });
+    const lane = () => manager.snapshot(identity.runId).entrants.find((entrant) => entrant.id === identity.entrantId)!;
+    ingest.events(identity, { events: [message, done] });
     expect(set).toHaveBeenCalledTimes(1);
-    expect(schedule).not.toHaveBeenCalled();
-    expect(manager.snapshot(identity.runId).entrants.find((entrant) => entrant.id === identity.entrantId)?.status).toBe('done');
-    ingest.events(identity, { events: [{ ...done, seq: 3 }, { ...call, seq: 4 }] });
+    expect(lane().status).toBe('done');
+    ingest.events(identity, { events: [{ ...done, seq: 3, status: 'idle' }, { ...message, seq: 4 }] });
     expect(set).toHaveBeenCalledTimes(2);
-    expect(schedule).toHaveBeenCalledTimes(1);
-    expect(manager.snapshot(identity.runId).entrants.find((entrant) => entrant.id === identity.entrantId)?.status).toBe('working');
-    ingest.events(identity, { events: Array.from({ length: 100 }, (_, index) => ({ ...call, seq: index + 5 })) });
+    expect(lane().status).toBe('idle');
+    ingest.events(identity, { events: [
+      { ...done, seq: 5, status: 'blocked' }, { ...message, seq: 6 }, { ...done, seq: 7, status: 'working' },
+    ] });
     expect(set).toHaveBeenCalledTimes(3);
-    expect(schedule).toHaveBeenCalledTimes(2);
+    expect(lane().status).toBe('working');
   });
 
   it('does not spend a request for long strings and rejects every event shape strictly', async () => {
@@ -76,14 +76,13 @@ describe('AgentIngest module', () => {
     expect(ingest.events(identity, { events: [{ seq: 1, type: 'agent.message', text: 'accepted' }] })).toEqual({ accepted: 1, duplicates: 0 });
   });
 
-  it('keeps hook sequences out of the client window and applies all mapped limits before rate', async () => {
+  it('keeps note sequences out of the client dedupe window and shares the request limit', async () => {
     const { ingest, identity } = await setup();
-    for (let i = 0; i < 31; i++) {
-      expect(() => ingest.hook(identity, {
-        hook_event_name: 'PostToolUse', tool_response: { stdout: 'a'.repeat(9000), stderr: 'b'.repeat(9000) },
-      })).toThrow(AgentInputError);
-    }
-    ingest.hook(identity, { hook_event_name: 'Stop', last_assistant_message: 'hello' });
-    expect(ingest.events(identity, { events: [{ seq: 1, type: 'agent.message', text: 'hello' }] })).toEqual({ accepted: 1, duplicates: 0 });
+    ingest.postNote(identity, 'hello', 'idle');
+    expect(ingest.events(identity, { events: [{ seq: 1, type: 'agent.message', text: 'hello' }] }))
+      .toEqual({ accepted: 1, duplicates: 0 });
+    for (let i = 0; i < 28; i++) ingest.postNote(identity, 'another note');
+    expect(() => ingest.events(identity, { events: [{ seq: 2, type: 'agent.message', text: 'too fast' }] }))
+      .toThrow(AgentRateLimitError);
   });
 });

@@ -20,7 +20,6 @@ export class ExternalDriver implements EntrantDriver {
     assertExternal(entrant);
     if (entrant.removedAt !== null) return;
     this.journal.append(run.id, entrant.id, 'entrant.prompt', { entrantId: entrant.id, text: openingPrompt });
-    if (entrant.status !== 'done') this.status.start(run.id, entrant.id);
   }
 
   async steer(run: RunRecord, entrant: EntrantRecord, text: string, origin: 'steer' | 'broadcast' = 'steer'): Promise<'queued'> {

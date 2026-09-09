@@ -122,6 +122,12 @@ describe('arena MCP', () => {
     expect(note.structuredContent).toEqual({ accepted: 2, run: { id: f.runId, state: 'running' }, inbox: { unread: 1 } });
     expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe('blocked');
     expect((await call(f, 'post_note', { text: 'Another attempt' }, f.token)).structuredContent.accepted).toBe(1);
+    expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe('blocked');
+    for (const status of ['idle', 'done', 'working', 'blocked']) {
+      expect((await call(f, 'post_note', { text: 'Status update', status }, f.token)).structuredContent.accepted).toBe(2);
+      expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe(status);
+    }
+
     const inbox = await call(f, 'read_inbox', {}, f.token);
     expect(inbox.structuredContent).toMatchObject({ messages: [{ text: 'Try another approach', kind: 'steer' }],
       cursor: expect.any(Number), run: { id: f.runId, state: 'running' }, inbox: { unread: 0 } });

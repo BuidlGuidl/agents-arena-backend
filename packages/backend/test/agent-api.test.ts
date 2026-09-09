@@ -1,7 +1,10 @@
+import { privateKeyToAccount } from 'viem/accounts';
+import { createSiweMessage } from 'viem/siwe';
+
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { issueAgentToken, revokeAgentToken } from '../src/agent-auth.js';
+import { ExternalAgentTokens, issueAgentToken, revokeAgentToken } from '../src/agent-auth.js';
 import { activeChainProfile } from '../src/chain/profile.js';
 import { buildTaskText } from '../src/ctf/prompt.js';
 import { dropCurrentChallenge, takePendingGuess } from '../src/ctf/challenge-tracker.js';
@@ -14,6 +17,7 @@ import { enqueueMessage } from '../src/inbox.js';
 import { createServer, type ServerOptions } from '../src/server.js';
 import { serverHarness } from './fixtures/server.js';
 
+const operator = privateKeyToAccount('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
 const address = '0x1234567890123456789012345678901234567890';
 const servers = serverHarness((server) => {
   for (const run of server.manager.list(200)) {
@@ -30,18 +34,31 @@ afterEach(() => { vi.useRealTimers(); });
 async function setup(options: Partial<ServerOptions> = {}) {
   const server = createServer({
     dbPath: ':memory:', operatorToken: 'operator', schedule: () => {}, publicUrl: 'https://arena.test',
+    siwe: { operatorAddresses: [operator.address], domains: ['arena.test'] },
     challengePack: { addressesFor: () => ({ Challenge3: address }) }, ...options,
   });
   servers.push(server);
   const { run } = await server.manager.create({ preset: 'fake-duel' });
   const joined = await server.manager.join({ runId: run.id, address, name: 'Agent', model: 'gpt-5.5', flagsBeforeJoin: 0 });
-  const headers = { authorization: `Bearer ${joined.token}` };
+  const { token } = new ExternalAgentTokens(server.journal.database).register(address, () => {});
+  const headers = { authorization: `Bearer ${token}` };
   const post = (events: unknown[]) => server.app.inject({ method: 'POST', url: '/agent/events', headers, payload: { events } });
-  const hook = (payload: object) => server.app.inject({ method: 'POST', url: '/agent/hooks/claude-code', headers, payload });
+  let cookie: string | undefined;
+  const hook = async (payload: object) => {
+    // The hook now needs an operator session as well as the lane bearer.
+    if (cookie === undefined) {
+      const nonce = (await server.app.inject({ url: '/auth/nonce' })).json().nonce as string;
+      const message = createSiweMessage({ address: operator.address, chainId: 8453, domain: 'arena.test', nonce, uri: 'https://arena.test/', version: '1' });
+      const response = await server.app.inject({ method: 'POST', url: '/auth/verify', payload: { message, signature: await operator.signMessage({ message }) } });
+      expect(response.statusCode).toBe(200);
+      cookie = String(response.headers['set-cookie']).split(';')[0]!;
+    }
+    return server.app.inject({ method: 'POST', url: '/agent/hooks/claude-code', headers: { ...headers, cookie }, payload });
+  };
   const inbox = (after?: string | number) => server.app.inject({ method: 'GET', url: `/agent/inbox${after === undefined ? '' : `?after=${after}`}`, headers });
   const lane = () => server.manager.snapshot(run.id).entrants.find((entrant) => entrant.id === joined.entrantId)!;
   const events = () => server.journal.after(run.id, 0).filter((event) => event.source === joined.entrantId);
-  return { ...server, runId: run.id, ...joined, headers, post, hook, inbox, lane, events };
+  return { ...server, runId: run.id, ...joined, token, headers, post, hook, inbox, lane, events };
 }
 const message = (seq = 1, text = 'hello'): AgentEventInput => ({ seq, type: 'agent.message', text });
 const call = (seq = 1, detail = 'forge test'): AgentEventInput => ({ seq, type: 'tool.call', tool: 'Bash', toolCallId: 'call-1', detail });
@@ -200,20 +217,20 @@ describe('event ingest', () => {
     expect(f.events().find((event) => event.type === 'agent.message')?.payload).toMatchObject({ text: '[redacted-key]' });
   });
 
-  it.each(['remove', 'stop', 'rejoin'] as const)('rejects dead tokens after %s on every route', async (action) => {
+  it.each(['remove', 'stop'] as const)('requires a new join after %s', async (action) => {
     const f = await setup();
     if (action === 'remove') await f.manager.remove(f.runId, f.entrantId);
     if (action === 'stop') { await f.manager.start(f.runId); await f.manager.stop(f.runId); }
-    if (action === 'rejoin') {
-      await f.post([message()]);
-      const next = await f.manager.join({ runId: f.runId, address, name: 'Again', flagsBeforeJoin: 0 });
-      const response = await f.app.inject({ method: 'POST', url: '/agent/events', headers: { authorization: `Bearer ${next.token}` }, payload: { events: [message()] } });
-      expect(response.json()).toEqual({ accepted: 1, duplicates: 0 });
-    }
-    expect((await f.post([message()])).statusCode).toBe(401);
-    expect((await f.hook({ hook_event_name: 'SessionStart' })).statusCode).toBe(401);
-    expect((await f.inbox()).statusCode).toBe(401);
-    expect((await f.app.inject({ method: 'GET', url: '/agent/task', headers: f.headers })).statusCode).toBe(401);
+    expect((await f.post([message()])).statusCode).toBe(409);
+    expect((await f.inbox()).statusCode).toBe(409);
+    expect((await f.app.inject({ method: 'GET', url: '/agent/task', headers: f.headers })).statusCode).toBe(409);
+  });
+
+  it('keeps dedupe state when the wallet rejoins', async () => {
+    const f = await setup();
+    await f.post([message()]);
+    await f.manager.join({ runId: f.runId, address, name: 'Again', flagsBeforeJoin: 0 });
+    expect((await f.post([message()])).json()).toEqual({ accepted: 0, duplicates: 1 });
   });
 
   it('sums external usage and projects challenge and narration without pricing the declared model', async () => {
@@ -411,7 +428,8 @@ it('narrates a late joiner and ends its lane after the closing done line', async
   const f = await setup({ narrate, narrationMinMs: 10, narrationMaxMs: 30 });
   await f.manager.start(f.runId);
   const late = await f.manager.join({ runId: f.runId, address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', name: 'Late', flagsBeforeJoin: 0 });
-  const headers = { authorization: `Bearer ${late.token}` };
+  const { token } = new ExternalAgentTokens(f.journal.database).register('0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', () => {});
+  const headers = { authorization: `Bearer ${token}` };
   await f.app.inject({ method: 'POST', url: '/agent/events', headers, payload: { events: [message()] } });
   await vi.advanceTimersByTimeAsync(30);
   const lines = () => f.journal.after(f.runId, 0).filter((event) => event.type === 'entrant.narration' && event.source === late.entrantId);

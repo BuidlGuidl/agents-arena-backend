@@ -16,7 +16,7 @@ import { flagsHeld } from './chain/flags-held.js';
 import { activeChainProfile } from './chain/profile.js';
 import { buildTaskText } from './ctf/prompt.js';
 import {
-  joinMessage,
+  registerMessage,
   HARNESS_IDS,
   OPENCODE_EFFORTS,
   ROSTER_EFFORTS,
@@ -32,7 +32,7 @@ import {
   type SweepResponse,
 } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
-import { ExternalAgentTokens, resolveAgentToken } from './agent-auth.js';
+import { ExternalAgentTokens, resolveAgentToken, requireLane, NotInRunError } from './agent-auth.js';
 import { useSolvedLookup } from './ctf/challenge-tracker.js';
 import {
   bearerToken,
@@ -107,11 +107,14 @@ const rosterEntrySchema = z.object({
   }
 });
 
-const joinSchema = z.object({
-  runId: z.string().min(1),
+const registerSchema = z.object({
   address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
   nonce: z.string(),
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
+}).strict();
+
+const joinSchema = z.object({
+  runId: z.string().min(1).optional(),
   name: z.string().min(1).max(40),
   harness: z.string().max(80).optional(),
   model: z.string().max(80).optional(),
@@ -217,7 +220,7 @@ export function createServer(options: ServerOptions): ArenaServer {
   const inbox = new AgentInbox(journal);
   const progress = new AgentProgress(journal, externalStatus);
   const driver = options.driverFactory?.(journal, externalStatus) ?? new RegisteredEntrantDriver(
-    journal, { status: externalStatus, schedule: options.schedule, tokens: externalTokens, pack },
+    journal, { status: externalStatus, schedule: options.schedule, pack },
   );
   const runManagerOptions: RunManagerOptions = {
     externalTokens,
@@ -264,6 +267,9 @@ export function createServer(options: ServerOptions): ArenaServer {
     }
     if (error instanceof JoinAuthenticationError) {
       return reply.status(401).send({ error: error.message });
+    }
+    if (error instanceof NotInRunError) {
+      return reply.status(409).send({ error: error.message });
     }
     if (error instanceof JoinConflictError) {
       return reply.status(409).send({ error: error.message });
@@ -329,25 +335,35 @@ export function createServer(options: ServerOptions): ArenaServer {
     return reply.header('Cache-Control', 'no-store').send({ nonce: login.issueNonce() });
   });
 
+  app.post('/agent/register', async (request, reply) => {
+    const body = parseBody(registerSchema, request.body, reply);
+    if (body === undefined) return;
+    await verifySignedMessage(login, body.nonce, registerMessage(body), body.signature as Hex, body.address as Address);
+    const result = externalTokens.register(getAddress(body.address), () => {
+      if (!login.consumeNonce(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
+    });
+    return reply.status(result.created ? 201 : 200).header('Cache-Control', 'no-store')
+      .send({ address: result.address, token: result.token, expiresAt: result.expiresAt });
+  });
+
   app.post('/agent/join', async (request, reply) => {
+    const identity = agentIdentity(request);
+    if (identity.address === undefined) throw new JoinAuthenticationError('Wallet token required');
     const body = parseBody(joinSchema, request.body, reply);
     if (body === undefined) return;
-    const run = manager.assertJoinable(body.runId);
-    await verifySignedMessage(login, body.nonce, joinMessage(body), body.signature as Hex, body.address as Address);
+    const run = manager.selectJoinRun(body.runId, identity.address);
     let flagsBeforeJoin = 0;
     try {
       flagsBeforeJoin = options.flagsHeld !== undefined
-        ? await options.flagsHeld(getAddress(body.address))
-        : presetSubstrate(run.preset) === 'fake' ? 0 : await flagsHeld(getAddress(body.address));
+        ? await options.flagsHeld(getAddress(identity.address))
+        : presetSubstrate(run.preset) === 'fake' ? 0 : await flagsHeld(getAddress(identity.address));
     } catch {
       app.log.warn('Could not read flags held at join; recording zero');
     }
     const result = await manager.join({
-      runId: body.runId, address: body.address, name: body.name, ...declaredFields(body), flagsBeforeJoin,
-    }, () => {
-      if (!login.consumeNonce(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
+      runId: run.id, address: identity.address, name: body.name, ...declaredFields(body), flagsBeforeJoin,
     });
-    return reply.status(result.created ? 201 : 200).send({ entrantId: result.entrantId, token: result.token, run: result.run });
+    return reply.status(result.created ? 201 : 200).send({ entrantId: result.entrantId, run: result.run });
   });
 
   app.post('/auth/verify', async (request, reply) => {
@@ -497,19 +513,19 @@ export function createServer(options: ServerOptions): ArenaServer {
   }
 
   app.get('/agent/task', async (request): Promise<AgentTaskResponse> => {
-    const identity = agentIdentity(request);
+    const identity = requireLane(agentIdentity(request));
     return manager.agentTask(identity.runId, identity.entrantId);
   });
 
   app.post('/agent/events', { bodyLimit: AGENT_BODY_LIMIT }, async (request) =>
-    ingest.events(agentIdentity(request), request.body));
+    ingest.events(requireLane(agentIdentity(request)), request.body));
 
   app.post('/agent/hooks/claude-code', { bodyLimit: AGENT_BODY_LIMIT }, async (request) => {
-    ingest.hook(agentIdentity(request), request.body);
+    ingest.hook(requireLane(agentIdentity(request)), request.body);
     return {};
   });
 
-  app.get('/agent/inbox', async (request) => inbox.read(agentIdentity(request), request.query));
+  app.get('/agent/inbox', async (request) => inbox.read(requireLane(agentIdentity(request)), request.query));
 
   // The agent-facing channel: authenticated by the per-entrant token the driver
   // injects as ARENA_AGENT_TOKEN, never by the operator credential. The agent's
@@ -523,7 +539,7 @@ export function createServer(options: ServerOptions): ArenaServer {
         .header('WWW-Authenticate', 'Bearer realm="agents-arena-agent"')
         .send({ error: 'Agent token required' });
     }
-    return progress.announce(identity, request.body);
+    return progress.announce(requireLane(identity), request.body);
   });
 
   app.get('/runs/:id/events', async (request, reply) => {

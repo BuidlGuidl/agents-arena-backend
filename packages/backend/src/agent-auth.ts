@@ -1,10 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-import { and, eq, isNull, notInArray } from 'drizzle-orm';
+import { and, desc, eq, isNull, notInArray } from 'drizzle-orm';
+
+import { getAddress } from 'viem';
 
 import { TERMINAL_RUN_STATES } from './contract.js';
 import type { ArenaDatabase } from './db/index.js';
-import { externalEntrants, runs } from './db/schema.js';
+import { agentTokens, externalEntrants, runs } from './db/schema.js';
 
 export const EXTERNAL_TOKEN_PATTERN = /byoa_[0-9a-f]{48}/;
 
@@ -15,13 +17,30 @@ export function mintExternalToken(): string {
 // Hosted credentials live in memory and die with their containers. External
 // credentials use the database-backed store below. Both resolve through one function.
 
-export interface AgentTokenRecord {
-  runId: string;
-  entrantId: string;
+interface AgentRecordBase {
+  address?: string;
+  runId?: string;
+  entrantId?: string;
   // Route-level state: when the last journalled announcement landed (rate
   // limit). Dedupe lives in the shared current-challenge store, which the
   // command heuristic reads and moves too.
   lastAnnouncedAtMs?: number;
+}
+
+export class NotInRunError extends Error {
+  constructor() { super('Not in a run. Join first.'); }
+}
+
+export function requireLane(record: AgentIdentityRecord): AgentTokenRecord {
+  if (record.runId === undefined || record.entrantId === undefined) throw new NotInRunError();
+  return record as AgentTokenRecord;
+}
+
+export type AgentIdentityRecord = (AgentRecordBase & { address: string }) | AgentTokenRecord;
+
+export interface AgentTokenRecord extends AgentRecordBase {
+  runId: string;
+  entrantId: string;
 }
 
 const byToken = new Map<string, AgentTokenRecord>();
@@ -43,7 +62,7 @@ export function issueAgentToken(runId: string, entrantId: string): string {
   return token;
 }
 
-export function resolveAgentToken(token: string, external?: ExternalAgentTokens): AgentTokenRecord | undefined {
+export function resolveAgentToken(token: string, external?: ExternalAgentTokens): AgentIdentityRecord | undefined {
   return byToken.get(token) ?? external?.resolve(token);
 }
 
@@ -66,40 +85,55 @@ export function agentTokenSecrets(runId: string): readonly string[] {
 
 // Each server owns its lookup and rate state; SQLite remains the token authority.
 export class ExternalAgentTokens {
-  private readonly states = new Map<string, AgentTokenRecord>();
+  private readonly states = new Map<string, AgentIdentityRecord>();
 
   constructor(private readonly database: ArenaDatabase) {}
 
-  issue(runId: string, entrantId: string): string {
-    this.revoke(runId, entrantId);
-    const token = mintExternalToken();
-    this.database.update(externalEntrants).set({ tokenHash: tokenHash(token) })
-      .where(and(eq(externalEntrants.runId, runId), eq(externalEntrants.id, entrantId))).run();
-    return token;
+  register(address: string, consumeNonce: () => void): { address: string; token: string; expiresAt: string; created: boolean } {
+    address = getAddress(address);
+    return this.database.transaction(() => {
+      const previous = this.database.select().from(agentTokens).where(eq(agentTokens.address, address)).get();
+      const token = mintExternalToken();
+      const now = Date.now();
+      const createdAt = new Date(now).toISOString();
+      const expiresAt = new Date(now + 90 * 24 * 60 * 60 * 1000).toISOString();
+      const row = { address, tokenHash: tokenHash(token), createdAt, expiresAt };
+      this.database.insert(agentTokens).values(row).onConflictDoUpdate({ target: agentTokens.address, set: row }).run();
+      consumeNonce();
+      if (previous !== undefined) this.states.delete(previous.tokenHash);
+      return { address, token, expiresAt, created: previous === undefined };
+    });
   }
 
-  resolve(token: string): AgentTokenRecord | undefined {
+  liveLane(address: string): { runId: string; entrantId: string } | undefined {
+    return this.database.select({ runId: externalEntrants.runId, entrantId: externalEntrants.id })
+      .from(externalEntrants).innerJoin(runs, eq(runs.id, externalEntrants.runId))
+      .where(and(eq(externalEntrants.address, address), isNull(externalEntrants.removedAt),
+        notInArray(runs.state, TERMINAL_RUN_STATES)))
+      .orderBy(desc(externalEntrants.joinedAt)).get();
+  }
+
+  resolve(token: string): AgentIdentityRecord | undefined {
     if (token.match(EXTERNAL_TOKEN_PATTERN)?.[0] !== token) return undefined;
     const hash = tokenHash(token);
-    const row = this.database.select({ runId: externalEntrants.runId, entrantId: externalEntrants.id })
-      .from(externalEntrants).innerJoin(runs, eq(runs.id, externalEntrants.runId))
-      .where(and(eq(externalEntrants.tokenHash, hash), isNull(externalEntrants.removedAt),
-        notInArray(runs.state, TERMINAL_RUN_STATES))).get();
-    if (row === undefined) {
+    const wallet = this.database.select().from(agentTokens).where(eq(agentTokens.tokenHash, hash)).get();
+    if (wallet === undefined || Date.parse(wallet.expiresAt) <= Date.now()) {
       this.states.delete(hash);
       return undefined;
     }
-    const state = this.states.get(hash) ?? row;
+    const state = this.states.get(hash) ?? { address: wallet.address };
+    const lane = this.liveLane(wallet.address);
+    // Avoid rewriting unchanged lane fields so a handler mid-flight keeps the lane it validated.
+    if (state.runId !== lane?.runId || state.entrantId !== lane?.entrantId) {
+      if (lane === undefined) {
+        delete state.runId;
+        delete state.entrantId;
+      } else {
+        Object.assign(state, lane);
+      }
+    }
     this.states.set(hash, state);
     return state;
-  }
-
-  revoke(runId: string, entrantId: string): void {
-    const where = and(eq(externalEntrants.runId, runId), eq(externalEntrants.id, entrantId));
-    const previous = this.database.select({ hash: externalEntrants.tokenHash })
-      .from(externalEntrants).where(where).get();
-    if (previous?.hash != null) this.states.delete(previous.hash);
-    this.database.update(externalEntrants).set({ tokenHash: null }).where(where).run();
   }
 }
 

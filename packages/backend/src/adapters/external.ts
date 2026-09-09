@@ -1,4 +1,3 @@
-import { ExternalAgentTokens } from '../agent-auth.js';
 import type { ExternalStatus } from './external-status.js';
 import { enqueueMessage } from '../inbox.js';
 import type { EventJournal } from '../journal.js';
@@ -11,7 +10,6 @@ export class ExternalDriver implements EntrantDriver {
   constructor(
     private readonly journal: EventJournal,
     private readonly status: ExternalStatus,
-    private readonly tokens = new ExternalAgentTokens(journal.database),
   ) {}
 
   async prepare(_run: RunRecord, entrant: EntrantRecord): Promise<void> {
@@ -44,7 +42,6 @@ export class ExternalDriver implements EntrantDriver {
 
   private finish(runId: string, entrantId: string): void {
     this.journal.transaction(() => {
-      this.tokens.revoke(runId, entrantId);
       this.status.set(runId, entrantId, 'done');
     });
   }

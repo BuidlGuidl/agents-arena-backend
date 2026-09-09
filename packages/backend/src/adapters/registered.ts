@@ -5,7 +5,6 @@ import type { EventJournal } from '../journal.js';
 import { presetSubstrate, UnknownPresetError } from '../run-manager.js';
 import type { ExternalStatus } from './external-status.js';
 import { ExternalDriver } from './external.js';
-import type { ExternalAgentTokens } from '../agent-auth.js';
 import { DockerEntrantDriver } from './docker.js';
 import { FakeDriver, type Schedule } from './fake.js';
 import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
@@ -13,7 +12,6 @@ import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
 interface RegisteredEntrantDriverOptions {
   status: ExternalStatus;
   schedule?: Schedule | undefined;
-  tokens?: ExternalAgentTokens;
   hosted?: EntrantDriver;
   pack?: ChallengePackAccess;
 }
@@ -27,7 +25,7 @@ export class RegisteredEntrantDriver implements EntrantDriver {
     journal: EventJournal,
     private readonly options: RegisteredEntrantDriverOptions,
   ) {
-    this.external = new ExternalDriver(journal, options.status, options.tokens);
+    this.external = new ExternalDriver(journal, options.status);
     this.fake = new FakeDriver(journal, options.schedule);
     // Same profile the funding gate and the opening prompt read. A profile with
     // a briefing URL has no resolver and mounts nothing (ADR-0009).

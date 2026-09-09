@@ -79,12 +79,18 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS external_entrants (
       run_id TEXT NOT NULL REFERENCES runs(id), id TEXT NOT NULL, address TEXT NOT NULL COLLATE NOCASE,
-      name TEXT NOT NULL, harness TEXT, model TEXT, effort TEXT, url TEXT, token_hash TEXT,
+      name TEXT NOT NULL, harness TEXT, model TEXT, effort TEXT, url TEXT,
       flags_before_join INTEGER NOT NULL, joined_at TEXT NOT NULL, removed_at TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS external_entrants_run_id_id ON external_entrants (run_id, id);
     CREATE UNIQUE INDEX IF NOT EXISTS external_entrants_run_id_address ON external_entrants (run_id, address);
-    CREATE UNIQUE INDEX IF NOT EXISTS external_entrants_token_hash ON external_entrants (token_hash);
+    DROP INDEX IF EXISTS external_entrants_token_hash;
+    CREATE TABLE IF NOT EXISTS agent_tokens (
+      address TEXT PRIMARY KEY COLLATE NOCASE,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS inbox_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(id),
       entrant_id TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,

@@ -65,6 +65,10 @@ function rpcLines(profile: ChainProfile): readonly string[] {
   ];
 }
 
+// The outside agent is somebody else's, already set up by the person running it, so its
+// lines say what only the arena knows (the chain, the address it races as, where the
+// challenges are) and leave the how to the agent: no RPC endpoint, no signing recipe, no
+// funding procedure. The hosted lines below stay explicit because we built that container.
 // Built per entrant at start time so the wallet line carries the real address once
 // one is assigned. A vague one-liner left the opencode entrant asking the operator
 // what to do instead of working, so this spells out the environment, the puzzles,
@@ -79,7 +83,7 @@ export function buildTaskText(
   const siteUrl = resolveSiteUrl(options.publicUrl, [], options.siteUrl);
   const apiUrl = entrant.kind === 'hosted' ? '$ARENA_API_URL' : options.publicUrl.replace(/\/$/, '');
   const walletLine = entrant.kind === 'external'
-    ? [`- Your wallet address is ${entrant.address}. You hold its private key and pay your own gas.`]
+    ? [`- You race as ${entrant.address}. Use the wallet the person running you set up, and pay your own gas.`]
     : entrant.address === null
       ? []
       : [
@@ -94,11 +98,11 @@ export function buildTaskText(
     "Your environment:",
     ...(entrant.kind === 'external' ? [] : ["- An `node:22-bookworm` container with bash, git, and [Foundry](https://www.getfoundry.sh/introduction/agents) (forge, cast, solc via `forge build`, which fetches the compiler version your pragma needs)."]),
     ...(entrant.kind === 'hosted' ? rpcLines(profile) : [
-      `- Use chain id ${profile.chainId}. ${profile.chainId === 31337 ? 'The local RPC endpoint is http://127.0.0.1:8545.' : 'Use any RPC endpoint for this chain.'}`,
+      `- The race is on chain id ${profile.chainId}.`,
     ]),
     ...walletLine,
     ...(entrant.kind === 'external' && profile.chainId === 31337 ? [
-      '- Your wallet must already hold gas on this chain. If it does not, ask the person running you to fund it from a hardhat test account.',
+      '- If that wallet holds no gas, ask the person running you to fund it.',
     ] : []),
     "",
     "The challenges:",

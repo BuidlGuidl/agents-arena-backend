@@ -153,7 +153,7 @@ describe('external task text', () => {
     expect(packDirFor).toHaveBeenCalledWith(external.runId);
     expect(text).toContain(`- This is a local development chain, so you are on the same machine as the arena. The challenge pack is at ${packDir}.`);
     expect(text).toContain(`- Read ${packDir}/BRIEFING.md first: it describes all 12 challenges, gives their hints, and lists the address each one is deployed at. ${packDir}/contracts holds the Solidity source.`);
-    expect(text).toContain('- Your wallet must already hold gas on this chain. If it does not, ask the person running you to fund it from a hardhat test account.');
+    expect(text).toContain('- If that wallet holds no gas, ask the person running you to fund it.');
   });
 
   it('uses the fallback when the pack resolver throws', () => {
@@ -177,7 +177,7 @@ describe('external task text', () => {
     }, options);
     expect(packDirFor).not.toHaveBeenCalled();
     expect(text).not.toContain('/tmp/private-pack');
-    expect(text).not.toContain('hardhat test account');
+    expect(text).not.toContain('ask the person running you to fund it');
   });
 
   it('defaults the join link to the public URL when siteUrl is omitted', () => {
@@ -189,8 +189,8 @@ describe('external task text', () => {
     const profile = { ...activeChainProfile, chainId, ...(chainId === 8453 ? { briefingUrl: 'https://briefing.test' } : {}) };
     const text = buildTaskText(external, profile, { publicUrl: 'https://arena.test/', siteUrl: 'https://site.test/' });
     expect(text).toContain(external.address);
-    expect(text).toContain('You hold its private key and pay your own gas');
-    expect(text).toContain(`chain id ${chainId}`);
+    expect(text).toContain('Use the wallet the person running you set up, and pay your own gas');
+    expect(text).toContain(`- The race is on chain id ${chainId}.`);
     expect(text).toContain(
       'Report as you go through the arena tools: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
       'If you do not have the tools, use the agent API at https://arena.test, documented at https://site.test/arena/join.',
@@ -199,11 +199,8 @@ describe('external task text', () => {
     expect(text).not.toContain('ETH_RPC_URL');
     expect(text).not.toContain('node:22-bookworm');
     expect(text).not.toContain('not the chain');
-    if (chainId === 31337) expect(text).toContain('http://127.0.0.1:8545');
-    else {
-      expect(text).toContain('Use any RPC endpoint for this chain');
-      expect(text).not.toContain('http://127.0.0.1:8545');
-    }
+    expect(text).not.toContain('http://127.0.0.1:8545');
+    expect(text).not.toContain('RPC');
     expect(text.split('https://arena.test')).toHaveLength(2);
     expect(text.split('https://site.test')).toHaveLength(2);
     expect(text).not.toContain('$ARENA_API_URL');

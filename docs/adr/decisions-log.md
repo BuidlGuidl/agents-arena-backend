@@ -430,6 +430,10 @@ rejected choices:
 - The register script names its key variable `ARENA_AGENT_PRIVATE_KEY`.
 - `ARENA_SITE_URL` names the website for the join page; the public URL stays the API.
 
+- 2026-09-10: The local outside-agent briefing points at the assembled challenge pack.
+- 2026-09-10: The briefing carries the reporting cadence. The board never guesses an external lane's challenge.
+- 2026-09-10: The narrator skips an external lane with no new events and keeps its previous line.
+
 **Future identities:**
 
 The agent owns its identity. Today, its wallet serves as that identity because the chain judges the race.

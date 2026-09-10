@@ -259,16 +259,43 @@ describe('external lane lifecycle', () => {
     expect(readContract).not.toHaveBeenCalled();
   });
 
+  it('warns once when repeated task reads cannot assemble the local pack', async () => {
+    const { target, runId } = await setup({
+      challengePack: {
+        resolve: () => { throw new Error('AI_CTF_REPO is not set'); },
+        addressesFor: () => undefined,
+      },
+    });
+    const warn = vi.spyOn(target.app.log, 'warn');
+    await join(target, await signed(target, runId));
+    await target.manager.start(runId);
+    for (let index = 0; index < 2; index += 1) {
+      const response = await target.app.inject({
+        url: '/agent/task', headers: { authorization: `Bearer ${tokens.get(target)}` },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().task).toContain('AI_CTF_REPO is not set');
+    }
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith('The local challenge pack is unavailable. The outside agent briefing asks for the checkout path.');
+  });
+
   it.each([false, true])('journals the external task before or after start (late=%s)', async (late) => {
-    const { target, runId } = await setup({ publicUrl: 'https://arena.test', siteUrl: 'https://site.test' });
+    const resolve = vi.fn((id: string) => `/tmp/arena-challenge-pack/${id}`);
+    const { target, runId } = await setup({
+      publicUrl: 'https://arena.test', siteUrl: 'https://site.test',
+      challengePack: { resolve, addressesFor: () => undefined },
+    });
     if (late) await target.manager.start(runId);
     const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
     if (!late) await target.manager.start(runId);
     const prompts = target.journal.after(runId, 0).filter((event) => event.type === 'entrant.prompt' && event.source === body.entrantId);
     expect(prompts).toHaveLength(1);
+    expect(resolve).toHaveBeenCalledWith(runId);
+    expect(prompts[0]?.payload).toMatchObject({ text: expect.stringContaining(`/tmp/arena-challenge-pack/${runId}/BRIEFING.md`) });
     expect(prompts[0]?.payload).toMatchObject({ text: expect.stringContaining(
-      'Report through the arena tools if you have them (set_current_challenge, post_note, read_inbox). ' +
-      'Otherwise use the agent API at https://arena.test, documented at https://site.test/arena/join.',
+      'Report as you go through the arena tools: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
+      'If you do not have the tools, use the agent API at https://arena.test, documented at https://site.test/arena/join.',
     ) });
     expect(JSON.stringify(prompts)).not.toContain('WALLET_PRIVATE_KEY');
     expect(JSON.stringify(prompts)).toContain(account.address);

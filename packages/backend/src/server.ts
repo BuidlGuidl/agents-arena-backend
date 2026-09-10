@@ -224,10 +224,17 @@ export function createServer(options: ServerOptions): ArenaServer {
   const driver = options.driverFactory?.(journal, externalStatus) ?? new RegisteredEntrantDriver(
     journal, { status: externalStatus, schedule: options.schedule, pack },
   );
+  let packFallbackWarned = false;
   const runManagerOptions: RunManagerOptions = {
     agentTokens,
     promptBuilder: (entrant) => buildTaskText(entrant, activeChainProfile, {
       publicUrl, siteUrl,
+      ...(pack.resolve === undefined ? {} : { packDirFor: pack.resolve }),
+      warnPackFallback: () => {
+        if (packFallbackWarned) return;
+        packFallbackWarned = true;
+        app.log.warn('The local challenge pack is unavailable. The outside agent briefing asks for the checkout path.');
+      },
     }),
     operatorAddresses: options.siwe?.operatorAddresses ?? [],
     ...(options.solveWatchFactory === undefined

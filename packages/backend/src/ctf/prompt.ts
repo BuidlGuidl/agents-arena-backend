@@ -6,9 +6,19 @@ import { CHALLENGE_COUNT } from "./pack.js";
 
 export type OpeningPromptBuilder = (entrant: EntrantRecord) => string;
 
-// A profile with a briefingUrl points the entrant at the public CTF site; one
-// without gets the challenge pack the arena mounts (ADR-0009).
-function briefingLines(profile: ChainProfile, entrant: EntrantRecord): readonly string[] {
+interface TaskTextOptions {
+  publicUrl: string;
+  siteUrl?: string;
+  packDirFor?: (runId: string) => string;
+  warnPackFallback?: () => void;
+}
+
+// A public briefing needs no local pack. Hosted entrants use the mounted pack.
+function briefingLines(
+  profile: ChainProfile,
+  entrant: EntrantRecord,
+  options: TaskTextOptions,
+): readonly string[] {
   if (profile.briefingUrl !== undefined) {
     return [
       `- The challenge briefing is at ${profile.briefingUrl}. It describes all ${CHALLENGE_COUNT} challenges and gives their hints.`,
@@ -16,9 +26,21 @@ function briefingLines(profile: ChainProfile, entrant: EntrantRecord): readonly 
   }
 
   if (entrant.kind === 'external') {
+    let packDir: string | undefined;
+    try {
+      packDir = options.packDirFor?.(entrant.runId);
+    } catch {
+      // The fallback lets the person running the agent locate the checkout.
+    }
+    if (packDir !== undefined) {
+      return [
+        `- This is a local development chain, so you are on the same machine as the arena. The challenge pack is at ${packDir}.`,
+        `- Read ${packDir}/BRIEFING.md first: it describes all ${CHALLENGE_COUNT} challenges, gives their hints, and lists the address each one is deployed at. ${packDir}/contracts holds the Solidity source.`,
+      ];
+    }
+    options.warnPackFallback?.();
     return [
-      "- This is a local development chain. The arena's challenge pack is not on your machine.",
-      '- The challenge contracts are deployed on the chain named above.',
+      '- This is a local development chain, but the arena could not assemble the challenge pack because AI_CTF_REPO is not set. Ask the person running you where their ai.ctf.buidlguidl.com checkout is, then read packages/hardhat/contracts there and take the addresses for chain 31337 from packages/hardhat/deployments or packages/nextjs/contracts/deployedContracts.ts, checking you have the live set.',
     ];
   }
 
@@ -52,7 +74,7 @@ function rpcLines(profile: ChainProfile): readonly string[] {
 export function buildTaskText(
   entrant: EntrantRecord,
   profile: ChainProfile,
-  options: { publicUrl: string; siteUrl?: string },
+  options: TaskTextOptions,
 ): string {
   const siteUrl = resolveSiteUrl(options.publicUrl, [], options.siteUrl);
   const apiUrl = entrant.kind === 'hosted' ? '$ARENA_API_URL' : options.publicUrl.replace(/\/$/, '');
@@ -75,9 +97,12 @@ export function buildTaskText(
       `- Use chain id ${profile.chainId}. ${profile.chainId === 31337 ? 'The local RPC endpoint is http://127.0.0.1:8545.' : 'Use any RPC endpoint for this chain.'}`,
     ]),
     ...walletLine,
+    ...(entrant.kind === 'external' && profile.chainId === 31337 ? [
+      '- Your wallet must already hold gas on this chain. If it does not, ask the person running you to fund it from a hardhat test account.',
+    ] : []),
     "",
     "The challenges:",
-    ...briefingLines(profile, entrant),
+    ...briefingLines(profile, entrant, options),
     "",
     "How to play:",
     "- Time is critical, a failed transaction teaches you more than more thinking or planning challenges upfront. Send transactions immediately if you feel the approach is right.",
@@ -86,7 +111,7 @@ export function buildTaskText(
     // The self-announce channel (#4). $-references keep the token out of this
     // prompt, which is journalled verbatim as entrant.prompt.
     entrant.kind === 'external'
-      ? `- Report through the arena tools if you have them (set_current_challenge, post_note, read_inbox). Otherwise use the agent API at ${apiUrl}, documented at ${siteUrl}/arena/join.`
+      ? `- Report as you go through the arena tools: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. If you do not have the tools, use the agent API at ${apiUrl}, documented at ${siteUrl}/arena/join.`
       : `- Always report the challenge you are working on: when you start one (before you read or write anything for it), and again whenever you switch or move to the next. Report it with: curl -fsS -X POST "${apiUrl}/agent/progress" -H "authorization: Bearer $ARENA_AGENT_TOKEN" -H "content-type: application/json" -d '{"challengeId": N}' with N replaced by the challenge number.`,
     `- Do not stop until your address holds all ${CHALLENGE_COUNT} flags.`,
   ].join("\n");

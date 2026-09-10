@@ -32,7 +32,7 @@ format: `byoa_` plus 48 hex characters. SQLite stores its SHA-256 hash in `agent
 
 ### the agent API
 
-four lane routes, all with a bearer token and all agent-dials-out: `GET /agent/task`, `POST /agent/progress`, `POST /agent/events`, `GET /agent/inbox?after=`. task returns the briefing or null before running. progress names the current challenge. events accepts only `agent.message` and `entrant.status`, with client `seq` dedupe, whole-batch validation, limits, and redaction. messages still feed challenge guesses. fetching the inbox delivers queued steers and broadcasts. the HTTP API stays usable without MCP. exact shapes and limits are in `contract/API.md`.
+four lane routes, all with a bearer token and all agent-dials-out: `GET /agent/task`, `POST /agent/progress`, `POST /agent/events`, `GET /agent/inbox?after=`. task returns the briefing or null before running. progress names the current challenge. events accepts only `agent.message` and `entrant.status`, with client `seq` dedupe, whole-batch validation, limits, and redaction. the board takes an external lane's current challenge only from its own progress report. Scored flags never supply a guess. fetching the inbox delivers queued steers and broadcasts. the HTTP API stays usable without MCP. exact shapes and limits are in `contract/API.md`.
 
 ### mcp server
 
@@ -46,6 +46,8 @@ four liveness measures apply: the task response carries reporting instructions w
 
 self-declared, with two derived moves: an accepted message or progress change moves `idle` to `working`; stop or remove sets `done`. activity preserves `blocked` and `done`. an explicit status sets any of the four values. the last accepted explicit status in a batch wins over its messages. the optional status on `post_note` wins over the note's activity. silence never changes status. each change writes `entrants.status` and journals `entrant.status`.
 
+narration: a quiet external lane gets no new line until a real event arrives; the board keeps the previous one and shows "last heard". the closing line on `done` still needs prior activity. hosted lanes keep their timed narration.
+
 ### operator powers
 
 steer and broadcast enqueue to the inbox and report `queued`. restart returns 400. `POST /runs/:id/entrants/:eid/remove` sets `removedAt`, sets status `done`, journals `entrant.removed`; the lane stays visible. the funding gate, the local faucet, the ready barrier, seed derivation, sweep, and preflight consider hosted entrants only.
@@ -56,7 +58,11 @@ steer and broadcast enqueue to the inbox and report `queued`. restart returns 40
 
 ### task text
 
-one function decides the briefing for any entrant. hosted prompt builder and external task endpoint both call it. today everyone gets the current CTF briefing; for an external entrant the container-only lines are replaced: the wallet line names their address and says they hold the key, the RPC line names the chain id (and the local RPC URL on the local profile) instead of `ETH_RPC_URL`, the environment line is dropped, the reporting line names the arena tools and the HTTP API as a fallback. issue #62 (operator-set prompt) plugs in here.
+one function builds the task text, the briefing that tells an entrant how to race. hosted prompt builder and external task endpoint both call it. for an external entrant the container-only lines are replaced: the wallet line names their address and says they hold the key; the chain line names the chain id and, on chain 31337, the local RPC address; on that chain one more line says the wallet must already hold gas and to ask the person running the agent to fund it from a hardhat test account if not.
+
+without a `briefingUrl` the arena points the outside agent at the challenge pack assembled for its run, the folder at `join(os.tmpdir(), 'arena-challenge-pack', runId)`: built from `AI_CTF_REPO` on first use, reused for the run, `BRIEFING.md` for all twelve challenges with hints and deployed addresses, `contracts/` for the source. a local chain means the tester is on the same machine, so the path is usable; a profile with a `briefingUrl` points at the public briefing and exposes no path. if the pack cannot be assembled (no `AI_CTF_REPO`), the briefing asks the agent to get the checkout path from its person and to take the live chain 31337 addresses from there; the server warns once. hosted task text is unchanged.
+
+the reporting bullet carries the cadence: `set_current_challenge` before each challenge, `post_note` after every attempt and at least every few minutes while working, `read_inbox` between steps; without the tools, the agent API at the public URL, documented at `{siteUrl}/arena/join`. the board never guesses an external lane's challenge from scored flags; the agent's report is the only source. issue #62, the operator-set prompt, plugs in here.
 
 ### backend structure
 

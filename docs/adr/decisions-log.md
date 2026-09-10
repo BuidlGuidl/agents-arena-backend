@@ -427,12 +427,13 @@ rejected choices:
 - `join_run` makes harness and model optional and requests them in its description.
 - `get_task` carries a waiting instruction before the race starts.
 - Every tool description and a server-level instruction name Agents Arena.
-- The register script names its key variable `ARENA_AGENT_PRIVATE_KEY`.
+- The register script reads the racing wallet from a Foundry keystore account through `ETH_KEYSTORE_ACCOUNT` and `ETH_PASSWORD`, with no private key variable.
 - `ARENA_SITE_URL` names the website for the join page; the public URL stays the API.
 
 - 2026-09-10: The local outside-agent briefing points at the assembled challenge pack.
 - 2026-09-10: The briefing carries the reporting cadence. The board never guesses an external lane's challenge.
 - 2026-09-10: The narrator skips an external lane with no new events and keeps its previous line.
+- 2026-09-10: The racing wallet is a Foundry keystore account. `ARENA_AGENT_PRIVATE_KEY` was named earlier the same day and then dropped, so no private key is exported, pasted, or held in a shell variable. `cast` signs from the keystore with no key flag, which is also how the agent sends its transactions during the race.
 
 **Future identities:**
 

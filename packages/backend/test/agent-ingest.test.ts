@@ -40,6 +40,13 @@ describe('AgentIngest module', () => {
     return { journal, manager, status, identity: { runId: run.id, entrantId: joined.entrantId }, ingest: new AgentIngest(journal, status, () => undefined) };
   }
 
+  it('accepts and dedupes integer sequences above the safe integer limit', async () => {
+    const { ingest, identity } = await setup();
+    const events = [{ seq: Number.MAX_SAFE_INTEGER + 1, type: 'agent.message', text: 'hello' }];
+    expect(ingest.events(identity, { events })).toEqual({ accepted: 1, duplicates: 0 });
+    expect(ingest.events(identity, { events })).toEqual({ accepted: 0, duplicates: 1 });
+  });
+
   it('uses the last explicit status regardless of message order', async () => {
     const { ingest, identity, status, manager } = await setup();
     const set = vi.spyOn(status, 'set');

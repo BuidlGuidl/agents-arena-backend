@@ -8,9 +8,11 @@ import type { EventJournal } from './journal.js';
 import type { ArenaDatabase } from './db/index.js';
 import { inboxMessages } from './db/schema.js';
 
-const inboxQuery = z.object({
-  after: z.string().regex(/^\d+$/).transform(Number).refine(Number.isSafeInteger).default('0'),
-}).strict();
+export const inboxAfterSchema = z.int().nonnegative().default(0);
+
+const inboxQuery = z.strictObject({
+  after: z.string().regex(/^\d+$/).transform(Number).optional().pipe(inboxAfterSchema),
+});
 
 export function enqueueMessage(database: ArenaDatabase, runId: string, entrantId: string, text: string, kind: 'steer' | 'broadcast'): void {
   database.insert(inboxMessages).values({

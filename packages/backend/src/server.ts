@@ -4,6 +4,7 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { getAddress, type Address, type Hex } from 'viem';
 import { z } from 'zod';
 
+import { httpJoinSchema as joinSchema } from './agent-input.js';
 import { agentMcpOriginGuard, mountAgentMcp } from './agent-mcp.js';
 import { AgentIngest } from './agent-ingest.js';
 import { AgentProgress } from './agent-progress.js';
@@ -75,7 +76,7 @@ import {
 } from './run-manager.js';
 import type { NativeSweepChain } from './chain/native-sweep.js';
 
-const rosterEntrySchema = z.object({
+const rosterEntrySchema = z.strictObject({
   id: z.string()
     .max(20)
     .regex(/^[a-z][a-z0-9-]*$/)
@@ -86,30 +87,19 @@ const rosterEntrySchema = z.object({
   harness: z.enum(HARNESS_IDS),
   model: z.string().min(1),
   effort: z.enum(ROSTER_EFFORTS),
-}).strict();
+});
 
-const registerSchema = z.object({
+const registerSchema = z.strictObject({
   address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
   nonce: z.string(),
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
-}).strict();
+});
 
-const joinSchema = z.object({
-  runId: z.string().min(1).optional(),
-  name: z.string().min(1).max(40),
-  harness: z.string().max(80).optional(),
-  model: z.string().max(80).optional(),
-  effort: z.string().max(80).optional(),
-  url: z.string().max(200).url().refine((value) => /^https?:/i.test(value), {
-    message: 'url must use http or https',
-  }).optional(),
-}).strict();
-
-const createRunSchema = z.object({
+const createRunSchema = z.strictObject({
   preset: z.string().min(1),
   autoStart: z.boolean().optional(),
   idempotencyKey: z.string().min(1).optional(),
-  durationMs: z.number().int().min(60_000).max(86_400_000).optional(),
+  durationMs: z.int().min(60_000).max(86_400_000).optional(),
   roster: z.array(rosterEntrySchema)
     .min(1)
     .max(10)
@@ -117,35 +107,35 @@ const createRunSchema = z.object({
       message: 'entrant ids must be unique within the roster',
     })
     .optional(),
-}).strict();
+});
 
 // Steer and broadcast carry the same body; only the fan-out differs.
-const textSchema = z.object({ text: z.string().min(1) }).strict();
-const seedSchema = z.object({
+const textSchema = z.strictObject({ text: z.string().min(1) });
+const seedSchema = z.strictObject({
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
-}).strict();
-const verifySchema = z.object({
+});
+const verifySchema = z.strictObject({
   message: z.string().min(1),
   signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
-}).strict();
-const agentSearchQuerySchema = z.object({
+});
+const agentSearchQuerySchema = z.strictObject({
   harness: z.enum(HARNESS_IDS),
   q: z.string().trim().min(2),
-}).strict();
-const eventsQuerySchema = z.object({ after: z.coerce.number().int().nonnegative().optional() });
+});
+const eventsQuerySchema = z.object({ after: z.coerce.number().refine(Number.isInteger).nonnegative().optional() });
 const decimalIntegerSchema = z.string()
   .regex(/^\d+$/)
   .transform(Number)
   .refine(Number.isSafeInteger);
 const runsQuerySchema = z.object({
-  limit: decimalIntegerSchema.pipe(z.number().int().min(1).max(200)).default('50'),
+  limit: decimalIntegerSchema.pipe(z.int().min(1).max(200)).default(50),
 });
-const historyQuerySchema = z.object({
-  limit: decimalIntegerSchema.pipe(z.number().int().min(1).max(200)).default('50'),
-  before: decimalIntegerSchema.pipe(z.number().int().min(1)).optional(),
+const historyQuerySchema = z.strictObject({
+  limit: decimalIntegerSchema.pipe(z.int().min(1).max(200)).default(50),
+  before: decimalIntegerSchema.pipe(z.int().min(1)).optional(),
   types: z.string().optional(),
   source: z.string().optional(),
-}).strict();
+});
 
 export interface ServerOptions {
   flagsHeld?: (address: Address) => Promise<number>;

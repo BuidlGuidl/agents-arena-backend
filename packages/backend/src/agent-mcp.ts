@@ -1,76 +1,69 @@
 import { originValidation } from '@modelcontextprotocol/fastify';
 import { toNodeHandler } from '@modelcontextprotocol/node';
-import { createMcpHandler, fromJsonSchema, ProtocolError, Server, type CallToolResult, type Tool } from '@modelcontextprotocol/server';
+import { createMcpHandler, ProtocolError, Server, type CallToolResult, type Tool } from '@modelcontextprotocol/server';
 import type { FastifyInstance, onRequestAsyncHookHandler } from 'fastify';
+import { z } from 'zod';
 
 import { NotInRunError, requireLane, resolveAgentToken, type AgentIdentityRecord, type AgentTokens } from './agent-auth.js';
 import type { AgentIngest } from './agent-ingest.js';
+import { joinToolSchema, noteToolSchema } from './agent-input.js';
 import { AgentRateLimitError } from './agent-limits.js';
-import type { AgentProgress } from './agent-progress.js';
+import { challengeIdSchema, type AgentProgress } from './agent-progress.js';
 import { bearerToken } from './auth.js';
 import { AGENT_MCP_TOOLS, type EntrantStatus, type JoinRunRequest, type JoinRunResponse } from './contract.js';
 import { resolveSiteUrl } from './config.js';
-import { CHALLENGE_COUNT } from './ctf/pack.js';
-import type { AgentInbox } from './inbox.js';
+import { inboxAfterSchema, type AgentInbox } from './inbox.js';
 import { JoinConflictError, RemovedWalletError, RunNotFoundError, type RunManager } from './run-manager.js';
 import { JoinAuthenticationError } from './signed-message.js';
 
-const shortText = { type: 'string', minLength: 1, maxLength: 80 } as const;
+const inputSchemas = {
+  join_run: joinToolSchema,
+  get_task: z.strictObject({}),
+  set_current_challenge: z.strictObject({ challengeId: challengeIdSchema }),
+  post_note: noteToolSchema,
+  read_inbox: z.strictObject({ after: inboxAfterSchema }),
+};
+
+function inputSchema(schema: z.ZodObject): Tool['inputSchema'] {
+  const { $schema, ...jsonSchema } = z.toJSONSchema(schema, { io: 'input' });
+  // The SDK caps its recursive JSON type; Zod's JSON Schema type has no depth cap.
+  return { ...jsonSchema, type: 'object' } as Tool['inputSchema'];
+}
 type NamedTools<Names extends readonly string[]> = { [Index in keyof Names]: Tool & { name: Names[Index] } };
 const tools = [
   {
     name: 'join_run',
     description: 'Call to join an Agents Arena race before asking for its briefing. Pass your display name. If you know them, pass the harness and model you run on and your reasoning effort; the board shows them as declared by you.',
-    inputSchema: {
-      type: 'object', additionalProperties: false, required: ['name'],
-      properties: {
-        runId: { type: 'string' }, name: { type: 'string', minLength: 1, maxLength: 40 },
-        harness: shortText, model: shortText, effort: shortText,
-        url: { type: 'string', format: 'uri', pattern: '^[hH][tT][tT][pP][sS]?://', maxLength: 200 },
-      },
-    },
+    inputSchema: inputSchema(inputSchemas.join_run),
   },
   {
     name: 'get_task',
     description: 'Call after joining to read the Agents Arena briefing and check whether the race has started.',
-    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+    inputSchema: inputSchema(inputSchemas.get_task),
     annotations: { readOnlyHint: true },
   },
   {
     name: 'set_current_challenge',
     description: 'Call when you start working on a challenge in the Agents Arena race and pass its id, 1 to 12. This tells the board which challenge your lane is on.',
-    inputSchema: {
-      type: 'object', additionalProperties: false, required: ['challengeId'],
-      properties: { challengeId: { type: 'integer', minimum: 1, maximum: CHALLENGE_COUNT } },
-    },
+    inputSchema: inputSchema(inputSchemas.set_current_challenge),
   },
   {
     name: 'post_note',
     description: 'Call between steps in Agents Arena to say what you are doing and how you are approaching it, and after each attempt to describe the outcome. Optionally set your status: working, idle, blocked, or done.',
-    inputSchema: {
-      type: 'object', additionalProperties: false, required: ['text'],
-      properties: {
-        text: { type: 'string', minLength: 1, maxLength: 4000 },
-        status: { type: 'string', enum: ['working', 'idle', 'blocked', 'done'] },
-      },
-    },
+    inputSchema: inputSchema(inputSchemas.post_note),
   },
   {
     name: 'read_inbox',
     description: 'Call between steps or when inbox.unread is positive to read messages from the Agents Arena race operator; ' +
       'pass the cursor from your last result, or omit it to read from the start.',
-    inputSchema: {
-      type: 'object', additionalProperties: false,
-      properties: { after: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 } },
-    },
+    inputSchema: inputSchema(inputSchemas.read_inbox),
   },
 ] satisfies NamedTools<typeof AGENT_MCP_TOOLS>;
-const validators = new Map(tools.map((tool) => {
-  // Validate the argument shape first; challenge bounds get an actionable tool result after the lane check.
-  const schema = tool.name === 'set_current_challenge'
-    ? { ...tool.inputSchema, properties: { challengeId: { type: 'integer' } } }
-    : tool.inputSchema;
-  return [String(tool.name), fromJsonSchema<Record<string, unknown>>(schema)];
+// Check only the integer shape here. Range errors follow the lane check below.
+// z.int() would reject unsafe integers before that check.
+const validators = new Map<string, z.ZodType<Record<string, unknown>>>(Object.entries({
+  ...inputSchemas,
+  set_current_challenge: z.strictObject({ challengeId: z.number().refine(Number.isInteger) }),
 }));
 const reporting = 'Call post_note between steps to say what you are doing and how you are approaching the challenge, ' +
   'and after each attempt, success or failure. Call set_current_challenge when you start a challenge. ' +
@@ -135,11 +128,11 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
       }
       try {
         const input = request.params.arguments ?? {};
-        const parsed = await validator['~standard'].validate(input);
-        if (parsed.issues !== undefined) {
-          throw new ProtocolError(-32602, `Invalid arguments for ${name}: ${parsed.issues[0]?.message}`);
+        const parsed = validator.safeParse(input);
+        if (!parsed.success) {
+          throw new ProtocolError(-32602, `Invalid arguments for ${name}: ${parsed.error.issues[0]?.message}`);
         }
-        const args = parsed.value;
+        const args = parsed.data;
         if (name === 'join_run' && typeof args.url === 'string' && !URL.canParse(args.url)) {
           throw new ProtocolError(-32602, 'url must be a valid http or https URL');
         }
@@ -151,7 +144,7 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
           output = { entrantId: joined.entrantId, message: 'You are in. Call get_task for the briefing.' };
         } else {
           lane = requireLane(identity);
-          if (name === 'set_current_challenge' && (Number(args.challengeId) < 1 || Number(args.challengeId) > CHALLENGE_COUNT)) {
+          if (name === 'set_current_challenge' && !challengeIdSchema.safeParse(args.challengeId).success) {
             return result({ error: `Challenge ${args.challengeId} is not in this race. Call get_task for the valid ids.` }, true);
           }
           switch (name) {
@@ -166,7 +159,7 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
               output = { accepted: posted.accepted };
               break;
             }
-            case 'read_inbox': output = { ...inbox.read(lane, { after: String(args.after ?? 0) }) }; break;
+            case 'read_inbox': output = { ...inbox.read(lane, { after: String(args.after) }) }; break;
           }
         }
         const run = manager.snapshot(lane.runId);

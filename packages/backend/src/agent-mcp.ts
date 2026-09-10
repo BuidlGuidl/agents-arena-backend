@@ -110,7 +110,7 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
       : token === undefined ? undefined : resolveAgentToken(token);
     // Server is deprecated in the installed SDK, but preserves JSON-RPC server errors.
     // McpServer catches unexpected failures as tool errors.
-    const server = new Server({ name: 'arena', version: '1.0.0' }, {
+    const server = new Server({ name: 'agents-arena', version: '1.0.0' }, {
       instructions: serverInstructions,
       capabilities: { tools: {} }, cacheHints: { 'tools/list': { cacheScope: 'public' } },
     });

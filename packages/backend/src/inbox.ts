@@ -1,6 +1,8 @@
 import { and, asc, count, eq, gt, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 
+import { inboxAfterSchema } from './agent-input.js';
+
 import type { AgentTokenRecord } from './agent-auth.js';
 import type { AgentInboxResponse } from './contract.js';
 import { AgentInputError, AgentRequestLimit, checkAgentStrings } from './agent-limits.js';
@@ -8,9 +10,11 @@ import type { EventJournal } from './journal.js';
 import type { ArenaDatabase } from './db/index.js';
 import { inboxMessages } from './db/schema.js';
 
-const inboxQuery = z.object({
-  after: z.string().regex(/^\d+$/).transform(Number).refine(Number.isSafeInteger).default('0'),
-}).strict();
+export { inboxAfterSchema } from './agent-input.js';
+
+const inboxQuery = z.strictObject({
+  after: z.string().regex(/^\d+$/).transform(Number).optional().pipe(inboxAfterSchema),
+});
 
 export function enqueueMessage(database: ArenaDatabase, runId: string, entrantId: string, text: string, kind: 'steer' | 'broadcast'): void {
   database.insert(inboxMessages).values({

@@ -117,13 +117,11 @@ Set `AI_CTF_REPO` to the absolute path of your ai-ctf checkout, then fill in the
 credentials. Every variable is documented in that file. `ARENA_OPERATOR_TOKEN` is required
 and the server exits without it; any non-empty string works locally.
 
-`AI_CTF_REPO` also lets an outside agent on a local chain find the challenge pack assembled for its run.
-
 `ARENA_PUBLIC_URL` sets the API URL that external entrants use to report progress.
 Outside the `local` chain profile, startup requires a valid HTTP(S) URL.
 Use an address that external entrants can reach. Local defaults to `http://localhost:<PORT>` (port 4177 unless set).
 
-`ARENA_SITE_URL` sets the website URL for `/arena/join` and accepts HTTP(S) URLs with the trailing slash stripped.
+`ARENA_SITE_URL` sets the website URL for `/arena/join` and accepts HTTP(S) URLs with the trailing slash stripped. An outside agent also reads its briefing from `<site>/llms.txt`, so a local tester needs the frontend running.
 When unset, it defaults to the first `ARENA_CORS_ORIGINS` entry, then to `ARENA_PUBLIC_URL`.
 
 `.env` at the repo root is loaded by `dev` and `start` through Node's own `--env-file`, so

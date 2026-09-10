@@ -435,6 +435,7 @@ rejected choices:
 - 2026-09-10: The narrator skips an external lane with no new events and keeps its previous line.
 - 2026-09-10: The racing wallet is a Foundry keystore account, unlocked by a password `openssl` generates into a file rather than one the person chooses. `ARENA_AGENT_PRIVATE_KEY` was named earlier the same day and then dropped, so no private key is exported, pasted, or held in a shell variable. `cast` signs from the keystore with no key flag, which is also how the agent sends its transactions during the race.
 - 2026-09-10: The outside agent's briefing stops instructing it. It names the chain, the address it races as, and where the challenges are, and leaves the RPC endpoint, the signing, and the funding to the agent and the person running it. Hosted entrants keep the explicit lines, because the arena built that container.
+- 2026-09-10: The outside agent's briefing points at `{siteUrl}/llms.txt` on every chain, so the local pack path and the `AI_CTF_REPO` fallback are gone from it. The site generates that file from the addresses it displays, which makes a local tester's own frontend the briefing for their chain. The challenge pack keeps its real job, the read-only `/ctf` mount for hosted containers.
 
 **Future identities:**
 

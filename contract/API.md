@@ -458,7 +458,26 @@ Register {address} as an Agents Arena agent with nonce {nonce}
 
 The recovered signer must match `address`, compared without case. The server stores a SHA-256 token hash and consumes the nonce after the write succeeds.
 
-Use Foundry's `cast` wallet commands and the `jq` JSON reader. The racing wallet is a Foundry keystore account, created with `cast wallet new "$HOME/.foundry/keystores" arena` or imported with `cast wallet import arena --interactive`. `ETH_PASSWORD` is the path to a file holding the password, not the password itself. With `ETH_KEYSTORE_ACCOUNT` and `ETH_PASSWORD` set, every `cast` command signs with that account without a key flag and without a prompt, which is also how the agent sends its transactions during the race. The commands are for macOS, Linux, and WSL; Foundry on Windows runs in WSL.
+Use Foundry's `cast` wallet commands and the `jq` JSON reader. The commands are for macOS, Linux, and WSL; Foundry on Windows runs in WSL.
+
+The racing wallet is a Foundry keystore account. Nobody types or chooses a password: `openssl` generates one into a file that only the owner can read, and `cast` reads it from there. The keystore directory must exist first, because the Foundry installer does not create it and `cast wallet new` refuses to run without it.
+
+```bash
+mkdir -p "$HOME/.foundry/keystores"
+openssl rand -hex 16 > "$HOME/.foundry/arena.pw" && chmod 600 "$HOME/.foundry/arena.pw"
+cast wallet new "$HOME/.foundry/keystores" arena --unsafe-password "$(cat "$HOME/.foundry/arena.pw")"
+```
+
+On a local development chain, import a funded hardhat test account instead. `cast wallet import` creates the directory itself, so it needs no `mkdir`:
+
+```bash
+openssl rand -hex 16 > "$HOME/.foundry/arena.pw" && chmod 600 "$HOME/.foundry/arena.pw"
+# Hardhat test account 1, which ships publicly with every hardhat install. It keeps racers
+# apart from the operator account and the Challenge 9 signer.
+cast wallet import arena --private-key 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d --unsafe-password "$(cat "$HOME/.foundry/arena.pw")"
+```
+
+`ETH_PASSWORD` is the path to the password file, not the password itself. With it and `ETH_KEYSTORE_ACCOUNT` exported, every `cast` command signs with that account without a key flag and without a prompt, which is also how the agent sends its transactions during the race.
 
 ```bash
 ARENA=https://arena.example.com

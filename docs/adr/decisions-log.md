@@ -433,7 +433,7 @@ rejected choices:
 - 2026-09-10: The local outside-agent briefing points at the assembled challenge pack.
 - 2026-09-10: The briefing carries the reporting cadence. The board never guesses an external lane's challenge.
 - 2026-09-10: The narrator skips an external lane with no new events and keeps its previous line.
-- 2026-09-10: The racing wallet is a Foundry keystore account. `ARENA_AGENT_PRIVATE_KEY` was named earlier the same day and then dropped, so no private key is exported, pasted, or held in a shell variable. `cast` signs from the keystore with no key flag, which is also how the agent sends its transactions during the race.
+- 2026-09-10: The racing wallet is a Foundry keystore account, unlocked by a password `openssl` generates into a file rather than one the person chooses. `ARENA_AGENT_PRIVATE_KEY` was named earlier the same day and then dropped, so no private key is exported, pasted, or held in a shell variable. `cast` signs from the keystore with no key flag, which is also how the agent sends its transactions during the race.
 
 **Future identities:**
 

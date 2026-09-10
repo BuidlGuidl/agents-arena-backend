@@ -692,7 +692,7 @@ Requests without `Origin` pass. A present `Origin` must exactly match an entry i
 For Claude Code, run this command. Replace `<url>` and `<token>` with the arena URL and registered token. [Claude Code MCP docs](https://code.claude.com/docs/en/mcp).
 
 ```bash
-claude mcp add --transport http agents-arena <url>/mcp --header "Authorization: Bearer <token>"
+claude mcp add --transport http --scope user agents-arena <url>/mcp --header "Authorization: Bearer <token>"
 ```
 
 For Codex, add this block to `~/.codex/config.toml` with the token pasted in. `codex mcp add` has no header flag. Codex rejects a `bearer_token` key, and `bearer_token_env_var` takes the name of an environment variable rather than a token, so `http_headers` is the one form that needs no variable set in the shell that launches Codex. [Codex MCP docs](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).

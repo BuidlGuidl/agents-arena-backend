@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
-import { AGENT_BATCH_LIMIT, AGENT_STRING_LIMIT, AgentInputError, AgentBatchTooLargeError, AgentRequestLimit, checkAgentStrings } from './agent-limits.js';
+import { agentMessageTextSchema, entrantStatusSchema } from './agent-input.js';
+
+import { AGENT_BATCH_LIMIT, AgentInputError, AgentBatchTooLargeError, AgentRequestLimit, checkAgentStrings } from './agent-limits.js';
 
 import type { AgentTokenRecord } from './agent-auth.js';
 import type { AgentEventInput, AgentEventsResponse, EntrantStatus } from './contract.js';
@@ -10,13 +12,13 @@ import type { ChallengePackAccess } from './ctf/resolve.js';
 import { trackProgress } from './ctf/track-progress.js';
 import type { EventJournal } from './journal.js';
 
-const seq = z.number().int();
-const text = z.string().max(AGENT_STRING_LIMIT);
+const seq = z.number().refine(Number.isInteger);
+const text = agentMessageTextSchema;
 const eventSchema = z.discriminatedUnion('type', [
-  z.object({ seq, type: z.literal('agent.message'), text }).strict(),
-  z.object({ seq, type: z.literal('entrant.status'), status: z.enum(['working', 'idle', 'blocked', 'done']) }).strict(),
-]) satisfies z.ZodType<AgentEventInput, z.ZodTypeDef, unknown>;
-const requestSchema = z.object({ events: z.array(eventSchema).min(1).max(AGENT_BATCH_LIMIT) }).strict();
+  z.strictObject({ seq, type: z.literal('agent.message'), text }),
+  z.strictObject({ seq, type: z.literal('entrant.status'), status: entrantStatusSchema }),
+]) satisfies z.ZodType<AgentEventInput>;
+const requestSchema = z.strictObject({ events: z.array(eventSchema).min(1).max(AGENT_BATCH_LIMIT) });
 
 export class AgentIngest {
   private readonly requests: AgentRequestLimit;

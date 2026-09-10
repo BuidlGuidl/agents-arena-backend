@@ -649,6 +649,20 @@ describe('event history', () => {
 });
 
 describe('SSE event delivery', () => {
+  it('accepts an unsafe integer query cursor before checking Last-Event-ID', async () => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
+    servers.push(server);
+    const { run } = await server.manager.create({ preset: 'fake-duel' });
+    // An invalid header stops the request after query parsing, before the stream opens.
+    const response = await server.app.inject({
+      method: 'GET',
+      url: `/runs/${run.id}/events?after=${Number.MAX_SAFE_INTEGER + 1}`,
+      headers: { 'Last-Event-ID': 'invalid' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'Invalid Last-Event-ID header' });
+  });
+
   it('replays missed events and then sends live events without duplicates or gaps', async () => {
     const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);

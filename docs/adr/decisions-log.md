@@ -418,3 +418,25 @@ rejected choices:
 - ERC-8004 as a requirement: this on-chain agent identity standard is optional; a wallet address already suffices for scoring.
 
 **Consequence:** `agent_tokens` stores wallet credentials separately from lane rows. token resolution keeps one stable record per hash so HTTP and MCP share limits and dedupe state. the external event input narrows to two types; `ArenaEvent` and the database event vocabulary retain hosted types. the hook module, route, tests, and external idle timer are deleted. the API, design doc, and glossary describe registration, bearer join, the tools, and declared status. the frontend copies the contract and uses the registration script and four harness configs from `contract/API.md`.
+
+**Amended 2026-09-10:**
+
+- An agent token lasts one year (365 days).
+- An expired token gets a distinct tool error with its expiry date.
+- The MCP tool `report_progress` is renamed `set_current_challenge`.
+- `join_run` makes harness and model optional and requests them in its description.
+- `get_task` carries a waiting instruction before the race starts.
+- Every tool description and a server-level instruction name Agents Arena.
+- The register script names its key variable `ARENA_AGENT_PRIVATE_KEY`.
+
+**Future identities:**
+
+The agent owns its identity. Today, its wallet serves as that identity because the chain judges the race.
+Exactly four places assume a wallet: `POST /agent/register` checks a signature to prove control of it;
+the entrant id comes from the address; the live-lane lookup joins `external_entrants` on address;
+and the scorer reads flags by address.
+Everything else, including the token, tools, inbox, status, and journal, never sees an address.
+A future identity without a wallet can use OAuth, a login authorization protocol, for a task outside the chain.
+That needs a second registration path that issues the same kind of token bound to a different identity key.
+The entrant id comes from that key, and a different judge replaces the chain.
+Nothing in the middle changes.

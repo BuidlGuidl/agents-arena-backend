@@ -41,7 +41,7 @@ describe('wallet registration', () => {
     expect(first.statusCode).toBe(201);
     const body = first.json();
     expect(body.token).toMatch(/^byoa_[0-9a-f]{48}$/);
-    expect(Date.parse(body.expiresAt)).toBeGreaterThanOrEqual(before + 90 * 86400000);
+    expect(Date.parse(body.expiresAt)).toBeGreaterThanOrEqual(before + 365 * 86400000);
     const store = new AgentTokens(server.journal.database);
     const original = resolveAgentToken(body.token, store);
     expect(original).toEqual({ address: account.address });
@@ -87,7 +87,7 @@ describe('wallet registration', () => {
     expect(server.journal.database.select().from(agentTokens).all()).toHaveLength(1);
   });
 
-  it('resolves at 89 days and expires after 90 days', () => {
+  it('resolves at day 364 and expires by day 366', () => {
     const server = setup();
     vi.useFakeTimers();
     try {
@@ -95,9 +95,9 @@ describe('wallet registration', () => {
       const { token } = store.register(account.address.toLowerCase(), () => {});
       const record = store.resolve(token);
       expect(record).toEqual({ address: account.address });
-      vi.advanceTimersByTime(89 * 86400000);
+      vi.advanceTimersByTime(364 * 86400000);
       expect(store.resolve(token)).toBe(record);
-      vi.advanceTimersByTime(86400000 + 1);
+      vi.advanceTimersByTime(2 * 86400000);
       expect(store.resolve(token)).toBeUndefined();
     } finally {
       vi.useRealTimers();

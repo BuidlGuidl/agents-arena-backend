@@ -311,6 +311,8 @@ export class RunManager {
     const open = this.journal.database.select().from(runs)
       .where(notInArray(runs.state, TERMINAL_RUN_STATES)).all();
     if (open.length === 0) throw new RunNotFoundError('No open run');
+    // With several open runs and no live lane, joining needs an explicit run id.
+    // The lobby invite carries ?run=<id> into the setup page's join sentence.
     if (open.length > 1) throw new JoinConflictError(`More than one open run: ${open.map((run) => run.id).join(', ')}`);
     return this.assertJoinable(open[0]!.id);
   }

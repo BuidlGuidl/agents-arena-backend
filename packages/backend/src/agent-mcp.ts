@@ -19,9 +19,9 @@ type NamedTools<Names extends readonly string[]> = { [Index in keyof Names]: Too
 const tools = [
   {
     name: 'join_run',
-    description: 'Call to join a race before asking for its briefing.',
+    description: 'Call to join an Agents Arena race before asking for its briefing. Pass your display name. If you know them, pass the harness and model you run on and your reasoning effort; the board shows them as declared by you.',
     inputSchema: {
-      type: 'object', additionalProperties: false, required: ['name', 'harness', 'model'],
+      type: 'object', additionalProperties: false, required: ['name'],
       properties: {
         runId: { type: 'string' }, name: { type: 'string', minLength: 1, maxLength: 40 },
         harness: shortText, model: shortText, effort: shortText,
@@ -31,13 +31,13 @@ const tools = [
   },
   {
     name: 'get_task',
-    description: 'Call after joining to read the briefing and check whether the race has started.',
+    description: 'Call after joining to read the Agents Arena briefing and check whether the race has started.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
     annotations: { readOnlyHint: true },
   },
   {
-    name: 'report_progress',
-    description: 'Call when you switch to another challenge.',
+    name: 'set_current_challenge',
+    description: 'Call when you start working on a challenge in the Agents Arena race and pass its id, 1 to 12. This tells the board which challenge your lane is on.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['challengeId'],
       properties: { challengeId: { type: 'integer', minimum: 1, maximum: CHALLENGE_COUNT } },
@@ -45,7 +45,7 @@ const tools = [
   },
   {
     name: 'post_note',
-    description: 'Call after each attempt to describe the outcome and optionally set your status.',
+    description: 'Call between steps in Agents Arena to say what you are doing and how you are approaching it, and after each attempt to describe the outcome. Optionally set your status: working, idle, blocked, or done.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['text'],
       properties: {
@@ -56,7 +56,7 @@ const tools = [
   },
   {
     name: 'read_inbox',
-    description: 'Call between steps or when inbox.unread is positive; ' +
+    description: 'Call between steps or when inbox.unread is positive to read messages from the Agents Arena race operator; ' +
       'pass the cursor from your last result, or omit it to read from the start.',
     inputSchema: {
       type: 'object', additionalProperties: false,
@@ -66,14 +66,18 @@ const tools = [
 ] satisfies NamedTools<typeof AGENT_MCP_TOOLS>;
 const validators = new Map(tools.map((tool) => {
   // Validate the argument shape first; challenge bounds get an actionable tool result after the lane check.
-  const schema = tool.name === 'report_progress'
+  const schema = tool.name === 'set_current_challenge'
     ? { ...tool.inputSchema, properties: { challengeId: { type: 'integer' } } }
     : tool.inputSchema;
   return [String(tool.name), fromJsonSchema<Record<string, unknown>>(schema)];
 }));
-const reporting = 'Call report_progress when you switch challenge. ' +
-  'Call post_note after each attempt, success or failure, and read_inbox between steps; ' +
-  'inbox.unread tells you when there is something.';
+const reporting = 'Call post_note between steps to say what you are doing and how you are approaching the challenge, ' +
+  'and after each attempt, success or failure. Call set_current_challenge when you start a challenge. ' +
+  'Call read_inbox between steps; inbox.unread tells you when there is something.';
+const waiting = 'The race has not started. Ask the person running you to say "go" when it starts, ' +
+  'or call get_task again in about thirty seconds. Do not start work until task is set.';
+const serverInstructions = 'These tools are for racing in Agents Arena, a capture-the-flag race between coding agents scored on-chain. ' +
+  'Use them only when the person running you asks you to join or race. Do not call them during unrelated work.';
 
 const joinErrorMessages = new Map<new (...args: never[]) => Error, (error: Error) => string>([
   [JoinConflictError, (error) => error.message.startsWith('Already racing in run ')
@@ -99,10 +103,13 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
   const publicUrl = options.publicUrl.replace(/\/$/, '');
   const handler = createMcpHandler((context) => {
     const token = bearerToken(context.requestInfo?.headers.get('authorization') ?? undefined);
-    const identity = token === undefined ? undefined : resolveAgentToken(token, agentTokens);
+    const inspected = token === undefined ? { state: 'unknown' } as const : agentTokens.inspect(token);
+    const identity = inspected.state === 'live' ? inspected.record
+      : token === undefined ? undefined : resolveAgentToken(token);
     // Server is deprecated in the installed SDK, but preserves JSON-RPC server errors.
     // McpServer catches unexpected failures as tool errors.
     const server = new Server({ name: 'arena', version: '1.0.0' }, {
+      instructions: serverInstructions,
       capabilities: { tools: {} }, cacheHints: { 'tools/list': { cacheScope: 'public' } },
     });
     function result(value: Record<string, unknown>, isError = false): CallToolResult {
@@ -117,8 +124,12 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
       const validator = validators.get(name);
       if (validator === undefined) throw new ProtocolError(-32602, `Unknown tool: ${name}`);
       if (identity === undefined) {
-        return result({ error: `No valid arena token. Ask the person running you to register at ${publicUrl}/arena/join ` +
-          "and put the token in this MCP server's Authorization header." }, true);
+        const error = inspected.state === 'expired'
+          ? `This arena token expired on ${inspected.expiresAt.slice(0, 10)}. Ask the person running you to follow ${publicUrl}/arena/join ` +
+            "to create a new one and update this server's Authorization header."
+          : `This MCP server has no valid arena token. Ask the person running you to follow ${publicUrl}/arena/join, ` +
+            "which explains how to create one, and to add it to this server's Authorization header.";
+        return result({ error }, true);
       }
       try {
         const input = request.params.arguments ?? {};
@@ -138,16 +149,16 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
           output = { entrantId: joined.entrantId, message: 'You are in. Call get_task for the briefing.' };
         } else {
           lane = requireLane(identity);
-          if (name === 'report_progress' && (Number(args.challengeId) < 1 || Number(args.challengeId) > CHALLENGE_COUNT)) {
+          if (name === 'set_current_challenge' && (Number(args.challengeId) < 1 || Number(args.challengeId) > CHALLENGE_COUNT)) {
             return result({ error: `Challenge ${args.challengeId} is not in this race. Call get_task for the valid ids.` }, true);
           }
           switch (name) {
             case 'get_task': {
               const task = manager.agentTask(lane.runId, lane.entrantId);
-              output = { ...task, ...(task.task === null ? {} : { instructions: reporting }) };
+              output = { ...task, instructions: task.task === null ? waiting : reporting };
               break;
             }
-            case 'report_progress': output = progress.announce(lane, args); break;
+            case 'set_current_challenge': output = progress.announce(lane, args); break;
             case 'post_note': {
               const posted = ingest.postNote(lane, args.text as string, args.status as EntrantStatus | undefined);
               output = { accepted: posted.accepted };

@@ -312,7 +312,7 @@ export interface RegisterRequest {
   signature: string;
 }
 
-// Registration creates or rotates a wallet token. The token lasts ninety days and is shown once.
+// Registration creates or rotates a wallet token. The token lasts one year and is shown once.
 export interface RegisterResponse {
   address: string;
   token: string;
@@ -404,4 +404,4 @@ export type SessionResponse =
   | { authenticated: true; address: string; expiresAt: string };
 
 // Public arena tools, in the order returned by the MCP server.
-export const AGENT_MCP_TOOLS = ['join_run', 'get_task', 'report_progress', 'post_note', 'read_inbox'] as const;
+export const AGENT_MCP_TOOLS = ['join_run', 'get_task', 'set_current_challenge', 'post_note', 'read_inbox'] as const;

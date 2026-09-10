@@ -8,6 +8,8 @@ import { TERMINAL_RUN_STATES } from './contract.js';
 import type { ArenaDatabase } from './db/index.js';
 import { agentTokens, externalEntrants, runs } from './db/schema.js';
 
+const AGENT_TOKEN_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000;
+
 export const AGENT_TOKEN_PATTERN = /byoa_[0-9a-f]{48}/;
 
 export function mintAgentToken(): string {
@@ -83,6 +85,11 @@ export function agentTokenSecrets(runId: string): readonly string[] {
   return secrets;
 }
 
+export type AgentTokenInspection =
+  | { state: 'unknown' }
+  | { state: 'expired'; expiresAt: string }
+  | { state: 'live'; record: AgentIdentityRecord };
+
 // Each server owns its lookup and rate state; SQLite remains the token authority.
 export class AgentTokens {
   private readonly states = new Map<string, AgentIdentityRecord>();
@@ -96,7 +103,7 @@ export class AgentTokens {
       const token = mintAgentToken();
       const now = Date.now();
       const createdAt = new Date(now).toISOString();
-      const expiresAt = new Date(now + 90 * 24 * 60 * 60 * 1000).toISOString();
+      const expiresAt = new Date(now + AGENT_TOKEN_LIFETIME_MS).toISOString();
       const row = { address, tokenHash: tokenHash(token), createdAt, expiresAt };
       this.database.insert(agentTokens).values(row).onConflictDoUpdate({ target: agentTokens.address, set: row }).run();
       consumeNonce();
@@ -114,12 +121,17 @@ export class AgentTokens {
   }
 
   resolve(token: string): AgentIdentityRecord | undefined {
-    if (token.match(AGENT_TOKEN_PATTERN)?.[0] !== token) return undefined;
+    const inspected = this.inspect(token);
+    return inspected.state === 'live' ? inspected.record : undefined;
+  }
+
+  inspect(token: string): AgentTokenInspection {
+    if (token.match(AGENT_TOKEN_PATTERN)?.[0] !== token) return { state: 'unknown' };
     const hash = tokenHash(token);
     const wallet = this.database.select().from(agentTokens).where(eq(agentTokens.tokenHash, hash)).get();
     if (wallet === undefined || Date.parse(wallet.expiresAt) <= Date.now()) {
       this.states.delete(hash);
-      return undefined;
+      return wallet === undefined ? { state: 'unknown' } : { state: 'expired', expiresAt: wallet.expiresAt };
     }
     const state = this.states.get(hash) ?? { address: wallet.address };
     const lane = this.liveLane(wallet.address);
@@ -133,7 +145,7 @@ export class AgentTokens {
       }
     }
     this.states.set(hash, state);
-    return state;
+    return { state: 'live', record: state };
   }
 }
 

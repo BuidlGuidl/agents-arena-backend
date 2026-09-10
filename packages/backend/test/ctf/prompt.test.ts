@@ -153,7 +153,7 @@ describe('external task text', () => {
     expect(text).toContain('You hold its private key and pay your own gas');
     expect(text).toContain(`chain id ${chainId}`);
     expect(text).toContain(
-      'Report through the arena tools if you have them (report_progress, post_note, read_inbox). ' +
+      'Report through the arena tools if you have them (set_current_challenge, post_note, read_inbox). ' +
       'Otherwise use the agent API at https://arena.test, documented at https://arena.test/arena/join.',
     );
     expect(text).not.toContain('WALLET_PRIVATE_KEY');

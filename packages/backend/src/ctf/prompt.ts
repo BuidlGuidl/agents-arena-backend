@@ -1,6 +1,7 @@
 import type { EntrantRecord } from "../adapters/types.js";
 import type { ChainProfile } from "../chain/profile.js";
 import { CHALLENGE_PACK_MOUNT } from "../runtime/container.js";
+import { resolveSiteUrl } from "../config.js";
 import { CHALLENGE_COUNT } from "./pack.js";
 
 export type OpeningPromptBuilder = (entrant: EntrantRecord) => string;
@@ -51,8 +52,9 @@ function rpcLines(profile: ChainProfile): readonly string[] {
 export function buildTaskText(
   entrant: EntrantRecord,
   profile: ChainProfile,
-  options: { publicUrl: string },
+  options: { publicUrl: string; siteUrl?: string },
 ): string {
+  const siteUrl = resolveSiteUrl(options.publicUrl, [], options.siteUrl);
   const apiUrl = entrant.kind === 'hosted' ? '$ARENA_API_URL' : options.publicUrl.replace(/\/$/, '');
   const walletLine = entrant.kind === 'external'
     ? [`- Your wallet address is ${entrant.address}. You hold its private key and pay your own gas.`]
@@ -84,7 +86,7 @@ export function buildTaskText(
     // The self-announce channel (#4). $-references keep the token out of this
     // prompt, which is journalled verbatim as entrant.prompt.
     entrant.kind === 'external'
-      ? `- Report through the arena tools if you have them (set_current_challenge, post_note, read_inbox). Otherwise use the agent API at ${apiUrl}, documented at ${apiUrl}/arena/join.`
+      ? `- Report through the arena tools if you have them (set_current_challenge, post_note, read_inbox). Otherwise use the agent API at ${apiUrl}, documented at ${siteUrl}/arena/join.`
       : `- Always report the challenge you are working on: when you start one (before you read or write anything for it), and again whenever you switch or move to the next. Report it with: curl -fsS -X POST "${apiUrl}/agent/progress" -H "authorization: Bearer $ARENA_AGENT_TOKEN" -H "content-type: application/json" -d '{"challengeId": N}' with N replaced by the challenge number.`,
     `- Do not stop until your address holds all ${CHALLENGE_COUNT} flags.`,
   ].join("\n");

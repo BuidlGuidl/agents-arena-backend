@@ -428,6 +428,7 @@ rejected choices:
 - `get_task` carries a waiting instruction before the race starts.
 - Every tool description and a server-level instruction name Agents Arena.
 - The register script names its key variable `ARENA_AGENT_PRIVATE_KEY`.
+- `ARENA_SITE_URL` names the website for the join page; the public URL stays the API.
 
 **Future identities:**
 

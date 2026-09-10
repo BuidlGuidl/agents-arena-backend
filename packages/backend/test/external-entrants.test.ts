@@ -260,7 +260,7 @@ describe('external lane lifecycle', () => {
   });
 
   it.each([false, true])('journals the external task before or after start (late=%s)', async (late) => {
-    const { target, runId } = await setup({ publicUrl: 'https://arena.test' });
+    const { target, runId } = await setup({ publicUrl: 'https://arena.test', siteUrl: 'https://site.test' });
     if (late) await target.manager.start(runId);
     const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
     if (!late) await target.manager.start(runId);
@@ -268,7 +268,7 @@ describe('external lane lifecycle', () => {
     expect(prompts).toHaveLength(1);
     expect(prompts[0]?.payload).toMatchObject({ text: expect.stringContaining(
       'Report through the arena tools if you have them (set_current_challenge, post_note, read_inbox). ' +
-      'Otherwise use the agent API at https://arena.test, documented at https://arena.test/arena/join.',
+      'Otherwise use the agent API at https://arena.test, documented at https://site.test/arena/join.',
     ) });
     expect(JSON.stringify(prompts)).not.toContain('WALLET_PRIVATE_KEY');
     expect(JSON.stringify(prompts)).toContain(account.address);

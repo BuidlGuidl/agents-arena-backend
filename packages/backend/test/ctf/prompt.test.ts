@@ -146,15 +146,20 @@ describe('external task text', () => {
     joinedAt: '2026-09-08T00:00:00.000Z', removedAt: null, flagsBeforeJoin: 2,
   };
 
+  it('defaults the join link to the public URL when siteUrl is omitted', () => {
+    const text = buildTaskText(external, activeChainProfile, { publicUrl: 'https://arena.test/' });
+    expect(text).toContain('documented at https://arena.test/arena/join.');
+  });
+
   it.each([31337, 8453])('uses the external wallet and public API for chain %s', (chainId) => {
     const profile = { ...activeChainProfile, chainId, ...(chainId === 8453 ? { briefingUrl: 'https://briefing.test' } : {}) };
-    const text = buildTaskText(external, profile, { publicUrl: 'https://arena.test/' });
+    const text = buildTaskText(external, profile, { publicUrl: 'https://arena.test/', siteUrl: 'https://site.test/' });
     expect(text).toContain(external.address);
     expect(text).toContain('You hold its private key and pay your own gas');
     expect(text).toContain(`chain id ${chainId}`);
     expect(text).toContain(
       'Report through the arena tools if you have them (set_current_challenge, post_note, read_inbox). ' +
-      'Otherwise use the agent API at https://arena.test, documented at https://arena.test/arena/join.',
+      'Otherwise use the agent API at https://arena.test, documented at https://site.test/arena/join.',
     );
     expect(text).not.toContain('WALLET_PRIVATE_KEY');
     expect(text).not.toContain('ETH_RPC_URL');
@@ -165,7 +170,8 @@ describe('external task text', () => {
       expect(text).toContain('Use any RPC endpoint for this chain');
       expect(text).not.toContain('http://127.0.0.1:8545');
     }
-    expect(text.split('https://arena.test')).toHaveLength(3);
+    expect(text.split('https://arena.test')).toHaveLength(2);
+    expect(text.split('https://site.test')).toHaveLength(2);
     expect(text).not.toContain('$ARENA_API_URL');
     expect(text).not.toContain('/ctf/BRIEFING.md');
     expect(text).not.toContain('/ctf/contracts');

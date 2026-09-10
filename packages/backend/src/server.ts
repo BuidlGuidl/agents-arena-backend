@@ -44,7 +44,7 @@ import {
   sessionCookie,
 } from './auth.js';
 import { SiweLogin, type SiweLoginOptions } from './siwe.js';
-import { DEFAULT_PUBLIC_URL } from './config.js';
+import { DEFAULT_PUBLIC_URL, resolveSiteUrl } from './config.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
 import { EntrantOperationError, EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
 import { eventTypes, scores } from './db/schema.js';
@@ -167,6 +167,7 @@ const historyQuerySchema = z.object({
 export interface ServerOptions {
   flagsHeld?: (address: Address) => Promise<number>;
   publicUrl?: string;
+  siteUrl?: string;
   /** Required: every mutating route rejects a request that does not carry it. */
   operatorToken: string;
   /** Operator allowlist for wallet login and seed signing. */
@@ -193,6 +194,8 @@ export interface ArenaServer {
 }
 
 export function createServer(options: ServerOptions): ArenaServer {
+  const publicUrl = options.publicUrl ?? DEFAULT_PUBLIC_URL;
+  const siteUrl = resolveSiteUrl(publicUrl, options.corsOrigins, options.siteUrl);
   const app = Fastify({ logger: options.logger ?? false });
   app.addHook('onRequest', agentMcpOriginGuard(options.corsOrigins ?? []));
   if (options.corsOrigins !== undefined && options.corsOrigins.length > 0) {
@@ -224,7 +227,7 @@ export function createServer(options: ServerOptions): ArenaServer {
   const runManagerOptions: RunManagerOptions = {
     agentTokens,
     promptBuilder: (entrant) => buildTaskText(entrant, activeChainProfile, {
-      publicUrl: options.publicUrl ?? DEFAULT_PUBLIC_URL,
+      publicUrl, siteUrl,
     }),
     operatorAddresses: options.siwe?.operatorAddresses ?? [],
     ...(options.solveWatchFactory === undefined
@@ -369,7 +372,7 @@ export function createServer(options: ServerOptions): ArenaServer {
 
   mountAgentMcp(app, {
     agentTokens, manager, ingest, inbox, progress, join: joinAgent,
-    publicUrl: options.publicUrl ?? DEFAULT_PUBLIC_URL,
+    publicUrl, siteUrl,
   });
 
   app.post('/auth/verify', async (request, reply) => {

@@ -11,9 +11,10 @@ import { serverHarness } from './fixtures/server.js';
 
 const address = '0x1234567890123456789012345678901234567890';
 const publicUrl = 'https://arena.test';
-const registerText = `This MCP server has no valid arena token. Ask the person running you to follow ${publicUrl}/arena/join, ` +
+const siteUrl = 'https://site.test';
+const registerText = `This MCP server has no valid arena token. Ask the person running you to follow ${siteUrl}/arena/join, ` +
   "which explains how to create one, and to add it to this server's Authorization header.";
-const expiredText = `This arena token expired on 2000-01-01. Ask the person running you to follow ${publicUrl}/arena/join ` +
+const expiredText = `This arena token expired on 2000-01-01. Ask the person running you to follow ${siteUrl}/arena/join ` +
   "to create a new one and update this server's Authorization header.";
 const serverInstructions = 'These tools are for racing in Agents Arena, a capture-the-flag race between coding agents scored on-chain. ' +
   'Use them only when the person running you asks you to join or race. Do not call them during unrelated work.';
@@ -25,7 +26,7 @@ const servers = serverHarness((server) => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 function setup() {
-  const server = createServer({ dbPath: ':memory:', operatorToken: 'operator', publicUrl,
+  const server = createServer({ dbPath: ':memory:', operatorToken: 'operator', publicUrl, siteUrl,
     corsOrigins: [publicUrl], schedule: () => {}, flagsHeld: async () => 4 });
   servers.push(server);
   const { token } = new AgentTokens(server.journal.database).register(address, () => {});
@@ -85,6 +86,17 @@ describe('arena MCP', () => {
     expect(expected.result.tools[1].annotations.readOnlyHint).toBe(true);
   });
 
+  it.each([
+    { corsOrigins: ['https://browser.test', 'https://other.test'], expected: 'https://browser.test' },
+    { corsOrigins: [], expected: publicUrl },
+  ])('defaults the join link to $expected when siteUrl is omitted', async ({ corsOrigins, expected }) => {
+    const server = createServer({ dbPath: ':memory:', operatorToken: 'operator', publicUrl, corsOrigins });
+    servers.push(server);
+    const result = await call(server, 'get_task');
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent.error).toBe(registerText.replace(siteUrl, expected));
+  });
+
   it.each(['missing', 'unknown', 'expired', 'rotated'])('returns the registration text for a %s token', async (kind) => {
     const f = setup();
     if (kind === 'expired') f.journal.database.update(agentTokens).set({ expiresAt: '2000-01-01T00:00:00.000Z' })
@@ -131,7 +143,7 @@ describe('arena MCP', () => {
     await f.manager.start(f.runId);
     const briefing = await call(f, 'get_task', {}, f.token);
     expect(briefing.structuredContent.run.state).toBe('running');
-    expect(briefing.structuredContent.task).toContain(`Otherwise use the agent API at ${publicUrl}, documented at ${publicUrl}/arena/join.`);
+    expect(briefing.structuredContent.task).toContain(`Otherwise use the agent API at ${publicUrl}, documented at ${siteUrl}/arena/join.`);
     expect(briefing.structuredContent.instructions).toBe('Call post_note between steps to say what you are doing and how you are approaching the challenge, ' +
       'and after each attempt, success or failure. Call set_current_challenge when you start a challenge. ' +
       'Call read_inbox between steps; inbox.unread tells you when there is something.');

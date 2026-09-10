@@ -121,6 +121,9 @@ and the server exits without it; any non-empty string works locally.
 Outside the `local` chain profile, startup requires a valid HTTP(S) URL.
 Use an address that external entrants can reach. Local defaults to `http://localhost:<PORT>` (port 4177 unless set).
 
+`ARENA_SITE_URL` sets the website URL for `/arena/join` and accepts HTTP(S) URLs with the trailing slash stripped.
+When unset, it defaults to the first `ARENA_CORS_ORIGINS` entry, then to `ARENA_PUBLIC_URL`.
+
 `.env` at the repo root is loaded by `dev` and `start` through Node's own `--env-file`, so
 the operator token and the credentials live in one gitignored file instead of a shell
 prompt. A variable already exported in the shell wins over the file, which keeps one-off

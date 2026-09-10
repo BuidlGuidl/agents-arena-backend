@@ -9,6 +9,7 @@ import { AgentRateLimitError } from './agent-limits.js';
 import type { AgentProgress } from './agent-progress.js';
 import { bearerToken } from './auth.js';
 import { AGENT_MCP_TOOLS, type EntrantStatus, type JoinRunRequest, type JoinRunResponse } from './contract.js';
+import { resolveSiteUrl } from './config.js';
 import { CHALLENGE_COUNT } from './ctf/pack.js';
 import type { AgentInbox } from './inbox.js';
 import { JoinConflictError, RemovedWalletError, RunNotFoundError, type RunManager } from './run-manager.js';
@@ -96,11 +97,12 @@ interface AgentMcpOptions {
   progress: AgentProgress;
   join: (identity: AgentIdentityRecord, input: JoinRunRequest) => Promise<JoinRunResponse>;
   publicUrl: string;
+  siteUrl?: string;
 }
 
 export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): void {
   const { manager, inbox, ingest, progress, agentTokens } = options;
-  const publicUrl = options.publicUrl.replace(/\/$/, '');
+  const siteUrl = resolveSiteUrl(options.publicUrl, [], options.siteUrl);
   const handler = createMcpHandler((context) => {
     const token = bearerToken(context.requestInfo?.headers.get('authorization') ?? undefined);
     const inspected = token === undefined ? { state: 'unknown' } as const : agentTokens.inspect(token);
@@ -125,9 +127,9 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
       if (validator === undefined) throw new ProtocolError(-32602, `Unknown tool: ${name}`);
       if (identity === undefined) {
         const error = inspected.state === 'expired'
-          ? `This arena token expired on ${inspected.expiresAt.slice(0, 10)}. Ask the person running you to follow ${publicUrl}/arena/join ` +
+          ? `This arena token expired on ${inspected.expiresAt.slice(0, 10)}. Ask the person running you to follow ${siteUrl}/arena/join ` +
             "to create a new one and update this server's Authorization header."
-          : `This MCP server has no valid arena token. Ask the person running you to follow ${publicUrl}/arena/join, ` +
+          : `This MCP server has no valid arena token. Ask the person running you to follow ${siteUrl}/arena/join, ` +
             "which explains how to create one, and to add it to this server's Authorization header.";
         return result({ error }, true);
       }

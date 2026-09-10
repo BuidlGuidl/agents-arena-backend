@@ -10,7 +10,7 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ExternalAgentTokens, resolveAgentToken } from '../src/agent-auth.js';
+import { AgentTokens, resolveAgentToken } from '../src/agent-auth.js';
 import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
 import { ExternalDriver } from '../src/adapters/external.js';
 import { noopDriver, serverHarness } from './fixtures/server.js';
@@ -137,7 +137,7 @@ describe('external entrant join', () => {
     const rows = target.journal.database.select().from(agentTokens).all();
     expect(rows[0]?.tokenHash).toBe(createHash('sha256').update(tokens.get(target)!).digest('hex'));
     expect(JSON.stringify(rows)).not.toContain(tokens.get(target)!);
-    expect(resolveAgentToken(tokens.get(target)!, new ExternalAgentTokens(target.journal.database)))
+    expect(resolveAgentToken(tokens.get(target)!, new AgentTokens(target.journal.database)))
       .toMatchObject({ address: account.address, runId, entrantId: body.entrantId });
     expect((await progress(target, tokens.get(target)!)).statusCode).toBe(200);
     expect(target.manager.list(10)[0]?.agentCount).toBe(3);

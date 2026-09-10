@@ -15,7 +15,7 @@ import { events as eventRows } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 
 describe('EventJournal', () => {
-  it('redacts external token patterns without a live token store', () => {
+  it('redacts agent token patterns without a live token store', () => {
     const journal = new EventJournal(':memory:');
     try {
       const token = `byoa_${'ab'.repeat(24)}`;

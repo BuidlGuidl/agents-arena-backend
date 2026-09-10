@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 import { agentMcpOriginGuard, mountAgentMcp } from './agent-mcp.js';
 import { AgentIngest } from './agent-ingest.js';
-import { AgentProgress, AgentProgressRateLimitError } from './agent-progress.js';
+import { AgentProgress } from './agent-progress.js';
 import { JoinAuthenticationError, verifySignedMessage } from './signed-message.js';
 import { AgentInputError, AgentBatchTooLargeError, AgentRateLimitError, AGENT_BODY_LIMIT } from './agent-limits.js';
 import { AgentInbox } from './inbox.js';
@@ -34,7 +34,7 @@ import {
   type SweepResponse,
 } from './contract.js';
 import type { Schedule } from './adapters/fake.js';
-import { ExternalAgentTokens, resolveAgentToken, requireLane, NotInRunError, type AgentIdentityRecord } from './agent-auth.js';
+import { AgentTokens, resolveAgentToken, requireLane, NotInRunError, type AgentIdentityRecord } from './agent-auth.js';
 import { useSolvedLookup } from './ctf/challenge-tracker.js';
 import {
   bearerToken,
@@ -212,7 +212,7 @@ export function createServer(options: ServerOptions): ArenaServer {
     .where(and(eq(scores.runId, runId), eq(scores.entrantId, entrantId)))
     .all()
     .map((row) => row.challengeId)));
-  const externalTokens = new ExternalAgentTokens(journal.database);
+  const agentTokens = new AgentTokens(journal.database);
   const externalStatus = new ExternalStatus(journal);
   const pack = options.challengePack ?? createChallengePackResolver(activeChainProfile);
   const ingest = new AgentIngest(journal, externalStatus, pack.addressesFor);
@@ -222,7 +222,7 @@ export function createServer(options: ServerOptions): ArenaServer {
     journal, { status: externalStatus, schedule: options.schedule, pack },
   );
   const runManagerOptions: RunManagerOptions = {
-    externalTokens,
+    agentTokens,
     promptBuilder: (entrant) => buildTaskText(entrant, activeChainProfile, {
       publicUrl: options.publicUrl ?? DEFAULT_PUBLIC_URL,
     }),
@@ -252,9 +252,6 @@ export function createServer(options: ServerOptions): ArenaServer {
   );
 
   app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof AgentProgressRateLimitError) {
-      return reply.status(429).send({ error: error.message });
-    }
     if (error instanceof AgentRateLimitError) {
       return reply.status(429).header('Retry-After', error.retryAfter).send({ error: error.message });
     }
@@ -338,7 +335,7 @@ export function createServer(options: ServerOptions): ArenaServer {
     const body = parseBody(registerSchema, request.body, reply);
     if (body === undefined) return;
     await verifySignedMessage(login, body.nonce, registerMessage(body), body.signature as Hex, body.address as Address);
-    const result = externalTokens.register(getAddress(body.address), () => {
+    const result = agentTokens.register(getAddress(body.address), () => {
       if (!login.consumeNonce(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
     });
     return reply.status(result.created ? 201 : 200).header('Cache-Control', 'no-store')
@@ -371,7 +368,7 @@ export function createServer(options: ServerOptions): ArenaServer {
   });
 
   mountAgentMcp(app, {
-    externalTokens, manager, ingest, inbox, progress, join: joinAgent,
+    agentTokens, manager, ingest, inbox, progress, join: joinAgent,
     publicUrl: options.publicUrl ?? DEFAULT_PUBLIC_URL,
   });
 
@@ -516,7 +513,7 @@ export function createServer(options: ServerOptions): ArenaServer {
 
   function agentIdentity(request: FastifyRequest) {
     const token = bearerToken(request.headers.authorization);
-    const identity = token === undefined ? undefined : resolveAgentToken(token, externalTokens);
+    const identity = token === undefined ? undefined : resolveAgentToken(token, agentTokens);
     if (identity === undefined) throw new JoinAuthenticationError('Agent token required');
     return identity;
   }
@@ -536,7 +533,7 @@ export function createServer(options: ServerOptions): ArenaServer {
   // announcement of the challenge it works on journals as entrant.challenge.
   app.post('/agent/progress', async (request, reply) => {
     const token = bearerToken(request.headers.authorization);
-    const identity = token === undefined ? undefined : resolveAgentToken(token, externalTokens);
+    const identity = token === undefined ? undefined : resolveAgentToken(token, agentTokens);
     if (identity === undefined) {
       return reply
         .status(401)

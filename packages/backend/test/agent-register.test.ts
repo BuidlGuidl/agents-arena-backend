@@ -3,7 +3,7 @@ import { eq, sql } from 'drizzle-orm';
 import { privateKeyToAccount } from 'viem/accounts';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ExternalAgentTokens, issueAgentToken, requireLane, resolveAgentToken } from '../src/agent-auth.js';
+import { AgentTokens, issueAgentToken, requireLane, resolveAgentToken } from '../src/agent-auth.js';
 import { AgentRequestLimit } from '../src/agent-limits.js';
 import { registerMessage, REGISTER_MESSAGE_TEMPLATE, type RegisterRequest } from '../src/contract.js';
 import { agentTokens, runs } from '../src/db/schema.js';
@@ -42,7 +42,7 @@ describe('wallet registration', () => {
     const body = first.json();
     expect(body.token).toMatch(/^byoa_[0-9a-f]{48}$/);
     expect(Date.parse(body.expiresAt)).toBeGreaterThanOrEqual(before + 90 * 86400000);
-    const store = new ExternalAgentTokens(server.journal.database);
+    const store = new AgentTokens(server.journal.database);
     const original = resolveAgentToken(body.token, store);
     expect(original).toEqual({ address: account.address });
     const second = await register(server, await signed(server, { address: account.address.toLowerCase() }));
@@ -91,7 +91,7 @@ describe('wallet registration', () => {
     const server = setup();
     vi.useFakeTimers();
     try {
-      const store = new ExternalAgentTokens(server.journal.database);
+      const store = new AgentTokens(server.journal.database);
       const { token } = store.register(account.address.toLowerCase(), () => {});
       const record = store.resolve(token);
       expect(record).toEqual({ address: account.address });
@@ -107,7 +107,7 @@ describe('wallet registration', () => {
   it('rejects an expired token even after it has resolved', async () => {
     const server = setup();
     const token = await credential(server);
-    const store = new ExternalAgentTokens(server.journal.database);
+    const store = new AgentTokens(server.journal.database);
     expect(resolveAgentToken(token, store)).toBeDefined();
     server.journal.database.update(agentTokens).set({ expiresAt: new Date(Date.now() - 1).toISOString() }).run();
     expect(resolveAgentToken(token, store)).toBeUndefined();
@@ -156,7 +156,7 @@ describe('joining with a wallet token', () => {
     expect(rejoined.statusCode).toBe(200);
     expect(rejoined.json().run.id).toBe(first.id);
     const otherAccount = privateKeyToAccount('0x' + '02'.repeat(32) as `0x${string}`);
-    const { token: otherToken } = new ExternalAgentTokens(server.journal.database)
+    const { token: otherToken } = new AgentTokens(server.journal.database)
       .register(otherAccount.address, () => {});
     const ambiguous = await join(server, otherToken);
     expect(ambiguous.statusCode).toBe(409);
@@ -171,7 +171,7 @@ describe('joining with a wallet token', () => {
   it('keeps record identity, rate state and history across rejoin and a later run', async () => {
     const server = setup();
     const token = await credential(server);
-    const store = new ExternalAgentTokens(server.journal.database);
+    const store = new AgentTokens(server.journal.database);
     const record = resolveAgentToken(token, store)!;
     const first = (await server.manager.create({ preset: 'fake-duel' })).run;
     await server.manager.start(first.id);

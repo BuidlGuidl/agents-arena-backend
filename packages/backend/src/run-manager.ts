@@ -4,7 +4,7 @@ import { and, asc, count, desc, eq, inArray, max, ne, notInArray, sql } from 'dr
 import { getAddress, recoverTypedDataAddress, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
-import { ExternalAgentTokens } from './agent-auth.js';
+import { AgentTokens } from './agent-auth.js';
 import { EntrantOperationError } from './adapters/types.js';
 import { ExternalEntrants, declaredFields, toEntrantRecord } from './external-entrants.js';
 import { TERMINAL_RUN_STATES } from './contract.js';
@@ -153,7 +153,7 @@ export type NarrationWatch = (
 ) => void;
 
 export interface RunManagerOptions {
-  externalTokens?: ExternalAgentTokens;
+  agentTokens?: AgentTokens;
   prepareTimeoutMs?: number;
   fundingTimeoutMs?: number;
   operatorAddresses?: readonly string[];
@@ -207,7 +207,7 @@ export const profilePromptBuilder: OpeningPromptBuilder = (entrant) =>
 
 export class RunManager {
   private readonly external: ExternalEntrants;
-  private readonly externalTokens: ExternalAgentTokens;
+  private readonly agentTokens: AgentTokens;
   private readonly inFlightStarts = new Map<string, Promise<RunSnapshot>>();
   private readonly inFlightSweeps = new Set<string>();
   private readonly startControllers = new Map<string, AbortController>();
@@ -232,7 +232,7 @@ export class RunManager {
     options: RunManagerOptions = {},
   ) {
     this.external = new ExternalEntrants(journal.database);
-    this.externalTokens = options.externalTokens ?? new ExternalAgentTokens(journal.database);
+    this.agentTokens = options.agentTokens ?? new AgentTokens(journal.database);
     this.prepareTimeoutMs = options.prepareTimeoutMs ?? DEFAULT_PREPARE_TIMEOUT_MS;
     this.fundingTimeoutMs = options.fundingTimeoutMs ?? activeChainProfile.fundingTimeoutMs;
     this.operatorAddresses = new Set(normalizeOperatorAddresses(options.operatorAddresses ?? []));
@@ -306,7 +306,7 @@ export class RunManager {
 
   selectJoinRun(runId?: string, address?: string): RunRecord {
     if (runId !== undefined) return this.assertJoinable(runId);
-    const lane = address === undefined ? undefined : this.externalTokens.liveLane(getAddress(address));
+    const lane = address === undefined ? undefined : this.agentTokens.liveLane(getAddress(address));
     if (lane !== undefined) return this.assertJoinable(lane.runId);
     const open = this.journal.database.select().from(runs)
       .where(notInArray(runs.state, TERMINAL_RUN_STATES)).all();
@@ -330,7 +330,7 @@ export class RunManager {
     const entrantId = `ext-${address.slice(2, 14).toLowerCase()}`;
     const result = this.journal.transaction(() => {
       const run = this.assertJoinable(input.runId);
-      const live = this.externalTokens.liveLane(address);
+      const live = this.agentTokens.liveLane(address);
       if (live !== undefined && live.runId !== run.id) throw new JoinConflictError(`Already racing in run ${live.runId}`);
       const previous = this.entrants(run.id).find((entrant) => entrant.id === entrantId);
       if (previous?.kind === 'hosted' || (previous !== undefined && previous.address !== address)) {

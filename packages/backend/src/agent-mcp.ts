@@ -3,10 +3,10 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, fromJsonSchema, ProtocolError, Server, type CallToolResult, type Tool } from '@modelcontextprotocol/server';
 import type { FastifyInstance, onRequestAsyncHookHandler } from 'fastify';
 
-import { NotInRunError, requireLane, resolveAgentToken, type AgentIdentityRecord, type ExternalAgentTokens } from './agent-auth.js';
+import { NotInRunError, requireLane, resolveAgentToken, type AgentIdentityRecord, type AgentTokens } from './agent-auth.js';
 import type { AgentIngest } from './agent-ingest.js';
 import { AgentRateLimitError } from './agent-limits.js';
-import { AgentProgressRateLimitError, type AgentProgress } from './agent-progress.js';
+import type { AgentProgress } from './agent-progress.js';
 import { bearerToken } from './auth.js';
 import { AGENT_MCP_TOOLS, type EntrantStatus, type JoinRunRequest, type JoinRunResponse } from './contract.js';
 import { CHALLENGE_COUNT } from './ctf/pack.js';
@@ -15,9 +15,10 @@ import { JoinConflictError, RemovedWalletError, RunNotFoundError, type RunManage
 import { JoinAuthenticationError } from './signed-message.js';
 
 const shortText = { type: 'string', minLength: 1, maxLength: 80 } as const;
+type NamedTools<Names extends readonly string[]> = { [Index in keyof Names]: Tool & { name: Names[Index] } };
 const tools = [
   {
-    name: AGENT_MCP_TOOLS[0],
+    name: 'join_run',
     description: 'Call to join a race before asking for its briefing.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['name', 'harness', 'model'],
@@ -29,13 +30,13 @@ const tools = [
     },
   },
   {
-    name: AGENT_MCP_TOOLS[1],
+    name: 'get_task',
     description: 'Call after joining to read the briefing and check whether the race has started.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
     annotations: { readOnlyHint: true },
   },
   {
-    name: AGENT_MCP_TOOLS[2],
+    name: 'report_progress',
     description: 'Call when you switch to another challenge.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['challengeId'],
@@ -43,7 +44,7 @@ const tools = [
     },
   },
   {
-    name: AGENT_MCP_TOOLS[3],
+    name: 'post_note',
     description: 'Call after each attempt to describe the outcome and optionally set your status.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['text'],
@@ -54,7 +55,7 @@ const tools = [
     },
   },
   {
-    name: AGENT_MCP_TOOLS[4],
+    name: 'read_inbox',
     description: 'Call between steps or when inbox.unread is positive; ' +
       'pass the cursor from your last result, or omit it to read from the start.',
     inputSchema: {
@@ -62,7 +63,7 @@ const tools = [
       properties: { after: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 } },
     },
   },
-] satisfies Tool[];
+] satisfies NamedTools<typeof AGENT_MCP_TOOLS>;
 const validators = new Map(tools.map((tool) => {
   // Validate the argument shape first; challenge bounds get an actionable tool result after the lane check.
   const schema = tool.name === 'report_progress'
@@ -74,8 +75,17 @@ const reporting = 'Call report_progress when you switch challenge. ' +
   'Call post_note after each attempt, success or failure, and read_inbox between steps; ' +
   'inbox.unread tells you when there is something.';
 
+const joinErrorMessages = new Map<new (...args: never[]) => Error, (error: Error) => string>([
+  [JoinConflictError, (error) => error.message.startsWith('Already racing in run ')
+    ? `${error.message}. Finish or leave that race first.`
+    : `${error.message}. Choose an open run and call join_run again.`],
+  [RunNotFoundError, (error) => `${error.message}. Choose an open run and call join_run again.`],
+  [RemovedWalletError, (error) => `${error.message}. Join another run.`],
+  [JoinAuthenticationError, () => 'Joining requires a wallet token. Ask the person running you to register and configure it.'],
+]);
+
 interface AgentMcpOptions {
-  externalTokens: ExternalAgentTokens;
+  agentTokens: AgentTokens;
   manager: RunManager;
   ingest: AgentIngest;
   inbox: AgentInbox;
@@ -85,11 +95,11 @@ interface AgentMcpOptions {
 }
 
 export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): void {
-  const { manager, inbox, ingest, progress, externalTokens } = options;
+  const { manager, inbox, ingest, progress, agentTokens } = options;
   const publicUrl = options.publicUrl.replace(/\/$/, '');
   const handler = createMcpHandler((context) => {
     const token = bearerToken(context.requestInfo?.headers.get('authorization') ?? undefined);
-    const identity = token === undefined ? undefined : resolveAgentToken(token, externalTokens);
+    const identity = token === undefined ? undefined : resolveAgentToken(token, agentTokens);
     // Server is deprecated in the installed SDK, but preserves JSON-RPC server errors.
     // McpServer catches unexpected failures as tool errors.
     const server = new Server({ name: 'arena', version: '1.0.0' }, {
@@ -150,18 +160,13 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
         return result({ ...output, run: { id: run.id, state: run.state }, inbox: { unread: inbox.unread(lane) } });
       } catch (error) {
         if (error instanceof NotInRunError) return result({ error: 'Not in a run. Call join_run first.' }, true);
-        if (error instanceof AgentRateLimitError || error instanceof AgentProgressRateLimitError) {
-          return result({ error: `Too fast. Try again in ${error instanceof AgentRateLimitError ? error.retryAfter : 1} seconds.` }, true);
+        if (error instanceof AgentRateLimitError) {
+          return result({ error: `Too fast. Try again in ${error.retryAfter} seconds.` }, true);
         }
-        if (name === 'join_run' && error instanceof JoinConflictError && error.message.startsWith('Already racing in run ')) {
-          return result({ error: `${error.message}. Finish or leave that race first.` }, true);
-        }
-        if (name === 'join_run' && (error instanceof JoinConflictError || error instanceof RunNotFoundError)) {
-          return result({ error: `${error.message}. Choose an open run and call join_run again.` }, true);
-        }
-        if (name === 'join_run' && error instanceof RemovedWalletError) return result({ error: `${error.message}. Join another run.` }, true);
-        if (name === 'join_run' && error instanceof JoinAuthenticationError) {
-          return result({ error: 'Joining requires a wallet token. Ask the person running you to register and configure it.' }, true);
+        if (name === 'join_run') {
+          for (const [ErrorClass, message] of joinErrorMessages) {
+            if (error instanceof ErrorClass) return result({ error: message(error) }, true);
+          }
         }
         if (error instanceof ProtocolError) throw error;
         app.log.error(error);

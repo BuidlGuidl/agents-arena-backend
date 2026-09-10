@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { agentMcpOriginGuard } from '../src/agent-mcp.js';
-import { ExternalAgentTokens } from '../src/agent-auth.js';
+import { AgentTokens } from '../src/agent-auth.js';
 import { AGENT_MCP_TOOLS } from '../src/contract.js';
 import { dropCurrentChallenge } from '../src/ctf/challenge-tracker.js';
 import { agentTokens } from '../src/db/schema.js';
@@ -24,7 +24,7 @@ function setup() {
   const server = createServer({ dbPath: ':memory:', operatorToken: 'operator', publicUrl,
     corsOrigins: [publicUrl], schedule: () => {}, flagsHeld: async () => 4 });
   servers.push(server);
-  const { token } = new ExternalAgentTokens(server.journal.database).register(address, () => {});
+  const { token } = new AgentTokens(server.journal.database).register(address, () => {});
   return { ...server, token };
 }
 
@@ -84,7 +84,7 @@ describe('arena MCP', () => {
     const f = setup();
     if (kind === 'expired') f.journal.database.update(agentTokens).set({ expiresAt: '2000-01-01T00:00:00.000Z' })
       .where(eq(agentTokens.address, address)).run();
-    if (kind === 'rotated') new ExternalAgentTokens(f.journal.database).register(address, () => {});
+    if (kind === 'rotated') new AgentTokens(f.journal.database).register(address, () => {});
     const token = kind === 'missing' ? undefined : kind === 'unknown' ? 'dead' : f.token;
     for (const name of AGENT_MCP_TOOLS) {
       const result = await call(f, name, {}, token);
@@ -276,7 +276,7 @@ describe('arena MCP', () => {
   it('keeps concurrent callers in their own lanes', async () => {
     const f = await joined();
     const otherAddress = '0x2234567890123456789012345678901234567890';
-    const { token } = new ExternalAgentTokens(f.journal.database).register(otherAddress, () => {});
+    const { token } = new AgentTokens(f.journal.database).register(otherAddress, () => {});
     const other = await call(f, 'join_run', { name: 'Other', harness: 'codex', model: 'model' }, token);
     await Promise.all([
       call(f, 'post_note', { text: 'first wallet' }, f.token),

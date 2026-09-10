@@ -8,14 +8,14 @@ import { TERMINAL_RUN_STATES } from './contract.js';
 import type { ArenaDatabase } from './db/index.js';
 import { agentTokens, externalEntrants, runs } from './db/schema.js';
 
-export const EXTERNAL_TOKEN_PATTERN = /byoa_[0-9a-f]{48}/;
+export const AGENT_TOKEN_PATTERN = /byoa_[0-9a-f]{48}/;
 
-export function mintExternalToken(): string {
+export function mintAgentToken(): string {
   return `byoa_${randomBytes(24).toString('hex')}`;
 }
 
-// Hosted credentials live in memory and die with their containers. External
-// credentials use the database-backed store below. Both resolve through one function.
+// Hosted credentials live in memory and die with their containers.
+// Agent tokens use the database-backed store below. Both resolve through one function.
 
 interface AgentRecordBase {
   address?: string;
@@ -62,8 +62,8 @@ export function issueAgentToken(runId: string, entrantId: string): string {
   return token;
 }
 
-export function resolveAgentToken(token: string, external?: ExternalAgentTokens): AgentIdentityRecord | undefined {
-  return byToken.get(token) ?? external?.resolve(token);
+export function resolveAgentToken(token: string, agentTokens?: AgentTokens): AgentIdentityRecord | undefined {
+  return byToken.get(token) ?? agentTokens?.resolve(token);
 }
 
 export function revokeAgentToken(runId: string, entrantId: string): void {
@@ -84,7 +84,7 @@ export function agentTokenSecrets(runId: string): readonly string[] {
 }
 
 // Each server owns its lookup and rate state; SQLite remains the token authority.
-export class ExternalAgentTokens {
+export class AgentTokens {
   private readonly states = new Map<string, AgentIdentityRecord>();
 
   constructor(private readonly database: ArenaDatabase) {}
@@ -93,7 +93,7 @@ export class ExternalAgentTokens {
     address = getAddress(address);
     return this.database.transaction(() => {
       const previous = this.database.select().from(agentTokens).where(eq(agentTokens.address, address)).get();
-      const token = mintExternalToken();
+      const token = mintAgentToken();
       const now = Date.now();
       const createdAt = new Date(now).toISOString();
       const expiresAt = new Date(now + 90 * 24 * 60 * 60 * 1000).toISOString();
@@ -114,7 +114,7 @@ export class ExternalAgentTokens {
   }
 
   resolve(token: string): AgentIdentityRecord | undefined {
-    if (token.match(EXTERNAL_TOKEN_PATTERN)?.[0] !== token) return undefined;
+    if (token.match(AGENT_TOKEN_PATTERN)?.[0] !== token) return undefined;
     const hash = tokenHash(token);
     const wallet = this.database.select().from(agentTokens).where(eq(agentTokens.tokenHash, hash)).get();
     if (wallet === undefined || Date.parse(wallet.expiresAt) <= Date.now()) {

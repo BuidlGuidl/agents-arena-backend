@@ -1,19 +1,18 @@
 import { z } from 'zod';
 
 import type { AgentTokenRecord } from './agent-auth.js';
-import { AgentInputError } from './agent-limits.js';
+import { AgentInputError, AgentRateLimitError } from './agent-limits.js';
 import type { ExternalStatus } from './adapters/external-status.js';
 import { mayMove, recordCurrentChallenge } from './ctf/challenge-tracker.js';
+import { CHALLENGE_COUNT } from './ctf/pack.js';
 import type { EventJournal } from './journal.js';
 
 const agentProgressSchema = z.object({
-  challengeId: z.number().int().min(1).max(12),
+  challengeId: z.number().int().min(1).max(CHALLENGE_COUNT),
 }).strict();
 // Journalled announcements are rate limited; repeats of the same value are
 // deduped before the limit so they stay cheap instead of burning the budget.
 const AGENT_ANNOUNCE_INTERVAL_MS = 1_000;
-
-export class AgentProgressRateLimitError extends Error {}
 
 export class AgentProgress {
   constructor(private readonly journal: EventJournal, private readonly status: ExternalStatus) {}
@@ -21,7 +20,7 @@ export class AgentProgress {
   announce(identity: AgentTokenRecord, value: unknown): { ok: boolean; changed: boolean } {
     const body = agentProgressSchema.safeParse(value);
     if (!body.success) {
-      throw new AgentInputError('challengeId must be an integer from 1 to 12');
+      throw new AgentInputError(`challengeId must be an integer from 1 to ${CHALLENGE_COUNT}`);
     }
 
     const { challengeId } = body.data;
@@ -33,7 +32,7 @@ export class AgentProgress {
       identity.lastAnnouncedAtMs !== undefined
       && now - identity.lastAnnouncedAtMs < AGENT_ANNOUNCE_INTERVAL_MS
     ) {
-      throw new AgentProgressRateLimitError('Announcing too fast; try again in a second');
+      throw new AgentRateLimitError(1);
     }
     // State moves only after the journal accepts the event: an append that
     // throws must leave the retry journalling, not deduping into silence.

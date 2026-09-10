@@ -3,7 +3,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ExternalAgentTokens, issueAgentToken, revokeAgentToken } from '../src/agent-auth.js';
+import { AgentTokens, issueAgentToken, revokeAgentToken } from '../src/agent-auth.js';
 import { activeChainProfile } from '../src/chain/profile.js';
 import { buildTaskText } from '../src/ctf/prompt.js';
 import { dropCurrentChallenge, takePendingGuess } from '../src/ctf/challenge-tracker.js';
@@ -39,7 +39,7 @@ async function setup(options: Partial<ServerOptions> = {}) {
   servers.push(server);
   const { run } = await server.manager.create({ preset: 'fake-duel' });
   const joined = await server.manager.join({ runId: run.id, address, name: 'Agent', model: 'gpt-5.5', flagsBeforeJoin: 0 });
-  const { token } = new ExternalAgentTokens(server.journal.database).register(address, () => {});
+  const { token } = new AgentTokens(server.journal.database).register(address, () => {});
   const headers = { authorization: `Bearer ${token}` };
   const post = (events: unknown[]) => server.app.inject({ method: 'POST', url: '/agent/events', headers, payload: { events } });
   const inbox = (after?: string | number) => server.app.inject({ method: 'GET', url: `/agent/inbox${after === undefined ? '' : `?after=${after}`}`, headers });
@@ -389,7 +389,7 @@ it('narrates a late joiner and ends its lane after the closing done line', async
   const f = await setup({ narrate, narrationMinMs: 10, narrationMaxMs: 30 });
   await f.manager.start(f.runId);
   const late = await f.manager.join({ runId: f.runId, address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', name: 'Late', flagsBeforeJoin: 0 });
-  const { token } = new ExternalAgentTokens(f.journal.database).register('0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', () => {});
+  const { token } = new AgentTokens(f.journal.database).register('0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', () => {});
   const headers = { authorization: `Bearer ${token}` };
   await f.app.inject({ method: 'POST', url: '/agent/events', headers, payload: { events: [message()] } });
   await vi.advanceTimersByTimeAsync(30);

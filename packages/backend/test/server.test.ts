@@ -122,6 +122,8 @@ describe('agent self-announce', () => {
         method: 'POST', url: '/agent/progress', headers, payload: { challengeId: 6 },
       });
       expect(tooFast.statusCode).toBe(429);
+      expect(tooFast.headers['retry-after']).toBe('1');
+      expect(tooFast.json()).toEqual({ error: 'Request limit reached' });
       expect(progressEvents(server, runId)).toHaveLength(1);
     } finally {
       revokeAgentToken(runId, 'codex-1');

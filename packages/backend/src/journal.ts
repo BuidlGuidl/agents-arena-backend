@@ -1,4 +1,4 @@
-import { EXTERNAL_TOKEN_PATTERN } from './agent-auth.js';
+import { AGENT_TOKEN_PATTERN } from './agent-auth.js';
 import { and, asc, desc, eq, gt, inArray, lt, max } from 'drizzle-orm';
 
 import { credentialSecrets } from './adapters/credential-secrets.js';
@@ -224,7 +224,7 @@ export class EventJournal {
 }
 
 function redactExactSecrets(value: string, secrets: readonly string[]): string {
-  let redacted = value.replace(new RegExp(EXTERNAL_TOKEN_PATTERN.source, 'g'), '[redacted-key]');
+  let redacted = value.replace(new RegExp(AGENT_TOKEN_PATTERN.source, 'g'), '[redacted-key]');
   for (const secret of secrets) {
     const lowerValue = redacted.toLowerCase();
     const lowerSecret = secret.toLowerCase();

@@ -125,6 +125,8 @@ describe('agent self-announce', () => {
         method: 'POST', url: '/agent/progress', headers, payload: { challengeId: 6 },
       });
       expect(tooFast.statusCode).toBe(429);
+      expect(tooFast.headers['retry-after']).toBe('1');
+      expect(tooFast.json()).toEqual({ error: 'Request limit reached' });
       expect(progressEvents(server, runId)).toHaveLength(1);
     } finally {
       revokeAgentToken(runId, 'codex-1');
@@ -189,7 +191,9 @@ describe('browser CORS', () => {
     expect(response.headers['access-control-allow-origin']).toBe('http://localhost:3000');
     expect(response.headers['access-control-allow-credentials']).toBe('true');
     expect(response.headers['access-control-allow-methods']).toBe('GET, POST, HEAD, OPTIONS');
-    expect(response.headers['access-control-allow-headers']).toBe('Content-Type, Authorization');
+    expect(response.headers['access-control-allow-headers']).toBe(
+      'Content-Type, Authorization, MCP-Protocol-Version, Mcp-Method, Mcp-Name',
+    );
     expect(response.headers['access-control-expose-headers']).toBeUndefined();
   });
 

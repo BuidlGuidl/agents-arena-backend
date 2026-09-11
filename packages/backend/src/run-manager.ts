@@ -4,7 +4,7 @@ import { and, asc, count, desc, eq, inArray, max, ne, notInArray, sql } from 'dr
 import { getAddress, recoverTypedDataAddress, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
-import { ExternalAgentTokens } from './agent-auth.js';
+import { AgentTokens } from './agent-auth.js';
 import { EntrantOperationError } from './adapters/types.js';
 import { ExternalEntrants, declaredFields, toEntrantRecord } from './external-entrants.js';
 import { TERMINAL_RUN_STATES } from './contract.js';
@@ -163,7 +163,7 @@ export type NarrationWatch = (
 ) => void;
 
 export interface RunManagerOptions {
-  externalTokens?: ExternalAgentTokens;
+  agentTokens?: AgentTokens;
   prepareTimeoutMs?: number;
   fundingTimeoutMs?: number;
   operatorAddresses?: readonly string[];
@@ -217,7 +217,7 @@ export const profilePromptBuilder: OpeningPromptBuilder = (entrant) =>
 
 export class RunManager {
   private readonly external: ExternalEntrants;
-  private readonly externalTokens: ExternalAgentTokens;
+  private readonly agentTokens: AgentTokens;
   private readonly inFlightStarts = new Map<string, Promise<RunSnapshot>>();
   private readonly inFlightSweeps = new Set<string>();
   private readonly startControllers = new Map<string, AbortController>();
@@ -242,7 +242,7 @@ export class RunManager {
     options: RunManagerOptions = {},
   ) {
     this.external = new ExternalEntrants(journal.database);
-    this.externalTokens = options.externalTokens ?? new ExternalAgentTokens(journal.database);
+    this.agentTokens = options.agentTokens ?? new AgentTokens(journal.database);
     this.prepareTimeoutMs = options.prepareTimeoutMs ?? DEFAULT_PREPARE_TIMEOUT_MS;
     this.fundingTimeoutMs = options.fundingTimeoutMs ?? activeChainProfile.fundingTimeoutMs;
     this.operatorAddresses = new Set(normalizeOperatorAddresses(options.operatorAddresses ?? []));
@@ -319,6 +319,19 @@ export class RunManager {
     };
   }
 
+  selectJoinRun(runId?: string, address?: string): RunRecord {
+    if (runId !== undefined) return this.assertJoinable(runId);
+    const lane = address === undefined ? undefined : this.agentTokens.liveLane(getAddress(address));
+    if (lane !== undefined) return this.assertJoinable(lane.runId);
+    const open = this.journal.database.select().from(runs)
+      .where(notInArray(runs.state, TERMINAL_RUN_STATES)).all();
+    if (open.length === 0) throw new RunNotFoundError('No open run');
+    // With several open runs and no live lane, joining needs an explicit run id.
+    // The lobby invite carries ?run=<id> into the setup page's join sentence.
+    if (open.length > 1) throw new JoinConflictError(`More than one open run: ${open.map((run) => run.id).join(', ')}`);
+    return this.assertJoinable(open[0]!.id);
+  }
+
   assertJoinable(runId: string): RunRecord {
     const run = this.requireRun(runId);
     if (TERMINAL_RUN_STATES.includes(run.state)) {
@@ -328,13 +341,14 @@ export class RunManager {
   }
 
   async join(
-    input: Omit<JoinRunRequest, 'signature' | 'nonce'> & { flagsBeforeJoin: number },
-    consumeNonce: () => void = () => {},
-  ): Promise<{ entrantId: string; token: string; run: RunSnapshot; created: boolean }> {
+    input: JoinRunRequest & { runId: string; address: string; flagsBeforeJoin: number },
+  ): Promise<{ entrantId: string; run: RunSnapshot; created: boolean }> {
     const address = getAddress(input.address);
     const entrantId = `ext-${address.slice(2, 14).toLowerCase()}`;
     const result = this.journal.transaction(() => {
       const run = this.assertJoinable(input.runId);
+      const live = this.agentTokens.liveLane(address);
+      if (live !== undefined && live.runId !== run.id) throw new JoinConflictError(`Already racing in run ${live.runId}`);
       const previous = this.entrants(run.id).find((entrant) => entrant.id === entrantId);
       if (previous?.kind === 'hosted' || (previous !== undefined && previous.address !== address)) {
         throw new JoinConflictError('Entrant id is already in use');
@@ -355,22 +369,19 @@ export class RunManager {
         }).run();
       }
       this.external.register(entrant);
-      const token = this.externalTokens.issue(run.id, entrantId);
       this.journal.append(run.id, entrantId, 'entrant.joined', {
         entrantId, kind: 'external', address, name: input.name, ...declaredFields(input),
       });
-      // The final synchronous step spends the nonce only after the writes succeed.
-      consumeNonce();
-      return { run, entrant, token, created: previous === undefined };
+      return { run, entrant, created: previous === undefined };
     });
-    if (result.run.state === 'running') {
+    if (result.created && result.run.state === 'running') {
       await this.driver.start(result.run, result.entrant, this.promptBuilder(result.entrant));
       const controller = this.narrationWatchControllers.get(input.runId);
-      if (result.created && controller !== undefined && !controller.signal.aborted) {
+      if (controller !== undefined && !controller.signal.aborted) {
         this.narrationWatch(result.run, [result.entrant], controller.signal);
       }
     }
-    return { entrantId, token: result.token, run: this.snapshot(input.runId), created: result.created };
+    return { entrantId, run: this.snapshot(input.runId), created: result.created };
   }
 
   async remove(runId: string, entrantId: string): Promise<void> {

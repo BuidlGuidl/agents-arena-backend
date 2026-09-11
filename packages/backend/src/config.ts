@@ -11,6 +11,17 @@ export function resolvePublicUrl(profileName: string, port: number, value?: stri
   throw new MissingPublicUrlError('ARENA_PUBLIC_URL must be an http(s) URL reachable by external entrants.');
 }
 
+export class InvalidSiteUrlError extends Error {}
+
+export function resolveSiteUrl(publicUrl: string, corsOrigins: readonly string[] = [], value?: string): string {
+  const siteUrl = value?.trim() || corsOrigins[0] || publicUrl;
+  try {
+    const url = new URL(siteUrl);
+    if (url.protocol === 'http:' || url.protocol === 'https:') return url.href.replace(/\/$/, '');
+  } catch {}
+  throw new InvalidSiteUrlError('ARENA_SITE_URL must be an http(s) URL for the website.');
+}
+
 export function resolveListenHost(value = process.env.ARENA_HOST): string {
   return value?.trim() || '127.0.0.1';
 }

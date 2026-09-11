@@ -22,7 +22,7 @@ export class ExternalEntrants {
   }
 
   markRemoved(runId: string, id: string, removedAt: string): void {
-    this.database.update(externalEntrants).set({ removedAt, tokenHash: null })
+    this.database.update(externalEntrants).set({ removedAt })
       .where(and(eq(externalEntrants.runId, runId), eq(externalEntrants.id, id))).run();
   }
 }

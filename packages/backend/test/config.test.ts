@@ -6,6 +6,8 @@ import {
   DEFAULT_NARRATION_MODEL,
   resolveListenHost,
   resolvePublicUrl,
+  resolveSiteUrl,
+  InvalidSiteUrlError,
   MissingPublicUrlError,
   resolveNarrationConfig,
 } from '../src/config.js';
@@ -99,5 +101,20 @@ describe('resolvePublicUrl', () => {
   it.each(['local', 'base', 'baseSepolia'])('accepts HTTP and HTTPS for %s', (profile) => {
     expect(resolvePublicUrl(profile, 4177, ' https://arena.test/ ')).toBe('https://arena.test');
     expect(resolvePublicUrl(profile, 4177, 'http://arena.test:8080')).toBe('http://arena.test:8080');
+  });
+});
+
+describe('resolveSiteUrl', () => {
+  it('uses the explicit URL, else the first CORS origin, else the public URL', () => {
+    const publicUrl = 'https://arena.test/';
+    const corsOrigins = ['https://site.test/', 'https://other.test'];
+    expect(resolveSiteUrl(publicUrl, corsOrigins, ' https://explicit.test/ ')).toBe('https://explicit.test');
+    expect(resolveSiteUrl(publicUrl, corsOrigins)).toBe('https://site.test');
+    expect(resolveSiteUrl(publicUrl, corsOrigins, ' ')).toBe('https://site.test');
+    expect(resolveSiteUrl(publicUrl)).toBe('https://arena.test');
+    expect(resolveSiteUrl(publicUrl, [], 'http://localhost:3001/')).toBe('http://localhost:3001');
+    for (const value of ['ftp://site.test', 'not a URL']) {
+      expect(() => resolveSiteUrl(publicUrl, corsOrigins, value)).toThrow(InvalidSiteUrlError);
+    }
   });
 });

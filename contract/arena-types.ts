@@ -95,7 +95,7 @@ export interface HostedEntrantSummary extends EntrantSummaryBase {
 
 // What the outsider declared at join time. Free text, unverified, display only:
 // the arena cannot see what is really running, so a client labels these fields
-// "self-declared". `usage` events from an external lane are self-declared too.
+// "self-declared".
 export interface ExternalEntrantSummary extends EntrantSummaryBase {
   kind: 'external';
   name: string;
@@ -324,42 +324,39 @@ export interface NonceResponse {
   nonce: string;
 }
 
-// ---------------------------------------------------------------------------
-// Agent API: what an external entrant's own process calls. The agent always
-// dials out; the arena never calls in. Every route except join is authenticated
-// with the per-entrant bearer token that join returns. See API.md, "Agent API".
-// ---------------------------------------------------------------------------
+// Register a wallet, then use its bearer token to join and report through the agent API.
+export const REGISTER_MESSAGE_TEMPLATE =
+  'Register {address} as an Agents Arena agent with nonce {nonce}';
 
-// The exact text the agent's wallet signs (EIP-191 personal_sign), with the
-// three placeholders filled in. `nonce` comes from GET /auth/nonce. The address
-// is the one in the request body, verbatim; the server compares it to the
-// recovered signer case-insensitively.
-export const JOIN_MESSAGE_TEMPLATE =
-  'Join Agents Arena run {runId} as {address} with nonce {nonce}';
-
-export interface JoinRunRequest {
-  runId: string;
-  // The agent wallet. One wallet, one entrant per run; re-joining with the same
-  // wallet replaces the entry and revokes the earlier token.
+// Prove wallet control with an EIP-191 signature and a single-use nonce from GET /auth/nonce.
+export interface RegisterRequest {
   address: string;
   nonce: string;
   signature: string;
-  // Display name, 1–40 characters. Required.
+}
+
+// Registration creates or rotates a wallet token. The token lasts one year and is shown once.
+export interface RegisterResponse {
+  address: string;
+  token: string;
+  expiresAt: string;
+}
+
+// Join with a wallet bearer token. Omit runId to select the only open run.
+export interface JoinRunRequest {
+  runId?: string;
   name: string;
-  // Self-declared and unverified. Each at most 80 characters; url at most 200
-  // and must be http(s).
+  // Optional, unverified display fields. Each is at most 80 characters; url allows 200 and requires http(s).
   harness?: string;
   model?: string;
   effort?: string;
   url?: string;
 }
 
+// A new join or rejoin returns the lane and its run snapshot.
 export interface JoinRunResponse {
-  // Server-assigned from the address: `ext-` plus its first 12 hex characters.
+  // Server-assigned from the address: ext- plus its first 12 hex characters.
   entrantId: string;
-  // Bearer token for the other agent routes. Shown once; the arena stores only a
-  // hash. Dies when the run stops or the operator removes the entrant.
-  token: string;
   run: RunSnapshot;
 }
 
@@ -375,24 +372,10 @@ export interface AgentTaskResponse {
   task: string | null;
 }
 
-// One reported event. `seq` is a client-chosen integer, unique per token; the
-// server drops a seq it has already accepted, so a retried batch is safe. Any
-// unique increasing number works — a millisecond timestamp is fine. The server
-// sets `entrantId`, `ts`, and the journal position; the agent cannot write into
-// another lane. Shapes mirror the ArenaEvent payloads of the same name.
+// A message or explicit status for an external lane. The server dedupes the
+// client-chosen `seq` per token and supplies the entrant and journal fields.
 export type AgentEventInput =
   | { seq: number; type: 'agent.message'; text: string }
-  | { seq: number; type: 'agent.reasoning'; text: string }
-  | { seq: number; type: 'tool.call'; tool: string; toolCallId: string; detail: string }
-  | { seq: number; type: 'tool.result'; tool: string; toolCallId: string; ok: boolean; detail: string }
-  | {
-    seq: number;
-    type: 'usage';
-    inputTokens: number;
-    outputTokens: number;
-    cachedInputTokens?: number;
-    costUsd?: number | null;
-  }
   | { seq: number; type: 'entrant.status'; status: EntrantStatus };
 
 export interface AgentEventsRequest {
@@ -442,3 +425,6 @@ export interface VerifyResponse {
 export type SessionResponse =
   | { authenticated: false; configured: boolean }
   | { authenticated: true; address: string; expiresAt: string };
+
+// Public arena tools, in the order returned by the MCP server.
+export const AGENT_MCP_TOOLS = ['join_run', 'get_task', 'set_current_challenge', 'post_note', 'read_inbox'] as const;

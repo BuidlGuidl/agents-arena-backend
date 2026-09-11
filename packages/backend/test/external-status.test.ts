@@ -16,53 +16,34 @@ async function setup() {
   return { journal, manager, runId: run.id, entrantId: joined.entrantId };
 }
 
-it('defaults to 120 seconds and invalidates callbacks through the injected schedule', async () => {
+it.each(['idle', 'working', 'blocked', 'done'] as const)('touch moves only idle to working from %s', async (initial) => {
   const f = await setup();
-  const tasks: { task: () => void; delay: number }[] = [];
-  const status = new ExternalStatus(f.journal, { schedule: (task, delay) => tasks.push({ task, delay }) });
+  const status = new ExternalStatus(f.journal);
+  status.set(f.runId, f.entrantId, initial);
   status.touch(f.runId, f.entrantId);
-  status.touch(f.runId, f.entrantId);
-  expect(tasks.map((task) => task.delay)).toEqual([120000, 120000]);
-  tasks[0]!.task();
-  expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe('working');
-  status.clear(f.runId, f.entrantId);
-  tasks[1]!.task();
-  expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe('working');
-  expect(f.journal.after(f.runId, 0).filter((event) => event.type === 'entrant.status')).toHaveLength(1);
+  expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status)
+    .toBe(initial === 'idle' ? 'working' : initial);
 });
 
-it('arms the external driver at start and clears its callback on stop', async () => {
-  const f = await setup();
-  const tasks: (() => void)[] = [];
-  const status = new ExternalStatus(f.journal, { schedule: (task) => tasks.push(task) });
-  const set = vi.spyOn(status, 'set');
-  const driver = new ExternalDriver(f.journal, status);
-  const run = f.manager.assertJoinable(f.runId);
-  const entrant = { runId: f.runId, id: f.entrantId, kind: 'external' as const, status: 'idle' as const, address: '0x1234567890123456789012345678901234567890', name: 'Agent', joinedAt: new Date().toISOString(), removedAt: null, flagsBeforeJoin: 0 };
-  await driver.start(run, entrant, 'task');
-  expect(set).not.toHaveBeenCalled();
-  expect(tasks).toHaveLength(1);
-  await driver.stop(run, entrant);
-  const before = f.journal.after(f.runId, 0);
-  tasks[0]!();
-  expect(f.journal.after(f.runId, 0)).toEqual(before);
-  expect(f.manager.snapshot(f.runId).entrants.find((row) => row.id === f.entrantId)?.status).toBe('done');
-});
-
-it('cancels default timers on clear and close', async () => {
+it('starts without a timer and sets done on stop', async () => {
   const f = await setup();
   vi.useFakeTimers();
-  const status = new ExternalStatus(f.journal);
   try {
-    status.start(f.runId, f.entrantId);
-    expect(vi.getTimerCount()).toBe(1);
-    status.clear(f.runId, f.entrantId);
+    const status = new ExternalStatus(f.journal);
+    const driver = new ExternalDriver(f.journal, status);
+    const run = f.manager.assertJoinable(f.runId);
+    const entrant = { runId: f.runId, id: f.entrantId, kind: 'external' as const, status: 'idle' as const,
+      address: '0x1234567890123456789012345678901234567890', name: 'Agent',
+      joinedAt: new Date().toISOString(), removedAt: null, flagsBeforeJoin: 0 };
+    await driver.start(run, entrant, 'task');
     expect(vi.getTimerCount()).toBe(0);
-    status.start(f.runId, f.entrantId);
-    status.close();
+    status.touch(f.runId, f.entrantId);
     expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(365 * 24 * 60 * 60 * 1000);
+    expect(f.manager.snapshot(f.runId).entrants.find((row) => row.id === f.entrantId)?.status).toBe('working');
+    await driver.stop(run, entrant);
+    expect(f.manager.snapshot(f.runId).entrants.find((row) => row.id === f.entrantId)?.status).toBe('done');
   } finally {
-    status.close();
     vi.useRealTimers();
   }
 });

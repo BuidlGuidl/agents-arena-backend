@@ -10,6 +10,8 @@ import {
   InvalidNarrationConfigError,
   MissingPublicUrlError,
   resolvePublicUrl,
+  resolveSiteUrl,
+  InvalidSiteUrlError,
   resolveListenHost,
   resolveNarrationConfig,
 } from './config.js';
@@ -53,9 +55,11 @@ if (!localAutoSignEnabled() && operatorAddresses.length === 0) {
 const { app, manager } = ((): ReturnType<typeof createServer> => {
   try {
     const narration = resolveNarrationConfig();
+    const publicUrl = resolvePublicUrl(activeChainProfile.name, port, process.env.ARENA_PUBLIC_URL);
     return createServer({
       operatorToken,
-      publicUrl: resolvePublicUrl(activeChainProfile.name, port, process.env.ARENA_PUBLIC_URL),
+      publicUrl,
+      siteUrl: resolveSiteUrl(publicUrl, corsOrigins, process.env.ARENA_SITE_URL),
       agentRegistry: createAgentRegistry({ openRouter: createOpenRouterModelSource({ logger: console }) }),
       siwe,
       corsOrigins,
@@ -95,7 +99,7 @@ const { app, manager } = ((): ReturnType<typeof createServer> => {
       );
       process.exit(1);
     }
-    if (error instanceof MissingPublicUrlError) {
+    if (error instanceof MissingPublicUrlError || error instanceof InvalidSiteUrlError) {
       console.error(error.message);
       process.exit(1);
     }

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { activeChainProfile } from '../../src/chain/profile.js';
 import type { ExternalEntrantRecord } from '../../src/adapters/types.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { EntrantRecord } from '../../src/adapters/types.js';
 import type { ChainProfile } from '../../src/chain/profile.js';
@@ -146,33 +146,58 @@ describe('external task text', () => {
     joinedAt: '2026-09-08T00:00:00.000Z', removedAt: null, flagsBeforeJoin: 2,
   };
 
+  it('points the outside entrant at the site briefing on every chain', () => {
+    const local = buildTaskText(external, activeChainProfile, {
+      publicUrl: 'https://arena.test', siteUrl: 'https://site.test',
+    });
+    const base = buildTaskText(external, {
+      ...activeChainProfile, chainId: 8453, briefingUrl: 'https://briefing.test',
+    }, { publicUrl: 'https://arena.test', siteUrl: 'https://site.test' });
+    const line = '- The challenge briefing is at https://site.test/llms.txt. It describes all 12 challenges, gives their hints, and lists the address each one is deployed at.';
+    expect(local).toContain(line);
+    expect(base).toContain(line);
+    // The profile's own briefingUrl is for the container, which cannot reach a local site.
+    expect(base).not.toContain('https://briefing.test');
+    expect(local).toContain('- If that wallet holds no gas, ask the person running you to fund it.');
+    expect(base).not.toContain('ask the person running you to fund it');
+  });
+
+  it('never sends the outside entrant to a path on our machine', () => {
+    const text = buildTaskText(external, activeChainProfile, { publicUrl: 'https://arena.test' });
+    expect(text).not.toContain('arena-challenge-pack');
+    expect(text).not.toContain('AI_CTF_REPO');
+    expect(text).not.toContain('packages/hardhat');
+    expect(text).not.toContain('/ctf');
+  });
+
+  it('defaults the join link to the public URL when siteUrl is omitted', () => {
+    const text = buildTaskText(external, activeChainProfile, { publicUrl: 'https://arena.test/' });
+    expect(text).toContain('documented at https://arena.test/arena/join.');
+  });
+
   it.each([31337, 8453])('uses the external wallet and public API for chain %s', (chainId) => {
     const profile = { ...activeChainProfile, chainId, ...(chainId === 8453 ? { briefingUrl: 'https://briefing.test' } : {}) };
-    const text = buildTaskText(external, profile, { publicUrl: 'https://arena.test/' });
+    const text = buildTaskText(external, profile, { publicUrl: 'https://arena.test/', siteUrl: 'https://site.test/' });
     expect(text).toContain(external.address);
-    expect(text).toContain('You hold its private key and pay your own gas');
-    expect(text).toContain(`chain id ${chainId}`);
-    expect(text).toContain('https://arena.test/agent/progress');
-    expect(text).toContain('$ARENA_AGENT_TOKEN');
+    expect(text).toContain('Use the wallet the person running you set up, and pay your own gas');
+    expect(text).toContain(`- The race is on chain id ${chainId}.`);
+    expect(text).toContain(
+      'Report as you go through the arena tools: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
+      'If you do not have the tools, use the agent API at https://arena.test, documented at https://site.test/arena/join.',
+    );
     expect(text).not.toContain('WALLET_PRIVATE_KEY');
     expect(text).not.toContain('ETH_RPC_URL');
     expect(text).not.toContain('node:22-bookworm');
     expect(text).not.toContain('not the chain');
-    if (chainId === 31337) expect(text).toContain('http://127.0.0.1:8545');
-    else {
-      expect(text).toContain('Use any RPC endpoint for this chain');
-      expect(text).not.toContain('http://127.0.0.1:8545');
-    }
+    expect(text).not.toContain('http://127.0.0.1:8545');
+    expect(text).not.toContain('RPC');
     expect(text.split('https://arena.test')).toHaveLength(2);
+    expect(text.split('https://site.test')).toHaveLength(3);
     expect(text).not.toContain('$ARENA_API_URL');
     expect(text).not.toContain('/ctf/BRIEFING.md');
     expect(text).not.toContain('/ctf/contracts');
-    if (profile.briefingUrl) expect(text).toContain(profile.briefingUrl);
-    else {
-      expect(text).toContain('local development chain');
-      expect(text).toContain('not on your machine');
-      expect(text).toContain('contracts are deployed on the chain named above');
-    }
+    expect(text).toContain('- The challenge briefing is at https://site.test/llms.txt.');
+    if (profile.briefingUrl) expect(text).not.toContain(profile.briefingUrl);
     const hosted = buildTaskText(entrant, profile, { publicUrl: 'https://arena.test' });
     expect(text.split('\n').at(-1)).toBe(hosted.split('\n').at(-1));
   });

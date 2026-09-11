@@ -1,10 +1,13 @@
 import fastifyCors from '@fastify/cors';
 import { and, eq } from 'drizzle-orm';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
-import { getAddress, isAddressEqual, recoverMessageAddress, type Address, type Hex } from 'viem';
+import { getAddress, type Address, type Hex } from 'viem';
 import { z } from 'zod';
 
+import { agentMcpOriginGuard, mountAgentMcp } from './agent-mcp.js';
 import { AgentIngest } from './agent-ingest.js';
+import { AgentProgress } from './agent-progress.js';
+import { JoinAuthenticationError, verifySignedMessage } from './signed-message.js';
 import { AgentInputError, AgentBatchTooLargeError, AgentRateLimitError, AGENT_BODY_LIMIT } from './agent-limits.js';
 import { AgentInbox } from './inbox.js';
 import { ExternalStatus } from './adapters/external-status.js';
@@ -14,11 +17,12 @@ import { flagsHeld } from './chain/flags-held.js';
 import { activeChainProfile } from './chain/profile.js';
 import { buildTaskText } from './ctf/prompt.js';
 import {
-  joinMessage,
+  registerMessage,
   HARNESS_IDS,
   ROSTER_EFFORTS,
   type ArenaEvent,
   type AgentTaskResponse,
+  type JoinRunRequest,
   type BroadcastResponse,
   type CreateRunRequest,
   type RestartResponse,
@@ -29,8 +33,8 @@ import {
 } from './contract.js';
 import { OpenRouterUnavailableError, createAgentRegistry, rosterIssues, type AgentRegistry } from './agents/registry.js';
 import type { Schedule } from './adapters/fake.js';
-import { ExternalAgentTokens, resolveAgentToken } from './agent-auth.js';
-import { mayMove, recordCurrentChallenge, useSolvedLookup } from './ctf/challenge-tracker.js';
+import { AgentTokens, resolveAgentToken, requireLane, NotInRunError, type AgentIdentityRecord } from './agent-auth.js';
+import { useSolvedLookup } from './ctf/challenge-tracker.js';
 import {
   bearerToken,
   isSecureRequest,
@@ -39,7 +43,7 @@ import {
   sessionCookie,
 } from './auth.js';
 import { SiweLogin, type SiweLoginOptions } from './siwe.js';
-import { DEFAULT_PUBLIC_URL } from './config.js';
+import { DEFAULT_PUBLIC_URL, resolveSiteUrl } from './config.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
 import { EntrantOperationError, EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
 import { eventTypes, scores } from './db/schema.js';
@@ -84,13 +88,14 @@ const rosterEntrySchema = z.object({
   effort: z.enum(ROSTER_EFFORTS),
 }).strict();
 
-class JoinAuthenticationError extends Error {}
-
-const joinSchema = z.object({
-  runId: z.string().min(1),
+const registerSchema = z.object({
   address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
   nonce: z.string(),
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
+}).strict();
+
+const joinSchema = z.object({
+  runId: z.string().min(1).optional(),
   name: z.string().min(1).max(40),
   harness: z.string().max(80).optional(),
   model: z.string().max(80).optional(),
@@ -116,12 +121,6 @@ const createRunSchema = z.object({
 
 // Steer and broadcast carry the same body; only the fan-out differs.
 const textSchema = z.object({ text: z.string().min(1) }).strict();
-const agentProgressSchema = z.object({
-  challengeId: z.number().int().min(1).max(12),
-}).strict();
-// Journalled announcements are rate limited; repeats of the same value are
-// deduped before the limit so they stay cheap instead of burning the budget.
-const AGENT_ANNOUNCE_INTERVAL_MS = 1_000;
 const seedSchema = z.object({
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
 }).strict();
@@ -151,13 +150,13 @@ const historyQuerySchema = z.object({
 export interface ServerOptions {
   flagsHeld?: (address: Address) => Promise<number>;
   publicUrl?: string;
+  siteUrl?: string;
   /** Required: every mutating route rejects a request that does not carry it. */
   operatorToken: string;
   /** Operator allowlist for wallet login and seed signing. */
   siwe?: SiweLoginOptions;
   dbPath?: string;
   schedule?: Schedule;
-  externalIdleMs?: number;
   challengePack?: ChallengePackAccess;
   driverFactory?: (journal: EventJournal, status: ExternalStatus) => EntrantDriver;
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
@@ -179,14 +178,17 @@ export interface ArenaServer {
 }
 
 export function createServer(options: ServerOptions): ArenaServer {
+  const publicUrl = options.publicUrl ?? DEFAULT_PUBLIC_URL;
+  const siteUrl = resolveSiteUrl(publicUrl, options.corsOrigins, options.siteUrl);
   const registry = options.agentRegistry ?? createAgentRegistry();
   const app = Fastify({ logger: options.logger ?? false });
+  app.addHook('onRequest', agentMcpOriginGuard(options.corsOrigins ?? []));
   if (options.corsOrigins !== undefined && options.corsOrigins.length > 0) {
     void app.register(fastifyCors, {
       origin: [...options.corsOrigins],
       credentials: true,
       methods: ['GET', 'POST', 'HEAD', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'MCP-Protocol-Version', 'Mcp-Method', 'Mcp-Name'],
     });
   }
   const login = new SiweLogin(options.siwe ?? { operatorAddresses: [] });
@@ -198,22 +200,18 @@ export function createServer(options: ServerOptions): ArenaServer {
     .where(and(eq(scores.runId, runId), eq(scores.entrantId, entrantId)))
     .all()
     .map((row) => row.challengeId)));
-  const externalTokens = new ExternalAgentTokens(journal.database);
-  const externalStatus = new ExternalStatus(journal, {
-    ...(options.schedule === undefined ? {} : { schedule: options.schedule }),
-    ...(options.externalIdleMs === undefined ? {} : { idleMs: options.externalIdleMs }),
-  });
+  const agentTokens = new AgentTokens(journal.database);
+  const externalStatus = new ExternalStatus(journal);
   const pack = options.challengePack ?? createChallengePackResolver(activeChainProfile);
   const ingest = new AgentIngest(journal, externalStatus, pack.addressesFor);
   const inbox = new AgentInbox(journal);
+  const progress = new AgentProgress(journal, externalStatus);
   const driver = options.driverFactory?.(journal, externalStatus) ?? new RegisteredEntrantDriver(
-    journal, { status: externalStatus, schedule: options.schedule, tokens: externalTokens, pack },
+    journal, { status: externalStatus, schedule: options.schedule, pack },
   );
   const runManagerOptions: RunManagerOptions = {
-    externalTokens,
-    promptBuilder: (entrant) => buildTaskText(entrant, activeChainProfile, {
-      publicUrl: options.publicUrl ?? DEFAULT_PUBLIC_URL,
-    }),
+    agentTokens,
+    promptBuilder: (entrant) => buildTaskText(entrant, activeChainProfile, { publicUrl, siteUrl }),
     operatorAddresses: options.siwe?.operatorAddresses ?? [],
     ...(options.solveWatchFactory === undefined
       ? {}
@@ -251,6 +249,9 @@ export function createServer(options: ServerOptions): ArenaServer {
     }
     if (error instanceof JoinAuthenticationError) {
       return reply.status(401).send({ error: error.message });
+    }
+    if (error instanceof NotInRunError) {
+      return reply.status(409).send({ error: error.message });
     }
     if (error instanceof JoinConflictError) {
       return reply.status(409).send({ error: error.message });
@@ -316,30 +317,45 @@ export function createServer(options: ServerOptions): ArenaServer {
     return reply.header('Cache-Control', 'no-store').send({ nonce: login.issueNonce() });
   });
 
-  app.post('/agent/join', async (request, reply) => {
-    const body = parseBody(joinSchema, request.body, reply);
+  app.post('/agent/register', async (request, reply) => {
+    const body = parseBody(registerSchema, request.body, reply);
     if (body === undefined) return;
-    const run = manager.assertJoinable(body.runId);
-    if (!login.nonceAvailable(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
-    const message = joinMessage(body);
-    const recovered = await recoverMessageAddress({ message, signature: body.signature as Hex }).catch(() => undefined);
-    if (recovered === undefined || !isAddressEqual(recovered, body.address as Address)) {
-      throw new JoinAuthenticationError('Signature does not match the claimed address');
-    }
+    await verifySignedMessage(login, body.nonce, registerMessage(body), body.signature as Hex, body.address as Address);
+    const result = agentTokens.register(getAddress(body.address), () => {
+      if (!login.consumeNonce(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
+    });
+    return reply.status(result.created ? 201 : 200).header('Cache-Control', 'no-store')
+      .send({ address: result.address, token: result.token, expiresAt: result.expiresAt });
+  });
+
+  async function joinAgent(identity: AgentIdentityRecord, body: JoinRunRequest) {
+    if (identity.address === undefined) throw new JoinAuthenticationError('Wallet token required');
+    const run = manager.selectJoinRun(body.runId, identity.address);
     let flagsBeforeJoin = 0;
     try {
       flagsBeforeJoin = options.flagsHeld !== undefined
-        ? await options.flagsHeld(getAddress(body.address))
-        : presetSubstrate(run.preset) === 'fake' ? 0 : await flagsHeld(getAddress(body.address));
+        ? await options.flagsHeld(getAddress(identity.address))
+        : presetSubstrate(run.preset) === 'fake' ? 0 : await flagsHeld(getAddress(identity.address));
     } catch {
       app.log.warn('Could not read flags held at join; recording zero');
     }
-    const result = await manager.join({
-      runId: body.runId, address: body.address, name: body.name, ...declaredFields(body), flagsBeforeJoin,
-    }, () => {
-      if (!login.consumeNonce(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
+    return manager.join({
+      runId: run.id, address: identity.address, name: body.name, ...declaredFields(body), flagsBeforeJoin,
     });
-    return reply.status(result.created ? 201 : 200).send({ entrantId: result.entrantId, token: result.token, run: result.run });
+  }
+
+  app.post('/agent/join', async (request, reply) => {
+    const identity = agentIdentity(request);
+    const body = parseBody(joinSchema, request.body, reply);
+    if (body === undefined) return;
+    const result = await joinAgent(identity, { name: body.name, ...declaredFields(body),
+      ...(body.runId === undefined ? {} : { runId: body.runId }) });
+    return reply.status(result.created ? 201 : 200).send({ entrantId: result.entrantId, run: result.run });
+  });
+
+  mountAgentMcp(app, {
+    agentTokens, manager, ingest, inbox, progress, join: joinAgent,
+    publicUrl, siteUrl,
   });
 
   app.post('/auth/verify', async (request, reply) => {
@@ -516,65 +532,34 @@ export function createServer(options: ServerOptions): ArenaServer {
 
   function agentIdentity(request: FastifyRequest) {
     const token = bearerToken(request.headers.authorization);
-    const identity = token === undefined ? undefined : resolveAgentToken(token, externalTokens);
+    const identity = token === undefined ? undefined : resolveAgentToken(token, agentTokens);
     if (identity === undefined) throw new JoinAuthenticationError('Agent token required');
     return identity;
   }
 
   app.get('/agent/task', async (request): Promise<AgentTaskResponse> => {
-    const identity = agentIdentity(request);
+    const identity = requireLane(agentIdentity(request));
     return manager.agentTask(identity.runId, identity.entrantId);
   });
 
   app.post('/agent/events', { bodyLimit: AGENT_BODY_LIMIT }, async (request) =>
-    ingest.events(agentIdentity(request), request.body));
+    ingest.events(requireLane(agentIdentity(request)), request.body));
 
-  app.post('/agent/hooks/claude-code', { bodyLimit: AGENT_BODY_LIMIT }, async (request) => {
-    ingest.hook(agentIdentity(request), request.body);
-    return {};
-  });
-
-  app.get('/agent/inbox', async (request) => inbox.read(agentIdentity(request), request.query));
+  app.get('/agent/inbox', async (request) => inbox.read(requireLane(agentIdentity(request)), request.query));
 
   // The agent-facing channel: authenticated by the per-entrant token the driver
   // injects as ARENA_AGENT_TOKEN, never by the operator credential. The agent's
   // announcement of the challenge it works on journals as entrant.challenge.
   app.post('/agent/progress', async (request, reply) => {
     const token = bearerToken(request.headers.authorization);
-    const identity = token === undefined ? undefined : resolveAgentToken(token, externalTokens);
+    const identity = token === undefined ? undefined : resolveAgentToken(token, agentTokens);
     if (identity === undefined) {
       return reply
         .status(401)
         .header('WWW-Authenticate', 'Bearer realm="agents-arena-agent"')
         .send({ error: 'Agent token required' });
     }
-    const body = agentProgressSchema.safeParse(request.body);
-    if (!body.success) {
-      return reply.status(400).send({ error: 'challengeId must be an integer from 1 to 12' });
-    }
-
-    const { challengeId } = body.data;
-    if (!mayMove(identity.runId, identity.entrantId, challengeId, 'self')) {
-      return { ok: true, changed: false };
-    }
-    const now = Date.now();
-    if (
-      identity.lastAnnouncedAtMs !== undefined
-      && now - identity.lastAnnouncedAtMs < AGENT_ANNOUNCE_INTERVAL_MS
-    ) {
-      return reply.status(429).send({ error: 'Announcing too fast; try again in a second' });
-    }
-    // State moves only after the journal accepts the event: an append that
-    // throws must leave the retry journalling, not deduping into silence.
-    journal.transaction(() => {
-      journal.append(identity.runId, identity.entrantId, 'entrant.challenge', {
-        entrantId: identity.entrantId, challengeId, via: 'self', evidence: 'announced',
-      });
-      externalStatus.touch(identity.runId, identity.entrantId);
-      journal.afterCommit(() => recordCurrentChallenge(identity.runId, identity.entrantId, challengeId, 'self'));
-    });
-    identity.lastAnnouncedAtMs = now;
-    return { ok: true, changed: true };
+    return progress.announce(requireLane(identity), request.body);
   });
 
   app.get('/runs/:id/events', async (request, reply) => {
@@ -653,7 +638,6 @@ export function createServer(options: ServerOptions): ArenaServer {
   });
 
   app.addHook('onClose', async () => {
-    externalStatus.close();
     journal.close();
   });
 

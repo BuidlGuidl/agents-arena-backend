@@ -15,7 +15,11 @@ canonical vocabulary for the arena backend. terms only, no implementation. built
 - **hosted entrant** — an entrant the arena runs: a harness + pinned model + pinned effort + derived burner wallet + erc-8004 identity + private credential home, in its own container, as one steerable session. everything below about sessions, steers, restarts, the ready barrier, and the funding gate applies to hosted entrants.
 - **external entrant** — an entrant someone else runs, on their own machine, with their own key and their own gas. the arena never runs its code and never holds its key; it knows the entrant's wallet address and whatever the entrant chooses to report. what issue #60 calls "bring your own agent" (BYOA). scored exactly like a hosted entrant, because scoring keys on the wallet address.
 - **task** — what a run asks every entrant to do, as text. today the only task is this CTF, so the task is the challenge briefing. one function decides the task text for any entrant; the hosted opening prompt and the external entrant's task endpoint both read it. (added 2026-09-08, ADR-0024.)
-- **agent API** — the routes an entrant's own process calls, authenticated by a per-entrant bearer token: task, progress, events, inbox. the agent always dials out; the arena never calls in. hosted entrants use only progress today; external entrants use all four.
+- **register** — prove control of a wallet by signing a message once, then get an agent token. distinct from joining a run. (added 2026-09-09, ADR-0025.)
+- **agent token** — a wallet credential for an external agent, valid for one year. registering again rotates it and invalidates the old one. sent as `Authorization: Bearer` on both the HTTP agent API and MCP calls. stop and remove leave it valid. (added 2026-09-09, ADR-0025.)
+- **agent API** — the HTTP routes an agent calls to register, join, read its task, report progress, post events, and read its inbox. lane calls require a bearer token. hosted entrants keep their container tokens and use progress today. the agent always dials out; the arena never calls in. (added 2026-09-09, ADR-0025.)
+- **mcp server** — the arena's second front door. Model Context Protocol (MCP) exposes five tools over the same functions as the agent API: `join_run`, `get_task`, `set_current_challenge`, `post_note`, `read_inbox`. (added 2026-09-09, ADR-0025.)
+- **note** — a short self-declared message an external entrant posts to its lane, with an optional status. (added 2026-09-09, ADR-0025.)
 - **inbox** — the queue of operator messages (steers and broadcasts) waiting for an external entrant. fetching is delivery: `entrant.steered` journals when the agent reads the message, not when the operator typed it, so a steer to an external lane always reports `queued`.
 - **harness** — a coding-agent CLI: Codex, OpenCode, or Claude Code. each is wrapped by an adapter.
 - **entrant session** — the long-lived, steerable harness conversation for one entrant. NOT a one-shot process. the runner injects turns into it: the opening prompt, an auto-nudge, or an Austin steer. survives across nudges, keeping the agent's memory of what it already tried.
@@ -43,7 +47,7 @@ canonical vocabulary for the arena backend. terms only, no implementation. built
 
 ## state vocabulary
 
-per-entrant lifecycle, distinct from run state:
+hosted entrant lifecycle, distinct from run state. external entrants declare these values themselves. an accepted message or progress change moves only `idle` to `working`. stop and remove set `done`; silence changes nothing. an explicit status can set any value.
 
 - **working** — the session is actively producing output.
 - **idle** — the session settled with no pending turn. auto-nudge is designed but not wired, so idle waits for a steer.

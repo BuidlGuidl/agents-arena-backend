@@ -5,6 +5,8 @@ import {
   DEFAULT_NARRATION_MIN_MS,
   DEFAULT_NARRATION_MODEL,
   resolveListenHost,
+  resolvePublicUrl,
+  MissingPublicUrlError,
   resolveNarrationConfig,
 } from '../src/config.js';
 
@@ -79,5 +81,23 @@ describe('resolveNarrationConfig', () => {
       OPENROUTER_API_KEY: 'key',
       ARENA_NARRATION_MIN_MS: value,
     })).toThrow('at least 1');
+  });
+});
+
+
+describe('resolvePublicUrl', () => {
+  it.each([undefined, '', '   '])('defaults to the local port for %j', (value) => {
+    expect(resolvePublicUrl('local', 4321, value)).toBe('http://localhost:4321');
+  });
+
+  it.each([undefined, '', '   ', 'arena.test', 'ftp://arena.test', 'http://'])
+    ('rejects missing or invalid deployment URLs: %j', (value) => {
+      expect(() => resolvePublicUrl('base', 4177, value)).toThrow(MissingPublicUrlError);
+      expect(() => resolvePublicUrl('baseSepolia', 4177, value)).toThrow('ARENA_PUBLIC_URL');
+    });
+
+  it.each(['local', 'base', 'baseSepolia'])('accepts HTTP and HTTPS for %s', (profile) => {
+    expect(resolvePublicUrl(profile, 4177, ' https://arena.test/ ')).toBe('https://arena.test');
+    expect(resolvePublicUrl(profile, 4177, 'http://arena.test:8080')).toBe('http://arena.test:8080');
   });
 });

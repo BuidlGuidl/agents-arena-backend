@@ -1,13 +1,24 @@
 import fastifyCors from '@fastify/cors';
 import { and, eq } from 'drizzle-orm';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
-import type { Hex } from 'viem';
+import { getAddress, isAddressEqual, recoverMessageAddress, type Address, type Hex } from 'viem';
 import { z } from 'zod';
 
+import { AgentIngest } from './agent-ingest.js';
+import { AgentInputError, AgentBatchTooLargeError, AgentRateLimitError, AGENT_BODY_LIMIT } from './agent-limits.js';
+import { AgentInbox } from './inbox.js';
+import { ExternalStatus } from './adapters/external-status.js';
+import { createChallengePackResolver, type ChallengePackAccess } from './ctf/resolve.js';
+import { declaredFields } from './external-entrants.js';
+import { flagsHeld } from './chain/flags-held.js';
+import { activeChainProfile } from './chain/profile.js';
+import { buildTaskText } from './ctf/prompt.js';
 import {
+  joinMessage,
   HARNESS_IDS,
   ROSTER_EFFORTS,
   type ArenaEvent,
+  type AgentTaskResponse,
   type BroadcastResponse,
   type CreateRunRequest,
   type RestartResponse,
@@ -18,7 +29,7 @@ import {
 } from './contract.js';
 import { OpenRouterUnavailableError, createAgentRegistry, rosterIssues, type AgentRegistry } from './agents/registry.js';
 import type { Schedule } from './adapters/fake.js';
-import { resolveAgentToken } from './agent-auth.js';
+import { ExternalAgentTokens, resolveAgentToken } from './agent-auth.js';
 import { mayMove, recordCurrentChallenge, useSolvedLookup } from './ctf/challenge-tracker.js';
 import {
   bearerToken,
@@ -28,8 +39,9 @@ import {
   sessionCookie,
 } from './auth.js';
 import { SiweLogin, type SiweLoginOptions } from './siwe.js';
+import { DEFAULT_PUBLIC_URL } from './config.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
-import { EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
+import { EntrantOperationError, EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
 import { eventTypes, scores } from './db/schema.js';
 import { capEvent, EventJournal } from './journal.js';
 import {
@@ -39,6 +51,9 @@ import {
 import type { Narrate } from './narration/openrouter.js';
 import { createNarrationWatch } from './narration/watch.js';
 import {
+  JoinConflictError,
+  RemovedWalletError,
+  presetSubstrate,
   ActiveRunConflictError,
   type FundingGate,
   EntrantNotFoundError,
@@ -60,12 +75,29 @@ const rosterEntrySchema = z.object({
   id: z.string()
     .max(20)
     .regex(/^[a-z][a-z0-9-]*$/)
+    .refine((id) => !id.startsWith('ext-'), { message: 'entrant id prefix ext- is reserved for external entrants' })
     .refine((id) => id !== 'run', {
       message: 'entrant id "run" is reserved for run-level feed events',
     }),
   harness: z.enum(HARNESS_IDS),
   model: z.string().min(1),
   effort: z.enum(ROSTER_EFFORTS),
+}).strict();
+
+class JoinAuthenticationError extends Error {}
+
+const joinSchema = z.object({
+  runId: z.string().min(1),
+  address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  nonce: z.string(),
+  signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
+  name: z.string().min(1).max(40),
+  harness: z.string().max(80).optional(),
+  model: z.string().max(80).optional(),
+  effort: z.string().max(80).optional(),
+  url: z.string().max(200).url().refine((value) => /^https?:/i.test(value), {
+    message: 'url must use http or https',
+  }).optional(),
 }).strict();
 
 const createRunSchema = z.object({
@@ -117,13 +149,17 @@ const historyQuerySchema = z.object({
 }).strict();
 
 export interface ServerOptions {
+  flagsHeld?: (address: Address) => Promise<number>;
+  publicUrl?: string;
   /** Required: every mutating route rejects a request that does not carry it. */
   operatorToken: string;
   /** Operator allowlist for wallet login and seed signing. */
   siwe?: SiweLoginOptions;
   dbPath?: string;
   schedule?: Schedule;
-  driverFactory?: (journal: EventJournal) => EntrantDriver;
+  externalIdleMs?: number;
+  challengePack?: ChallengePackAccess;
+  driverFactory?: (journal: EventJournal, status: ExternalStatus) => EntrantDriver;
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
   solveWatchFactory?: (journal: EventJournal) => SolveWatch;
   sweepChain?: NativeSweepChain;
@@ -162,8 +198,22 @@ export function createServer(options: ServerOptions): ArenaServer {
     .where(and(eq(scores.runId, runId), eq(scores.entrantId, entrantId)))
     .all()
     .map((row) => row.challengeId)));
-  const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(journal, options.schedule);
+  const externalTokens = new ExternalAgentTokens(journal.database);
+  const externalStatus = new ExternalStatus(journal, {
+    ...(options.schedule === undefined ? {} : { schedule: options.schedule }),
+    ...(options.externalIdleMs === undefined ? {} : { idleMs: options.externalIdleMs }),
+  });
+  const pack = options.challengePack ?? createChallengePackResolver(activeChainProfile);
+  const ingest = new AgentIngest(journal, externalStatus, pack.addressesFor);
+  const inbox = new AgentInbox(journal);
+  const driver = options.driverFactory?.(journal, externalStatus) ?? new RegisteredEntrantDriver(
+    journal, { status: externalStatus, schedule: options.schedule, tokens: externalTokens, pack },
+  );
   const runManagerOptions: RunManagerOptions = {
+    externalTokens,
+    promptBuilder: (entrant) => buildTaskText(entrant, activeChainProfile, {
+      publicUrl: options.publicUrl ?? DEFAULT_PUBLIC_URL,
+    }),
     operatorAddresses: options.siwe?.operatorAddresses ?? [],
     ...(options.solveWatchFactory === undefined
       ? {}
@@ -190,6 +240,27 @@ export function createServer(options: ServerOptions): ArenaServer {
   );
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof AgentRateLimitError) {
+      return reply.status(429).header('Retry-After', error.retryAfter).send({ error: error.message });
+    }
+    if (error instanceof AgentBatchTooLargeError) {
+      return reply.status(413).send({ error: error.message });
+    }
+    if (error instanceof AgentInputError) {
+      return reply.status(400).send({ error: error.message });
+    }
+    if (error instanceof JoinAuthenticationError) {
+      return reply.status(401).send({ error: error.message });
+    }
+    if (error instanceof JoinConflictError) {
+      return reply.status(409).send({ error: error.message });
+    }
+    if (error instanceof RemovedWalletError) {
+      return reply.status(403).send({ error: error.message });
+    }
+    if (error instanceof EntrantOperationError) {
+      return reply.status(400).send({ error: error.message });
+    }
     if (error instanceof RunNotFoundError || error instanceof EntrantNotFoundError) {
       void reply.status(404).send({ error: error.message });
       return;
@@ -241,9 +312,34 @@ export function createServer(options: ServerOptions): ArenaServer {
   });
 
   app.get('/auth/nonce', async (_request, reply) => {
-    if (!login.enabled) return siweDisabled(reply);
     // A nonce is one-shot and short-lived, so it must never sit in a cache.
     return reply.header('Cache-Control', 'no-store').send({ nonce: login.issueNonce() });
+  });
+
+  app.post('/agent/join', async (request, reply) => {
+    const body = parseBody(joinSchema, request.body, reply);
+    if (body === undefined) return;
+    const run = manager.assertJoinable(body.runId);
+    if (!login.nonceAvailable(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
+    const message = joinMessage(body);
+    const recovered = await recoverMessageAddress({ message, signature: body.signature as Hex }).catch(() => undefined);
+    if (recovered === undefined || !isAddressEqual(recovered, body.address as Address)) {
+      throw new JoinAuthenticationError('Signature does not match the claimed address');
+    }
+    let flagsBeforeJoin = 0;
+    try {
+      flagsBeforeJoin = options.flagsHeld !== undefined
+        ? await options.flagsHeld(getAddress(body.address))
+        : presetSubstrate(run.preset) === 'fake' ? 0 : await flagsHeld(getAddress(body.address));
+    } catch {
+      app.log.warn('Could not read flags held at join; recording zero');
+    }
+    const result = await manager.join({
+      runId: body.runId, address: body.address, name: body.name, ...declaredFields(body), flagsBeforeJoin,
+    }, () => {
+      if (!login.consumeNonce(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
+    });
+    return reply.status(result.created ? 201 : 200).send({ entrantId: result.entrantId, token: result.token, run: result.run });
   });
 
   app.post('/auth/verify', async (request, reply) => {
@@ -385,6 +481,12 @@ export function createServer(options: ServerOptions): ArenaServer {
     return { run: await manager.stop(id) };
   });
 
+  app.post('/runs/:id/entrants/:entrantId/remove', async (request, reply) => {
+    const { id, entrantId } = request.params as { id: string; entrantId: string };
+    await manager.remove(id, entrantId);
+    return reply.status(202).send({ accepted: true });
+  });
+
   app.post('/runs/:id/entrants/:entrantId/steer', async (request, reply) => {
     const body = parseBody(textSchema, request.body, reply);
     if (body === undefined) return;
@@ -412,12 +514,34 @@ export function createServer(options: ServerOptions): ArenaServer {
     return reply.status(202).send(response);
   });
 
+  function agentIdentity(request: FastifyRequest) {
+    const token = bearerToken(request.headers.authorization);
+    const identity = token === undefined ? undefined : resolveAgentToken(token, externalTokens);
+    if (identity === undefined) throw new JoinAuthenticationError('Agent token required');
+    return identity;
+  }
+
+  app.get('/agent/task', async (request): Promise<AgentTaskResponse> => {
+    const identity = agentIdentity(request);
+    return manager.agentTask(identity.runId, identity.entrantId);
+  });
+
+  app.post('/agent/events', { bodyLimit: AGENT_BODY_LIMIT }, async (request) =>
+    ingest.events(agentIdentity(request), request.body));
+
+  app.post('/agent/hooks/claude-code', { bodyLimit: AGENT_BODY_LIMIT }, async (request) => {
+    ingest.hook(agentIdentity(request), request.body);
+    return {};
+  });
+
+  app.get('/agent/inbox', async (request) => inbox.read(agentIdentity(request), request.query));
+
   // The agent-facing channel: authenticated by the per-entrant token the driver
   // injects as ARENA_AGENT_TOKEN, never by the operator credential. The agent's
   // announcement of the challenge it works on journals as entrant.challenge.
   app.post('/agent/progress', async (request, reply) => {
     const token = bearerToken(request.headers.authorization);
-    const identity = token === undefined ? undefined : resolveAgentToken(token);
+    const identity = token === undefined ? undefined : resolveAgentToken(token, externalTokens);
     if (identity === undefined) {
       return reply
         .status(401)
@@ -442,13 +566,13 @@ export function createServer(options: ServerOptions): ArenaServer {
     }
     // State moves only after the journal accepts the event: an append that
     // throws must leave the retry journalling, not deduping into silence.
-    journal.append(identity.runId, identity.entrantId, 'entrant.challenge', {
-      entrantId: identity.entrantId,
-      challengeId,
-      via: 'self',
-      evidence: 'announced',
+    journal.transaction(() => {
+      journal.append(identity.runId, identity.entrantId, 'entrant.challenge', {
+        entrantId: identity.entrantId, challengeId, via: 'self', evidence: 'announced',
+      });
+      externalStatus.touch(identity.runId, identity.entrantId);
+      journal.afterCommit(() => recordCurrentChallenge(identity.runId, identity.entrantId, challengeId, 'self'));
     });
-    recordCurrentChallenge(identity.runId, identity.entrantId, challengeId, 'self');
     identity.lastAnnouncedAtMs = now;
     return { ok: true, changed: true };
   });
@@ -529,6 +653,7 @@ export function createServer(options: ServerOptions): ArenaServer {
   });
 
   app.addHook('onClose', async () => {
+    externalStatus.close();
     journal.close();
   });
 

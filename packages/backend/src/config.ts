@@ -1,3 +1,16 @@
+export const DEFAULT_PUBLIC_URL = 'http://localhost:4177';
+export class MissingPublicUrlError extends Error {}
+
+export function resolvePublicUrl(profileName: string, port: number, value?: string): string {
+  const publicUrl = value?.trim();
+  if (!publicUrl && profileName === 'local') return `http://localhost:${port}`;
+  try {
+    const url = new URL(publicUrl ?? '');
+    if (url.protocol === 'http:' || url.protocol === 'https:') return url.href.replace(/\/$/, '');
+  } catch {}
+  throw new MissingPublicUrlError('ARENA_PUBLIC_URL must be an http(s) URL reachable by external entrants.');
+}
+
 export function resolveListenHost(value = process.env.ARENA_HOST): string {
   return value?.trim() || '127.0.0.1';
 }

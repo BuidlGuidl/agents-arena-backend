@@ -1,3 +1,4 @@
+import { toEntrantRecord } from '../src/external-entrants.js';
 import { and, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
@@ -103,5 +104,5 @@ function entrantRecord(journal: EventJournal, runId: string, entrantId: string) 
     .where(and(eq(entrants.runId, runId), eq(entrants.id, entrantId)))
     .get();
   if (entrant === undefined) throw new Error(`Test entrant ${entrantId} was not seeded`);
-  return entrant;
+  return toEntrantRecord({ entrants: entrant, external_entrants: null });
 }

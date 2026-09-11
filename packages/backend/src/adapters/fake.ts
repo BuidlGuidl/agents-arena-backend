@@ -6,7 +6,7 @@ import { entrants } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
 import { dropCurrentChallenge } from '../ctf/challenge-tracker.js';
 import { costForTokens } from '../pricing.js';
-import type { EntrantDriver, EntrantRecord, RunRecord } from './types.js';
+import { assertHosted, type EntrantDriver, type EntrantRecord, type HostedEntrantRecord, type RunRecord } from './types.js';
 
 export type Schedule = (task: () => void, delayMs: number) => unknown;
 
@@ -37,9 +37,10 @@ export class FakeDriver implements EntrantDriver {
     private readonly schedule: Schedule = defaultSchedule,
   ) {}
 
-  async prepare(_run: RunRecord, _entrant: EntrantRecord): Promise<void> {}
+  async prepare(_run: RunRecord, entrant: EntrantRecord): Promise<void> { assertHosted(entrant); }
 
   async start(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {
+    assertHosted(entrant);
     const key = this.key(run.id, entrant.id);
     const toolCallId = `fake-${++this.toolCallCount}`;
     const scriptedFlags = this.scriptedFlags(run.id, entrant.id);
@@ -111,6 +112,7 @@ export class FakeDriver implements EntrantDriver {
   }
 
   async steer(run: RunRecord, entrant: EntrantRecord, text: string): Promise<SteerDelivery> {
+    assertHosted(entrant);
     this.journal.append(run.id, entrant.id, 'entrant.steered', {
       entrantId: entrant.id,
       text,
@@ -122,11 +124,13 @@ export class FakeDriver implements EntrantDriver {
   // the lane replays from the top instead of two scripts interleaving their
   // statuses and double-counting their usage rows.
   async restart(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void> {
+    assertHosted(entrant);
     this.journal.append(run.id, entrant.id, 'entrant.restarted', { entrantId: entrant.id });
     await this.start(run, entrant, openingPrompt);
   }
 
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {
+    assertHosted(entrant);
     // No generation left to match, so the script goes quiet for good.
     this.generations.delete(this.key(run.id, entrant.id));
     dropCurrentChallenge(run.id, entrant.id);
@@ -135,7 +139,7 @@ export class FakeDriver implements EntrantDriver {
 
   private emitChallenge(
     run: RunRecord,
-    entrant: EntrantRecord,
+    entrant: HostedEntrantRecord,
     challengeId: number,
     via: 'self' | 'command',
   ): void {
@@ -149,7 +153,7 @@ export class FakeDriver implements EntrantDriver {
 
   private emitUsage(
     run: RunRecord,
-    entrant: EntrantRecord,
+    entrant: HostedEntrantRecord,
     inputTokens: number,
     outputTokens: number,
     cachedInputTokens: number,
@@ -180,7 +184,7 @@ export class FakeDriver implements EntrantDriver {
     const runEntrants = this.journal.database
       .select({ id: entrants.id })
       .from(entrants)
-      .where(eq(entrants.runId, runId))
+      .where(and(eq(entrants.runId, runId), eq(entrants.kind, 'hosted')))
       .orderBy(sql`rowid`)
       .all();
     const entrantIndex = runEntrants.findIndex((candidate) => candidate.id === entrantId);

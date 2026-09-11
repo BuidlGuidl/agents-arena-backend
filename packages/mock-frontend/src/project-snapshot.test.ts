@@ -11,6 +11,7 @@ const snapshot: RunSnapshot = {
   entrants: [
     {
       id: 'codex-1',
+      kind: 'hosted',
       harness: 'codex',
       model: 'gpt-5-codex',
       address: null,

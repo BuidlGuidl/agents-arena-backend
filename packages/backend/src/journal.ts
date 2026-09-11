@@ -1,3 +1,4 @@
+import { EXTERNAL_TOKEN_PATTERN } from './agent-auth.js';
 import { and, asc, desc, eq, gt, inArray, lt, max } from 'drizzle-orm';
 
 import { credentialSecrets } from './adapters/credential-secrets.js';
@@ -32,6 +33,7 @@ export class EventJournal {
   private readonly sqlite: ReturnType<typeof openArenaDatabase>['sqlite'];
   private readonly subscribers = new Map<string, Set<Subscriber>>();
   private readonly pendingNotifications: ArenaEvent[][] = [];
+  private readonly transactionEffects: (() => void)[][] = [];
 
   constructor(path = process.env.ARENA_DB ?? './arena.db') {
     const opened = openArenaDatabase(path);
@@ -117,15 +119,25 @@ export class EventJournal {
 
   transaction<T>(action: () => T): T {
     const notifications: ArenaEvent[] = [];
+    const effects: (() => void)[] = [];
+    this.transactionEffects.push(effects);
     this.pendingNotifications.push(notifications);
     let result: T;
     try {
       result = this.database.transaction(action);
     } catch (error) {
       this.pendingNotifications.pop();
+      this.transactionEffects.pop();
       throw error;
     }
     this.pendingNotifications.pop();
+    this.transactionEffects.pop();
+    const parentEffects = this.transactionEffects.at(-1);
+    if (parentEffects === undefined) {
+      for (const commit of effects) commit();
+    } else {
+      parentEffects.push(...effects);
+    }
     const parent = this.pendingNotifications.at(-1);
     if (parent === undefined) {
       for (const event of notifications) this.notify(event);
@@ -133,6 +145,14 @@ export class EventJournal {
       parent.push(...notifications);
     }
     return result;
+  }
+
+  // Memory follows the outer transaction, before subscribers read the committed batch.
+  // Outside a transaction, the action runs immediately.
+  afterCommit(action: () => void): void {
+    const effects = this.transactionEffects.at(-1);
+    if (effects === undefined) action();
+    else effects.push(action);
   }
 
   after(runId: string, afterId: number): ArenaEvent[] {
@@ -204,7 +224,7 @@ export class EventJournal {
 }
 
 function redactExactSecrets(value: string, secrets: readonly string[]): string {
-  let redacted = value;
+  let redacted = value.replace(new RegExp(EXTERNAL_TOKEN_PATTERN.source, 'g'), '[redacted-key]');
   for (const secret of secrets) {
     const lowerValue = redacted.toLowerCase();
     const lowerSecret = secret.toLowerCase();

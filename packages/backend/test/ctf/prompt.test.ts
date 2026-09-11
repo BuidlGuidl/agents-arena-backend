@@ -1,10 +1,14 @@
+import { readFileSync } from 'node:fs';
+import { activeChainProfile } from '../../src/chain/profile.js';
+import type { ExternalEntrantRecord } from '../../src/adapters/types.js';
 import { describe, expect, it } from 'vitest';
 
 import type { EntrantRecord } from '../../src/adapters/types.js';
 import type { ChainProfile } from '../../src/chain/profile.js';
-import { buildOpeningPrompt } from '../../src/ctf/prompt.js';
+import { buildTaskText } from '../../src/ctf/prompt.js';
 
 const entrant: EntrantRecord = {
+  kind: 'hosted',
   runId: 'run-1',
   id: 'entrant-1',
   harness: 'codex',
@@ -14,7 +18,16 @@ const entrant: EntrantRecord = {
   status: 'idle',
 };
 
-describe('buildOpeningPrompt', () => {
+describe('buildTaskText', () => {
+  it.each(['local', 'public'] as const)('keeps the %s hosted prompt byte-identical to slice A', (name) => {
+    const profile = { ...activeChainProfile,
+      ...(name === 'public' ? { briefingUrl: 'https://briefing.example.test/challenges' } : {}),
+    };
+    const text = buildTaskText({ ...entrant, address: '0x1234567890123456789012345678901234567890' }, profile,
+      { publicUrl: 'https://arena.test' });
+    expect(text).toBe(readFileSync(new URL(`../fixtures/hosted-prompt-${name}.txt`, import.meta.url), 'utf8'));
+  });
+
   it('describes the mounted challenge pack for a local profile', () => {
     const profile: ChainProfile = {
       name: 'local-test',
@@ -28,7 +41,7 @@ describe('buildOpeningPrompt', () => {
       fundingThresholdWei: 1n,
     };
 
-    const prompt = buildOpeningPrompt(entrant, profile);
+    const prompt = buildTaskText(entrant, profile, { publicUrl: 'https://arena.test' });
 
     expect(prompt).toContain('/ctf/BRIEFING.md');
     expect(prompt).toContain('/ctf/contracts');
@@ -55,7 +68,7 @@ describe('buildOpeningPrompt', () => {
       fundingThresholdWei: 1n,
     };
 
-    const prompt = buildOpeningPrompt(entrant, profile);
+    const prompt = buildTaskText(entrant, profile, { publicUrl: 'https://arena.test' });
 
     expect(prompt).toContain('$ARENA_API_URL/agent/progress');
     expect(prompt).toContain('Bearer $ARENA_AGENT_TOKEN');
@@ -76,7 +89,7 @@ describe('buildOpeningPrompt', () => {
       fundingThresholdWei: 1n,
     };
 
-    const prompt = buildOpeningPrompt(entrant, profile);
+    const prompt = buildTaskText(entrant, profile, { publicUrl: 'https://arena.test' });
 
     expect(prompt).toContain('Do not stop until your address holds all 12 flags.');
     expect(prompt).toContain('Every challenge is solvable.');
@@ -97,7 +110,7 @@ describe('buildOpeningPrompt', () => {
       briefingUrl: 'https://briefing.example.test/challenges',
     };
 
-    const prompt = buildOpeningPrompt(entrant, profile);
+    const prompt = buildTaskText(entrant, profile, { publicUrl: 'https://arena.test' });
 
     expect(prompt).toContain(profile.briefingUrl);
     expect(prompt).not.toContain(profile.containerRpcUrl);
@@ -120,8 +133,48 @@ describe('buildOpeningPrompt', () => {
     };
     const address = '0x1234567890123456789012345678901234567890';
 
-    const prompt = buildOpeningPrompt({ ...entrant, address }, profile);
+    const prompt = buildTaskText({ ...entrant, address }, profile, { publicUrl: 'https://arena.test' });
 
     expect(prompt).toContain(address);
   });
+});
+
+describe('external task text', () => {
+  const external: ExternalEntrantRecord = {
+    kind: 'external', runId: 'run-1', id: 'ext-1', name: 'My agent',
+    address: '0x1234567890123456789012345678901234567890', status: 'idle',
+    joinedAt: '2026-09-08T00:00:00.000Z', removedAt: null, flagsBeforeJoin: 2,
+  };
+
+  it.each([31337, 8453])('uses the external wallet and public API for chain %s', (chainId) => {
+    const profile = { ...activeChainProfile, chainId, ...(chainId === 8453 ? { briefingUrl: 'https://briefing.test' } : {}) };
+    const text = buildTaskText(external, profile, { publicUrl: 'https://arena.test/' });
+    expect(text).toContain(external.address);
+    expect(text).toContain('You hold its private key and pay your own gas');
+    expect(text).toContain(`chain id ${chainId}`);
+    expect(text).toContain('https://arena.test/agent/progress');
+    expect(text).toContain('$ARENA_AGENT_TOKEN');
+    expect(text).not.toContain('WALLET_PRIVATE_KEY');
+    expect(text).not.toContain('ETH_RPC_URL');
+    expect(text).not.toContain('node:22-bookworm');
+    expect(text).not.toContain('not the chain');
+    if (chainId === 31337) expect(text).toContain('http://127.0.0.1:8545');
+    else {
+      expect(text).toContain('Use any RPC endpoint for this chain');
+      expect(text).not.toContain('http://127.0.0.1:8545');
+    }
+    expect(text.split('https://arena.test')).toHaveLength(2);
+    expect(text).not.toContain('$ARENA_API_URL');
+    expect(text).not.toContain('/ctf/BRIEFING.md');
+    expect(text).not.toContain('/ctf/contracts');
+    if (profile.briefingUrl) expect(text).toContain(profile.briefingUrl);
+    else {
+      expect(text).toContain('local development chain');
+      expect(text).toContain('not on your machine');
+      expect(text).toContain('contracts are deployed on the chain named above');
+    }
+    const hosted = buildTaskText(entrant, profile, { publicUrl: 'https://arena.test' });
+    expect(text.split('\n').at(-1)).toBe(hosted.split('\n').at(-1));
+  });
+
 });

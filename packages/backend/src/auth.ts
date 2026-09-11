@@ -9,7 +9,7 @@ const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 // The login pair cannot require a credential: one mints the session, the other
 // destroys it. The agent route carries its own per-entrant bearer, checked in
 // the handler. Everything else that mutates goes through the gate.
-const OPEN_ROUTES = new Set(['/auth/verify', '/auth/logout', '/agent/progress']);
+const OPEN_ROUTES = new Set(['/auth/verify', '/auth/logout', '/agent/progress', '/agent/join', '/agent/events', '/agent/hooks/claude-code']);
 
 export class MissingOperatorTokenError extends Error {}
 

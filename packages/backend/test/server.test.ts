@@ -31,24 +31,14 @@ import { entrants, runs } from '../src/db/schema.js';
 import { capEvent, EVENT_TEXT_LIMIT } from '../src/journal.js';
 import { createServer, type ArenaServer } from '../src/server.js';
 
-const servers: ArenaServer[] = [];
+import { noopDriver, serverHarness } from './fixtures/server.js';
+
+const servers = serverHarness();
 const OPERATOR_TOKEN = 'test-operator-token';
 const operatorHeaders = { authorization: `Bearer ${OPERATOR_TOKEN}` };
 const LOCAL_DEV_OPERATOR = privateKeyToAccount(LOCAL_DEV_FUNDER_PRIVATE_KEY);
 const SECP256K1_N =
   0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
-const noopDriver: EntrantDriver = {
-  async prepare() {},
-  async start() {},
-  async steer() { return 'injected'; },
-  async restart() {},
-  async stop() {},
-};
-
-afterEach(async () => {
-  await Promise.all(servers.splice(0).map(async ({ app }) => app.close()));
-});
-
 describe('agent self-announce', () => {
   async function announceSetup() {
     const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
@@ -888,11 +878,16 @@ describe('seed endpoint', () => {
         method: 'POST',
         url: '/runs',
         headers: operatorHeaders,
-        payload: { preset: 'docker-duel', autoStart: true },
+        payload: { preset: 'docker-duel' },
       });
 
       expect(response.statusCode).toBe(201);
-      const { run } = response.json() as { run: RunSnapshot };
+      const { run: created } = response.json() as { run: RunSnapshot };
+      const external = await server.manager.join({ runId: created.id, address: LOCAL_DEV_OPERATOR.address, name: 'External', flagsBeforeJoin: 0 });
+      const run = await server.manager.start(created.id);
+      expect(run.entrants.find((entrant) => entrant.id === external.entrantId)?.address).toBe(LOCAL_DEV_OPERATOR.address);
+      expect(server.journal.after(run.id, 0).filter((event) => event.type === 'wallet.assigned').map((event) => event.source))
+        .toEqual(['codex-1', 'opencode-1']);
       // Prepared and funded, waiting on the operator's go.
       expect(run.state).toBe('ready');
       expect(run.seededBy).toBe(LOCAL_DEV_OPERATOR.address);
@@ -1167,6 +1162,7 @@ describe('sweep endpoint', () => {
     const operatorPrivateKey = generatePrivateKey();
     const operator = privateKeyToAccount(operatorPrivateKey);
     const { run } = await server.manager.create({ preset: 'fake-duel' });
+    await server.manager.join({ runId: run.id, address: LOCAL_DEV_OPERATOR.address, name: 'External', flagsBeforeJoin: 0 });
     sweepRunIds.add(run.id);
     const signature = await operator.signTypedData(seedTypedData(run.id, 31337));
     const walletSignature = (options.walletChainId ?? 31337) === 31337
@@ -1517,7 +1513,14 @@ describe('sweep endpoint', () => {
       payload: { signature },
     });
 
+    // Success checks derivation for the hosted wallets despite the unrelated external address.
     expect(response.statusCode).toBe(200);
+    expect(server.manager.snapshot(run.id).entrants).toContainEqual(expect.objectContaining({
+      kind: 'external', address: LOCAL_DEV_OPERATOR.address,
+    }));
+    expect(chain.getBalance).not.toHaveBeenCalledWith(LOCAL_DEV_OPERATOR.address);
+    expect(response.json().results.map((result: { entrantId: string }) => result.entrantId))
+      .toEqual(['codex-1', 'opencode-1']);
     expect(response.json()).toEqual({
       runId: run.id,
       to: operator.address,

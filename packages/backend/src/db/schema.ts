@@ -18,6 +18,8 @@ const entrantStatuses = ['working', 'idle', 'blocked', 'done'] as const;
 export const eventTypes = [
   'run.state',
   'entrant.status',
+  'entrant.joined',
+  'entrant.removed',
   'agent.message',
   'agent.reasoning',
   'tool.call',
@@ -52,8 +54,9 @@ export const runs = sqliteTable('runs', {
 export const entrants = sqliteTable('entrants', {
   runId: text('run_id').notNull().references(() => runs.id),
   id: text('id').notNull(),
-  harness: text('harness', { enum: HARNESS_IDS }).notNull(),
-  model: text('model').notNull(),
+  kind: text('kind', { enum: ['hosted', 'external'] }).notNull().default('hosted'),
+  harness: text('harness', { enum: HARNESS_IDS }),
+  model: text('model'),
   effort: text('effort', { enum: ROSTER_EFFORTS }),
   address: text('address'),
   status: text('status', { enum: entrantStatuses }).notNull(),
@@ -95,4 +98,33 @@ export const scores = sqliteTable('scores', {
   index('scores_run_id_entrant_id').on(table.runId, table.entrantId),
 ]);
 
-export const schema = { events, runs, entrants, scores };
+export const externalEntrants = sqliteTable('external_entrants', {
+  runId: text('run_id').notNull().references(() => runs.id),
+  id: text('id').notNull(),
+  address: text('address').notNull(),
+  name: text('name').notNull(),
+  harness: text('harness'),
+  model: text('model'),
+  effort: text('effort'),
+  url: text('url'),
+  tokenHash: text('token_hash'),
+  flagsBeforeJoin: integer('flags_before_join').notNull(),
+  joinedAt: text('joined_at').notNull(),
+  removedAt: text('removed_at'),
+}, (table) => [
+  uniqueIndex('external_entrants_run_id_id').on(table.runId, table.id),
+  uniqueIndex('external_entrants_run_id_address').on(table.runId, table.address),
+  uniqueIndex('external_entrants_token_hash').on(table.tokenHash),
+]);
+
+export const inboxMessages = sqliteTable('inbox_messages', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  runId: text('run_id').notNull().references(() => runs.id),
+  entrantId: text('entrant_id').notNull(),
+  kind: text('kind', { enum: ['steer', 'broadcast'] }).notNull(),
+  text: text('text').notNull(),
+  createdAt: text('created_at').notNull(),
+  deliveredAt: text('delivered_at'),
+});
+
+export const schema = { events, runs, entrants, scores, externalEntrants, inboxMessages };

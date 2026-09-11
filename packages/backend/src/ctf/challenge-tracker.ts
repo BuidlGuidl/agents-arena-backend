@@ -77,6 +77,7 @@ export function matchChallengeInProse(
 }
 
 const targetByEntrant = new Map<string, Target>();
+
 let solvedLookup = (_runId: string, _entrantId: string): ReadonlySet<number> => EMPTY;
 
 function entrantKey(runId: string, entrantId: string): string {

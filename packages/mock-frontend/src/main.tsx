@@ -785,7 +785,7 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
     >
       <div className="lane-head">
         <h2 className="lane-name">{entrant.id}</h2>
-        <span className="lane-harness">{entrant.harness}</span>
+        <span className="lane-harness">{entrant.kind === 'hosted' ? entrant.harness : entrant.harness ?? entrant.name}</span>
       </div>
       <p className="lane-model">{entrant.model}</p>
 

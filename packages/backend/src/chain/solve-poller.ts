@@ -357,6 +357,10 @@ export class SolvePoller {
   }
 
   private record(capture: Capture): boolean {
+    // Removal can land while RPC reads are in flight. Recheck before publishing a solve.
+    const current = this.database.select({ address: entrants.address }).from(entrants)
+      .where(and(eq(entrants.runId, this.options.runId), eq(entrants.id, capture.entrantId))).get();
+    if (current?.address == null) return false;
     const recorded = recordSolve(this.database, this.options.journal, {
       runId: this.options.runId,
       entrantId: capture.entrantId,

@@ -542,6 +542,7 @@ describe('deriveWaitingRoom', () => {
   function entrant(id: string, address: string | null): EntrantSummary {
     return {
       id,
+      kind: 'hosted',
       harness: 'codex',
       model: 'gpt-5',
       address,

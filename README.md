@@ -119,6 +119,10 @@ Set `AI_CTF_REPO` to the absolute path of your ai-ctf checkout, then fill in the
 credentials. Every variable is documented in that file. `ARENA_OPERATOR_TOKEN` is required
 and the server exits without it; any non-empty string works locally.
 
+`ARENA_PUBLIC_URL` sets the API URL that external entrants use to report progress.
+Outside the `local` chain profile, startup requires a valid HTTP(S) URL.
+Use an address that external entrants can reach. Local defaults to `http://localhost:<PORT>` (port 4177 unless set).
+
 `.env` at the repo root is loaded by `dev` and `start` through Node's own `--env-file`, so
 the operator token and the credentials live in one gitignored file instead of a shell
 prompt. A variable already exported in the shell wins over the file, which keeps one-off
@@ -194,8 +198,9 @@ when the host you are on is missing.
 
 "sign in with wallet" then appears in the mock frontend's header. Once you are signed
 in the dev proxy stops adding the token, so the buttons run on the session cookie and
-you are exercising the real path rather than a masked one. Without an allowlist the
-`/auth` routes answer `503` and the arena stays token-only.
+you are exercising the real path rather than a masked one. Without an allowlist, `/auth/verify` answers `503`.
+`/auth/nonce` always answers because external entrants also need a nonce to join.
+`/auth/session` and `/auth/logout` still answer with `configured: false` when wallet login is off.
 
 ### Smoke tests
 

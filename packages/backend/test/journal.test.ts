@@ -15,6 +15,21 @@ import { events as eventRows } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 
 describe('EventJournal', () => {
+  it('redacts external token patterns without a live token store', () => {
+    const journal = new EventJournal(':memory:');
+    try {
+      const token = `byoa_${'ab'.repeat(24)}`;
+      const event = journal.append('run-1', 'ext-1', 'agent.message', {
+        entrantId: 'ext-1', text: `Bearer ${token} and ${token}`,
+      });
+      expect(event.payload.text).toBe('Bearer [redacted-key] and [redacted-key]');
+      expect(JSON.stringify(journal.after('run-1', 0))).not.toContain(token);
+      expect(journal.database.select().from(eventRows).get()?.payloadJson).not.toContain(token);
+    } finally {
+      journal.close();
+    }
+  });
+
   it('assigns global IDs and per-source sequences', () => {
     const journal = new EventJournal(':memory:');
     try {

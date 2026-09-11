@@ -34,6 +34,7 @@ const run: RunRecord = {
   idempotencyKey: null,
 };
 const entrant: EntrantRecord = {
+  kind: 'hosted',
   runId,
   id: entrantId,
   harness,

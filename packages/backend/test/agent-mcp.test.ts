@@ -84,6 +84,22 @@ describe('arena MCP', () => {
       expect(tool.inputSchema.properties.token).toBeUndefined();
     }
     expect(expected.result.tools[1].annotations.readOnlyHint).toBe(true);
+    const [join, , challenge, note, inbox] = expected.result.tools;
+    expect(join.inputSchema.required).toEqual(['name']);
+    expect(join.inputSchema.properties.name).toEqual({ type: 'string', minLength: 1, maxLength: 40 });
+    for (const key of ['harness', 'model', 'effort']) {
+      expect(join.inputSchema.properties[key]).toEqual({ type: 'string', minLength: 1, maxLength: 80 });
+    }
+    expect(join.inputSchema.properties.url).toMatchObject({ type: 'string', format: 'uri', maxLength: 200 });
+    const urlPattern = new RegExp(join.inputSchema.properties.url.pattern);
+    expect(urlPattern.test('HTTPS://arena.test')).toBe(true);
+    expect(urlPattern.test('file:///tmp/x')).toBe(false);
+    expect(challenge.inputSchema.properties.challengeId).toEqual({ type: 'integer', minimum: 1, maximum: 12 });
+    expect(note.inputSchema.properties.text).toEqual({ type: 'string', minLength: 1, maxLength: 4000 });
+    expect(inbox.inputSchema.properties.after).toEqual({
+      type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0,
+    });
+    expect(inbox.inputSchema.required).toBeUndefined();
   });
 
   it.each([
@@ -231,9 +247,9 @@ describe('arena MCP', () => {
     expect(response.structuredContent.error).toBe(`Already racing in run ${f.runId}. Finish or leave that race first.`);
   });
 
-  it('checks lane membership before challenge bounds', async () => {
+  it.each([0, 13, Number.MAX_SAFE_INTEGER + 1])('checks lane membership before challenge bounds for %s', async (challengeId) => {
     const f = setup();
-    const response = await call(f, 'set_current_challenge', { challengeId: 13 }, f.token);
+    const response = await call(f, 'set_current_challenge', { challengeId }, f.token);
     expect(response.isError).toBe(true);
     expect(response.structuredContent.error).toBe('Not in a run. Call join_run first.');
   });
@@ -265,6 +281,7 @@ describe('arena MCP', () => {
     ['post_note', { text: 'note', status: 'unknown' }],
     ['read_inbox', { after: -1 }],
     ['read_inbox', { after: 1.5 }],
+    ['read_inbox', { after: Number.MAX_SAFE_INTEGER + 1 }],
   ])('rejects invalid %s arguments at runtime', async (name, args) => {
     const f = await joined();
     const before = f.journal.after(f.runId, 0);
@@ -273,11 +290,11 @@ describe('arena MCP', () => {
     expect(f.journal.after(f.runId, 0)).toEqual(before);
   });
 
-  it('returns the fixed unknown-challenge text', async () => {
+  it.each([0, 13, Number.MAX_SAFE_INTEGER + 1])('returns the fixed unknown-challenge text for %s', async (challengeId) => {
     const f = await joined();
-    const response = await call(f, 'set_current_challenge', { challengeId: 13 }, f.token);
+    const response = await call(f, 'set_current_challenge', { challengeId }, f.token);
     expect(response.isError).toBe(true);
-    expect(response.structuredContent.error).toBe('Challenge 13 is not in this race. Call get_task for the valid ids.');
+    expect(response.structuredContent.error).toBe(`Challenge ${challengeId} is not in this race. Call get_task for the valid ids.`);
   });
 
   it('keeps unexpected failures as server errors without leaking details', async () => {

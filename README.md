@@ -23,6 +23,8 @@ In any real deployment, serve `POST /runs/:id/seed` over TLS. Configure proxies 
 
 ## How it works
 
+The backend serves the agent list and verifies custom OpenCode models against OpenRouter's public model list, with no key required.
+
 One process owns a run: lifecycle, containers, credentials, the event journal, and score state. It holds an open Docker socket and a SQLite file. No queue, no websockets, no Kubernetes.
 
 - **Entrant** — a coding-agent CLI + model + funded wallet, running in its own container as one long-lived, steerable session.

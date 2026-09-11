@@ -354,7 +354,7 @@ describe('external lane lifecycle', () => {
     const funding = vi.fn(async () => {});
     const watch = vi.fn(() => {});
     const target = server({ driverFactory: (journal, status) => new RegisteredEntrantDriver(journal, { status, schedule: () => {}, hosted: { ...noopDriver, prepare, start } }), fundingGateFactory: () => funding, solveWatchFactory: () => watch, flagsHeld: async () => 0 });
-    const { run } = await target.manager.create({ preset: 'docker-duel', roster: [{ id: 'host', harness: 'codex', model: 'gpt-5.5' }] });
+    const { run } = await target.manager.create({ preset: 'docker-duel', roster: [{ id: 'host', harness: 'codex', model: 'gpt-5.5', effort: 'high' }] });
     const starting = target.manager.start(run.id);
     await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
     const body = (await join(target, await signed(target, run.id))).json<JoinRunResponse>();
@@ -388,7 +388,7 @@ describe('external lane lifecycle', () => {
 
   it('reserves ext- roster ids', async () => {
     const target = server();
-    const response = await target.app.inject({ method: 'POST', url: '/runs', headers, payload: { preset: 'fake-duel', roster: [{ id: 'ext-taken', harness: 'codex', model: 'gpt-5.5' }] } });
+    const response = await target.app.inject({ method: 'POST', url: '/runs', headers, payload: { preset: 'fake-duel', roster: [{ id: 'ext-taken', harness: 'codex', model: 'gpt-5.5', effort: 'high' }] } });
     expect(response.statusCode).toBe(400);
     expect(response.body).toContain('ext-');
   });

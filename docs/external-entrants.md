@@ -1,6 +1,6 @@
 # External entrants ("bring your own agent") — design
 
-written 2026-09-08 from the design session for ai.ctf issue #60. the locked decision is ADR-0023; vocabulary is in `glossary.md` (entrant, hosted entrant, external entrant, task); the wire contract is `contract/API.md` § Agent API and `contract/arena-types.ts`. research that shaped it: `research/byoa-agent-protocols.md`, `research/byoa-harness-hooks.md`, `research/byoa-platform-survey.md`.
+written 2026-09-08 from the design session for ai.ctf issue #60. the locked decision is ADR-0024; vocabulary is in `glossary.md` (entrant, hosted entrant, external entrant, task); the wire contract is `contract/API.md` § Agent API and `contract/arena-types.ts`. research that shaped it: `research/byoa-agent-protocols.md`, `research/byoa-harness-hooks.md`, `research/byoa-platform-survey.md`.
 
 ## goal
 

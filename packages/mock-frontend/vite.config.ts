@@ -27,6 +27,7 @@ const withOperatorToken: ProxyOptions = {
 
 const backendProxy: Record<string, ProxyOptions> = {
   '/runs': withOperatorToken,
+  '/agents': { target: BACKEND },
   // Login carries its own credential (or mints one), so it proxies untouched.
   '/auth': { target: BACKEND },
 };

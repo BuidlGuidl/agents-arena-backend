@@ -19,9 +19,7 @@ import { buildTaskText } from './ctf/prompt.js';
 import {
   registerMessage,
   HARNESS_IDS,
-  OPENCODE_EFFORTS,
   ROSTER_EFFORTS,
-  ROSTER_MODELS,
   type ArenaEvent,
   type AgentTaskResponse,
   type JoinRunRequest,
@@ -33,6 +31,7 @@ import {
   type SteerResponse,
   type SweepResponse,
 } from './contract.js';
+import { OpenRouterUnavailableError, createAgentRegistry, rosterIssues, type AgentRegistry } from './agents/registry.js';
 import type { Schedule } from './adapters/fake.js';
 import { AgentTokens, resolveAgentToken, requireLane, NotInRunError, type AgentIdentityRecord } from './agent-auth.js';
 import { useSolvedLookup } from './ctf/challenge-tracker.js';
@@ -85,29 +84,9 @@ const rosterEntrySchema = z.object({
       message: 'entrant id "run" is reserved for run-level feed events',
     }),
   harness: z.enum(HARNESS_IDS),
-  model: z.string(),
-  effort: z.enum(ROSTER_EFFORTS).optional(),
-}).strict().superRefine((entry, context) => {
-  const allowedModels = ROSTER_MODELS[entry.harness];
-  if (!allowedModels.includes(entry.model)) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['model'],
-      message: `${entry.harness} models must be one of: ${allowedModels.join(', ')}`,
-    });
-  }
-  if (
-    entry.harness === 'opencode'
-    && entry.effort
-    && !OPENCODE_EFFORTS.some((effort) => effort === entry.effort)
-  ) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['effort'],
-      message: `opencode effort through openrouter must be one of: ${OPENCODE_EFFORTS.join(', ')}`,
-    });
-  }
-});
+  model: z.string().min(1),
+  effort: z.enum(ROSTER_EFFORTS),
+}).strict();
 
 const registerSchema = z.object({
   address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
@@ -149,6 +128,10 @@ const verifySchema = z.object({
   message: z.string().min(1),
   signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
 }).strict();
+const agentSearchQuerySchema = z.object({
+  harness: z.enum(HARNESS_IDS),
+  q: z.string().trim().min(2),
+}).strict();
 const eventsQuerySchema = z.object({ after: z.coerce.number().int().nonnegative().optional() });
 const decimalIntegerSchema = z.string()
   .regex(/^\d+$/)
@@ -179,6 +162,7 @@ export interface ServerOptions {
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
   solveWatchFactory?: (journal: EventJournal) => SolveWatch;
   sweepChain?: NativeSweepChain;
+  agentRegistry?: AgentRegistry;
   narrate?: Narrate;
   narrationMinMs?: number;
   narrationMaxMs?: number;
@@ -196,6 +180,7 @@ export interface ArenaServer {
 export function createServer(options: ServerOptions): ArenaServer {
   const publicUrl = options.publicUrl ?? DEFAULT_PUBLIC_URL;
   const siteUrl = resolveSiteUrl(publicUrl, options.corsOrigins, options.siteUrl);
+  const registry = options.agentRegistry ?? createAgentRegistry();
   const app = Fastify({ logger: options.logger ?? false });
   app.addHook('onRequest', agentMcpOriginGuard(options.corsOrigins ?? []));
   if (options.corsOrigins !== undefined && options.corsOrigins.length > 0) {
@@ -418,9 +403,42 @@ export function createServer(options: ServerOptions): ArenaServer {
       .send({ authenticated: false, configured: login.enabled });
   });
 
+  // Open read: the operator gate is method-based (ADR-0012).
+  app.get('/agents', async (_request, reply) => {
+    return reply.header('Cache-Control', 'public, max-age=60').send(registry.list());
+  });
+
+  app.get('/agents/search', async (request, reply) => {
+    const query = agentSearchQuerySchema.safeParse(request.query);
+    if (!query.success) {
+      const issue = query.error.issues[0];
+      if (issue?.code === 'unrecognized_keys') {
+        const label = issue.keys.length === 1 ? 'parameter' : 'parameters';
+        return reply.status(400).send({ error: `Unknown query ${label}: ${issue.keys.join(', ')}` });
+      }
+      const field = issue?.path[0] ?? 'harness';
+      return reply.status(400).send({ error: `Invalid ${String(field)} query value` });
+    }
+    try {
+      const agents = await registry.search(query.data.harness, query.data.q);
+      return reply.header('Cache-Control', 'public, max-age=60').send({ agents });
+    } catch (error) {
+      if (!(error instanceof OpenRouterUnavailableError)) throw error;
+      return reply.status(503).send({ error: error.message });
+    }
+  });
+
   app.post('/runs', async (request, reply) => {
     const body = parseBody(createRunSchema, request.body, reply);
     if (body === undefined) return;
+    if (body.idempotencyKey !== undefined) {
+      const run = manager.findByIdempotencyKey(body.idempotencyKey);
+      if (run !== undefined) return reply.status(200).send({ run });
+    }
+    if (body.roster !== undefined) {
+      const issues = await rosterIssues(registry, body.roster);
+      if (issues.length > 0) return reply.status(400).send({ error: 'Invalid request body', issues });
+    }
     const input: CreateRunRequest = {
       preset: body.preset,
       ...(body.autoStart === undefined ? {} : { autoStart: body.autoStart }),
@@ -431,7 +449,7 @@ export function createServer(options: ServerOptions): ArenaServer {
           id: entry.id,
           harness: entry.harness,
           model: entry.model,
-          ...(entry.effort === undefined ? {} : { effort: entry.effort }),
+          effort: entry.effort,
         })),
       }),
     };

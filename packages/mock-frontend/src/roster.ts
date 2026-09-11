@@ -1,11 +1,6 @@
-import { ROSTER_MODELS } from '../../../contract/arena-types';
-import type { HarnessId, RosterEffort, RosterEntry } from '../../../contract/arena-types';
+import type { AgentOption, HarnessId, RosterEffort, RosterEntry } from '../../../contract/arena-types';
 
 export const MAX_ENTRANTS = 10;
-
-// Sits in the effort select ahead of the real levels. It means "send no effort
-// field", which is not the same as any level the harness names.
-export const DEFAULT_EFFORT = 'default';
 
 export const SUBSTRATES = ['fake', 'docker'] as const;
 export type Substrate = (typeof SUBSTRATES)[number];
@@ -20,7 +15,7 @@ export const SUBSTRATE_PRESET: Record<Substrate, string> = {
 export interface DraftEntrant {
   harness: HarnessId;
   model: string;
-  effort: RosterEffort | typeof DEFAULT_EFFORT;
+  effort: RosterEffort;
 }
 
 export interface RosterDraft {
@@ -28,14 +23,10 @@ export interface RosterDraft {
   problem: string | null;
 }
 
-export function newDraft(harness: HarnessId): DraftEntrant {
-  return { harness, model: ROSTER_MODELS[harness][0], effort: DEFAULT_EFFORT };
-}
-
-// The default sentinel omits the field and preserves the harness setting.
-export function draftEffort(draft: DraftEntrant): RosterEffort | undefined {
-  if (draft.effort === DEFAULT_EFFORT) return undefined;
-  return draft.effort;
+export function newDraft(harness: HarnessId, agents: readonly AgentOption[]): DraftEntrant | null {
+  const agent = agents.find((entry) => entry.harness === harness);
+  if (!agent || !agent.efforts[0]) return null;
+  return { harness, model: agent.model, effort: agent.efforts[0] };
 }
 
 // codex-1, codex-2, claude-1 … numbered per harness in row order, so a row's
@@ -56,41 +47,36 @@ export function laneOrder(entries: readonly RosterEntry[]): number[] {
   return entries.map((entry) => sorted.indexOf(entry.id));
 }
 
-// Mirrors the backend's create-run schema so a bad lineup reads as an inline
-// reason instead of a 400.
-export function buildRoster(drafts: readonly DraftEntrant[]): RosterDraft {
+// Catch invalid entries before the create request so the row can show the reason.
+export function buildRoster(drafts: readonly DraftEntrant[], agents: readonly AgentOption[]): RosterDraft {
   const ids = assignIds(drafts);
-  const entries = drafts.map((draft, index) => {
-    const effort = draftEffort(draft);
-    return {
-      id: ids[index],
-      harness: draft.harness,
-      model: draft.model,
-      ...(effort === undefined ? {} : { effort }),
-    };
-  });
-  return { entries, problem: rosterProblem(entries) };
+  const entries = drafts.map((draft, index) => ({ id: ids[index], ...draft }));
+  return { entries, problem: rosterProblem(entries, agents) };
 }
 
-function rosterProblem(entries: readonly RosterEntry[]): string | null {
+function rosterProblem(entries: readonly RosterEntry[], agents: readonly AgentOption[]): string | null {
   if (entries.length === 0) return 'add at least one entrant.';
   if (entries.length > MAX_ENTRANTS) return `${MAX_ENTRANTS} entrants max.`;
   if (new Set(entries.map((entry) => entry.id)).size !== entries.length) {
     return 'two entrants share a lane name.';
   }
   for (const entry of entries) {
-    const problem = entryProblem(entry);
+    const problem = entryProblem(entry, agents);
     if (problem !== null) return problem;
   }
   return null;
 }
 
-function entryProblem(entry: RosterEntry): string | null {
+function entryProblem(entry: RosterEntry, agents: readonly AgentOption[]): string | null {
   if (entry.id.length > 20 || !/^[a-z][a-z0-9-]*$/.test(entry.id) || entry.id === 'run') {
     return `${entry.id} is not a usable lane name.`;
   }
-  if (!ROSTER_MODELS[entry.harness].includes(entry.model)) {
+  const agent = agents.find((agent) => agent.harness === entry.harness && agent.model === entry.model);
+  if (!agent) {
     return `${entry.id}: ${entry.harness} does not run ${entry.model}.`;
+  }
+  if (!agent.efforts.includes(entry.effort)) {
+    return `${entry.id}: ${entry.model} accepts effort ${agent.efforts.join(', ')}.`;
   }
   return null;
 }

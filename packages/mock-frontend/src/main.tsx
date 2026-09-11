@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type {
+  AgentOption,
+  AgentsResponse,
   ArenaEvent,
   BroadcastResponse,
   EntrantSolve,
@@ -11,12 +13,6 @@ import type {
   RestartResponse,
   RunSnapshot,
   RunState,
-} from '../../../contract/arena-types';
-import {
-  HARNESS_IDS,
-  OPENCODE_EFFORTS,
-  ROSTER_EFFORTS,
-  ROSTER_MODELS,
 } from '../../../contract/arena-types';
 import { projectSnapshot } from './project-snapshot';
 import {
@@ -46,7 +42,6 @@ import {
 import { OperatorLogin } from './operator-login';
 import {
   buildRoster,
-  DEFAULT_EFFORT,
   laneOrder,
   MAX_ENTRANTS,
   newDraft,
@@ -81,7 +76,20 @@ function App() {
   const [preset, setPreset] = useState<Preset>('fake-duel');
   const [mode, setMode] = useState<'preset' | 'custom'>('preset');
   const [substrate, setSubstrate] = useState<Substrate>('fake');
-  const [drafts, setDrafts] = useState<DraftEntrant[]>(() => [newDraft('codex'), newDraft('claude')]);
+  const available = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => fetchJson<AgentsResponse>('/agents'),
+    staleTime: Infinity,
+    retry: false,
+  });
+  const agents = available.data?.agents ?? [];
+  const [drafts, setDrafts] = useState<DraftEntrant[]>([]);
+  useEffect(() => {
+    if (available.data) {
+      setDrafts([newDraft('codex', available.data.agents), newDraft('claude', available.data.agents)]
+        .filter((draft): draft is DraftEntrant => draft !== null));
+    }
+  }, [available.data]);
   const [runId, setRunId] = useState<string | null>(null);
   const [feed, setFeed] = useState<FeedState>(initialFeedState);
   const [connection, setConnection] = useState('disconnected');
@@ -96,7 +104,7 @@ function App() {
       return projected !== undefined && projected.lastEventId > fetched.lastEventId ? projected : fetched;
     },
   });
-  const roster = useMemo(() => buildRoster(drafts), [drafts]);
+  const roster = useMemo(() => buildRoster(drafts, agents), [drafts, agents]);
   const createRun = useMutation({
     mutationFn: async () => fetchJson<{ run: RunSnapshot }>('/runs', {
       method: 'POST',
@@ -263,6 +271,8 @@ function App() {
       {mode === 'custom' ? (
         <LineupComposer
           drafts={drafts}
+          agents={agents}
+          harnesses={available.data?.harnesses ?? []}
           roster={roster}
           disabled={createRun.isPending}
           onChange={setDrafts}
@@ -348,15 +358,17 @@ function App() {
   );
 }
 
-// Builds the roster the run starts with. Lane names are generated and models come
-// from the contract's allowlist, so every row is valid by construction.
-function LineupComposer({ drafts, roster, disabled, onChange }: {
+// The backend owns the models and efforts so the controls stay in sync with validation.
+function LineupComposer({ drafts, agents, harnesses, roster, disabled, onChange }: {
   drafts: DraftEntrant[];
+  agents: readonly AgentOption[];
+  harnesses: AgentsResponse['harnesses'];
   roster: RosterDraft;
   disabled: boolean;
   onChange: (drafts: DraftEntrant[]) => void;
 }) {
-  const update = (index: number, next: DraftEntrant) => {
+  const update = (index: number, next: DraftEntrant | null) => {
+    if (next === null) return;
     onChange(drafts.map((draft, at) => (at === index ? next : draft)));
   };
   const lanes = laneOrder(roster.entries);
@@ -366,10 +378,8 @@ function LineupComposer({ drafts, roster, disabled, onChange }: {
       <ul className="lineup-rows">
         {drafts.map((draft, index) => {
           const id = roster.entries[index].id;
-          const models = ROSTER_MODELS[draft.harness];
-          const efforts = draft.harness === 'opencode'
-            ? OPENCODE_EFFORTS
-            : ROSTER_EFFORTS;
+          const models = agents.filter((agent) => agent.harness === draft.harness);
+          const efforts = models.find((agent) => agent.model === draft.model)?.efforts ?? [];
           return (
             <li
               className="lineup-row"
@@ -384,10 +394,10 @@ function LineupComposer({ drafts, roster, disabled, onChange }: {
                 data-testid={`harness-${index}`}
                 value={draft.harness}
                 disabled={disabled}
-                onChange={(event) => update(index, newDraft(event.target.value as HarnessId))}
+                onChange={(event) => update(index, newDraft(event.target.value as HarnessId, agents))}
               >
-                {HARNESS_IDS.map((harness) => (
-                  <option key={harness} value={harness}>{harness}</option>
+                {harnesses.filter((harness) => agents.some((agent) => agent.harness === harness.id)).map((harness) => (
+                  <option key={harness.id} value={harness.id}>{harness.label}</option>
                 ))}
               </select>
               <select
@@ -396,10 +406,13 @@ function LineupComposer({ drafts, roster, disabled, onChange }: {
                 data-testid={`model-${index}`}
                 value={draft.model}
                 disabled={disabled}
-                onChange={(event) => update(index, { ...draft, model: event.target.value })}
+                onChange={(event) => {
+                  const agent = models.find((agent) => agent.model === event.target.value);
+                  update(index, agent ? { ...draft, model: agent.model, effort: agent.efforts[0] } : draft);
+                }}
               >
                 {models.map((model) => (
-                  <option key={model} value={model}>{model}</option>
+                  <option key={model.model} value={model.model}>{model.model}</option>
                 ))}
               </select>
               <span className="field lineup-effort">
@@ -415,7 +428,6 @@ function LineupComposer({ drafts, roster, disabled, onChange }: {
                     effort: event.target.value as DraftEntrant['effort'],
                   })}
                 >
-                  <option value={DEFAULT_EFFORT}>{DEFAULT_EFFORT}</option>
                   {efforts.map((effort) => (
                     <option key={effort} value={effort}>{effort}</option>
                   ))}
@@ -441,8 +453,12 @@ function LineupComposer({ drafts, roster, disabled, onChange }: {
           type="button"
           className="btn row-btn add"
           data-testid="add-entrant"
-          disabled={disabled || drafts.length >= MAX_ENTRANTS}
-          onClick={() => onChange([...drafts, newDraft('codex')])}
+          disabled={disabled || agents.length === 0 || drafts.length >= MAX_ENTRANTS}
+          onClick={() => {
+            const harness = harnesses.find((harness) => agents.some((agent) => agent.harness === harness.id));
+            const next = harness ? newDraft(harness.id, agents) : null;
+            if (next) onChange([...drafts, next]);
+          }}
         >
           add entrant
         </button>
@@ -456,7 +472,7 @@ function LineupComposer({ drafts, roster, disabled, onChange }: {
       ) : null}
 
       <p className="lineup-note">
-        the model list is server-enforced. all rows can set effort; opencode offers low, medium, or high. default uses the harness setting.
+        the backend lists the models and their accepted efforts. every entrant pins an effort.
       </p>
     </section>
   );

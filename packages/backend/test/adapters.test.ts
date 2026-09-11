@@ -1331,7 +1331,8 @@ describe('adapter guardrails', () => {
   });
 
   it('omits Codex model reasoning effort from config.toml when unset', async () => {
-    const context = await setup('codex');
+    // Old journal rows have no effort; presets now pin one.
+    const context = await setup('codex', undefined, false, undefined, null);
     try {
       const config = context.containerOptions.credentialFiles?.find(
         (file) => file.path === '/creds/codex/config.toml',
@@ -1344,7 +1345,7 @@ describe('adapter guardrails', () => {
     }
   });
 
-  it('writes OpenCode reasoning effort to the project config when set', async () => {
+  it('passes OpenCode reasoning effort through the container env when set', async () => {
     const context = await setup(
       'opencode',
       undefined,
@@ -1353,23 +1354,18 @@ describe('adapter guardrails', () => {
       'high',
     );
     try {
-      expect(context.containerOptions.credentialFiles).toEqual([
-        {
-          path: '/work/opencode.json',
-          content: `${JSON.stringify({
-            provider: {
-              openrouter: {
-                models: {
-                  'z-ai/glm-5.3': {
-                    options: { reasoning: { effort: 'high' } },
-                  },
-                },
+      expect(context.containerOptions.env?.OPENCODE_CONFIG_CONTENT).toBe(JSON.stringify({
+        provider: {
+          openrouter: {
+            models: {
+              'z-ai/glm-5.3': {
+                options: { reasoning: { effort: 'high' } },
               },
             },
-          }, null, 2)}\n`,
-          mode: 0o644,
+          },
         },
-      ]);
+      }));
+      expect(context.containerOptions.credentialFiles).toBeUndefined();
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();
@@ -1408,9 +1404,11 @@ describe('adapter guardrails', () => {
   });
 
   it('writes no OpenCode config when reasoning effort is unset', async () => {
-    const context = await setup('opencode');
+    // Old journal rows have no effort; presets now pin one.
+    const context = await setup('opencode', undefined, false, undefined, null);
     try {
       expect(context.containerOptions.credentialFiles).toBeUndefined();
+      expect(context.containerOptions.env).not.toHaveProperty('OPENCODE_CONFIG_CONTENT');
     } finally {
       await context.driver.stop(context.run, context.entrant);
       context.journal.close();
@@ -1952,7 +1950,8 @@ describe('adapter guardrails', () => {
   });
 
   it('omits Claude effort from start and resume arguments when unset', async () => {
-    const context = await setup('claude');
+    // Old journal rows have no effort; presets now pin one.
+    const context = await setup('claude', undefined, false, undefined, null);
     try {
       expect(context.container.calls[2]?.argv).toEqual(['claude', '--version']);
       await context.driver.start(context.run, context.entrant, 'opening prompt');

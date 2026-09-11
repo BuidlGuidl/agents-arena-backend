@@ -5,7 +5,7 @@
 // display only (scoring is on-chain flags), so a missing rate costs nothing but
 // an empty field.
 //
-// Rates are USD per million tokens at list price, read July 2026. Cached input
+// Rates are USD per million tokens at list price, read 2026-09-08. Cached input
 // matters: a codex turn is mostly repeated context (three quarters of the sample
 // turn in test/fixtures), and cached input bills at a tenth of fresh input, so
 // pricing every prompt token at the full rate overstates a turn about threefold.
@@ -19,13 +19,21 @@ export interface ModelRate {
 export const MODEL_RATES: Readonly<Record<string, ModelRate>> = {
   'gpt-5-codex': { inputPerMillion: 1.25, cachedInputPerMillion: 0.125, outputPerMillion: 10 },
   'gpt-5.5': { inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 30 },
+  'gpt-5.6-sol': { inputPerMillion: 4, cachedInputPerMillion: 0.4, outputPerMillion: 20 },
+  'gpt-5.6-terra': { inputPerMillion: 2, cachedInputPerMillion: 0.2, outputPerMillion: 12 },
+  'gpt-5.6-luna': { inputPerMillion: 0.2, cachedInputPerMillion: 0.02, outputPerMillion: 1.2 },
   'claude-opus-5': { inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 25 },
   'claude-opus-4-8': { inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 25 },
-  'claude-sonnet-5': { inputPerMillion: 3, cachedInputPerMillion: 0.3, outputPerMillion: 15 },
-  // Not a roster model: claude's Task subagents run on it, and their tokens land
-  // in the delegating entrant's modelUsage (#38).
-  'claude-haiku-4-5': { inputPerMillion: 1, cachedInputPerMillion: 0.1, outputPerMillion: 5 },
+  'claude-opus-4-7': { inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 25 },
+  'claude-opus-4-6': { inputPerMillion: 5, cachedInputPerMillion: 0.5, outputPerMillion: 25 },
+  'claude-sonnet-5': { inputPerMillion: 2, cachedInputPerMillion: 0.2, outputPerMillion: 10 },
+  'claude-sonnet-4-6': { inputPerMillion: 3, cachedInputPerMillion: 0.3, outputPerMillion: 15 },
   'claude-fable-5': { inputPerMillion: 10, cachedInputPerMillion: 1, outputPerMillion: 50 },
+  // Not a typo: claude.com/pricing lists Fable 5.1 cache reads at $0.25/MTok, a
+  // fortieth of input, while Fable 5 stays at the usual tenth (read 2026-09-09).
+  'claude-fable-5-1': { inputPerMillion: 10, cachedInputPerMillion: 0.25, outputPerMillion: 50 },
+  // Not an agent on the list: claude's Task subagents run on it, and their tokens land in the delegating entrant's modelUsage (#38).
+  'claude-haiku-4-5': { inputPerMillion: 1, cachedInputPerMillion: 0.1, outputPerMillion: 5 },
 };
 
 // cachedInputTokens are the prompt tokens served from cache, counted inside

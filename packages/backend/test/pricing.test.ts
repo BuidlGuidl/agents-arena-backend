@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { ROSTER_MODELS } from '../src/contract.js';
+import { CURATED_AGENTS } from '../src/agents/curated.js';
+import { PRESET_NAMES, presetEntrants } from '../src/run-manager.js';
 import { costForModelUsage, costForTokens, MODEL_RATES } from '../src/pricing.js';
 
 describe('costForTokens', () => {
@@ -38,7 +39,7 @@ describe('costForTokens', () => {
     const opus = { model: 'claude-opus-5', inputTokens: 5_010, outputTokens: 1_000, cachedInputTokens: 4_000 };
     const sonnet = { model: 'claude-sonnet-5', inputTokens: 5_000, outputTokens: 2_000, cachedInputTokens: 5_000 };
 
-    expect(costForModelUsage([opus, sonnet], 'claude-opus-5')).toBe(0.06355);
+    expect(costForModelUsage([opus, sonnet], 'claude-opus-5')).toBe(0.05305);
     // The same tokens billed wholly at opus, which is what the aggregate did.
     expect(costForTokens('claude-opus-5', 10_010, 3_000, 9_000)).toBe(0.08455);
   });
@@ -59,10 +60,10 @@ describe('costForTokens', () => {
     expect(costForModelUsage([], 'claude-opus-5')).toBeNull();
   });
 
-  it('has a rate for every codex and claude roster model', () => {
-    // OpenCode entrants report their own cost from OpenRouter, so its roster
-    // models price without a table row. Codex and claude rely on the table.
-    for (const model of [...ROSTER_MODELS.codex, ...ROSTER_MODELS.claude]) {
+  it('has a rate for every codex and claude agent', () => {
+    // OpenCode entrants report their own cost. Codex and claude rely on the table.
+    const agents = [...CURATED_AGENTS, ...PRESET_NAMES.flatMap(presetEntrants)];
+    for (const { model } of agents.filter((agent) => agent.harness !== 'opencode')) {
       expect(MODEL_RATES[model], `missing rate for ${model}`).toBeDefined();
     }
   });

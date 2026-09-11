@@ -94,26 +94,36 @@ const PRESETS: Readonly<Record<string, Preset>> = {
   'fake-duel': {
     substrate: 'fake',
     entrants: [
-      { id: 'codex-1', harness: 'codex', model: 'gpt-5-codex' },
-      { id: 'opencode-1', harness: 'opencode', model: 'opencode-fake-1' },
+      { id: 'codex-1', harness: 'codex', model: 'gpt-5-codex', effort: 'medium' },
+      { id: 'opencode-1', harness: 'opencode', model: 'opencode-fake-1', effort: 'medium' },
     ],
   },
   'docker-duel': {
     substrate: 'docker',
     entrants: [
-      { id: 'codex-1', harness: 'codex', model: 'gpt-5.5' },
-      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3' },
+      { id: 'codex-1', harness: 'codex', model: 'gpt-5.5', effort: 'high' },
+      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3', effort: 'high' },
     ],
   },
   'docker-arena': {
     substrate: 'docker',
     entrants: [
-      { id: 'codex-1', harness: 'codex', model: 'gpt-5.5' },
-      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3' },
-      { id: 'claude-1', harness: 'claude', model: 'claude-opus-5' },
+      { id: 'codex-1', harness: 'codex', model: 'gpt-5.5', effort: 'high' },
+      { id: 'opencode-1', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3', effort: 'high' },
+      { id: 'claude-1', harness: 'claude', model: 'claude-opus-5', effort: 'high' },
     ],
   },
 };
+
+export const PRESET_NAMES: readonly string[] = Object.keys(PRESETS);
+
+export function presetEntrants(name: string): readonly RosterEntry[] {
+  const preset = PRESETS[name];
+  if (preset === undefined) {
+    throw new UnknownPresetError(`Unknown preset: ${name}`);
+  }
+  return preset.entrants;
+}
 
 export function presetSubstrate(name: string): PresetSubstrate {
   const preset = PRESETS[name];
@@ -230,15 +240,20 @@ export class RunManager {
     ensureChainTables(journal.database);
   }
 
+  findByIdempotencyKey(key: string): RunSnapshot | undefined {
+    const existing = this.journal.database
+      .select({ id: runs.id })
+      .from(runs)
+      .where(eq(runs.idempotencyKey, key))
+      .get();
+    return existing === undefined ? undefined : this.snapshot(existing.id);
+  }
+
   async create(input: CreateRunRequest): Promise<CreateRunResult> {
     if (input.idempotencyKey !== undefined) {
-      const existing = this.journal.database
-        .select({ id: runs.id })
-        .from(runs)
-        .where(eq(runs.idempotencyKey, input.idempotencyKey))
-        .get();
+      const existing = this.findByIdempotencyKey(input.idempotencyKey);
       if (existing !== undefined) {
-        return { run: this.snapshot(existing.id), created: false };
+        return { run: existing, created: false };
       }
     }
 

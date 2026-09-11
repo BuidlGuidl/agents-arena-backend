@@ -11,6 +11,9 @@ import {
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { CURATED_AGENTS } from '../src/agents/curated.js';
+import { createAgentRegistry } from '../src/agents/registry.js';
+import { OpenRouterUnavailableError } from '../src/agents/openrouter.js';
 import { issueAgentToken, revokeAgentToken } from '../src/agent-auth.js';
 import { dropCurrentChallenge, recordCurrentChallenge } from '../src/ctf/challenge-tracker.js';
 import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
@@ -1567,7 +1570,48 @@ describe('sweep endpoint', () => {
   });
 });
 
+const model = 'openrouter/google/gemini-3.1-pro-preview';
+const custom = {
+  harness: 'opencode' as const, model, label: 'Gemini 3.1 Pro Preview', vendor: 'Google',
+  efforts: ['low', 'medium', 'high'] as const,
+};
+
+function setup(state: 'listed' | 'absent' | 'offline' = 'listed') {
+  const agentRegistry = createAgentRegistry({
+    openRouter: { list: async () => {
+      if (state === 'offline') throw new OpenRouterUnavailableError();
+      return state === 'listed' ? [custom] : [];
+    } },
+  });
+  const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN, agentRegistry });
+  servers.push(server);
+  return server;
+}
+
 describe('run rosters', () => {
+  it('returns an idempotent roster retry when OpenRouter is offline', async () => {
+    const list = vi.fn().mockResolvedValue([custom]);
+    const agentRegistry = createAgentRegistry({ openRouter: { list } });
+    const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN, agentRegistry });
+    servers.push(server);
+    const request = {
+      method: 'POST' as const, url: '/runs', headers: operatorHeaders,
+      payload: {
+        preset: 'fake-duel', idempotencyKey: 'roster-retry',
+        roster: [{ id: 'entrant', harness: 'opencode', model, effort: 'high' }],
+      },
+    };
+    const first = await server.app.inject(request);
+    expect(first.statusCode).toBe(201);
+    list.mockRejectedValue(new OpenRouterUnavailableError());
+
+    const retry = await server.app.inject(request);
+
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json().run.id).toBe(first.json().run.id);
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
   it.each([59_999, 86_400_001])('rejects durationMs %i', async (durationMs) => {
     const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
@@ -1593,9 +1637,9 @@ describe('run rosters', () => {
       payload: {
         preset: 'fake-duel',
         roster: [
-          { id: 'claude-opus', harness: 'claude', model: 'claude-opus-5' },
-          { id: 'codex-main', harness: 'codex', model: 'gpt-5.5' },
-          { id: 'opencode-main', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3' },
+          { id: 'claude-opus', harness: 'claude', model: 'claude-opus-5', effort: 'high' },
+          { id: 'codex-main', harness: 'codex', model: 'gpt-5.5', effort: 'high' },
+          { id: 'opencode-main', harness: 'opencode', model: 'openrouter/z-ai/glm-5.3', effort: 'high' },
         ],
       },
     });
@@ -1609,6 +1653,41 @@ describe('run rosters', () => {
     ]);
   });
 
+  it.each([
+    { harness: 'codex', model: 'gpt-5.5', effort: undefined, status: 400, field: 'effort' },
+    { harness: 'codex', model: 'gpt-5.5', effort: 'max', status: 400, field: 'effort', message: 'gpt-5.5 accepts effort low, medium, high, xhigh' },
+    { harness: 'codex', model: 'gpt-5.6-terra', effort: 'ultra', status: 201 },
+    { harness: 'opencode', model, effort: 'high', status: 201 },
+    { harness: 'codex', model, effort: 'high', status: 400, field: 'model', message: `codex does not run ${model}` },
+  ])('validates $harness $model effort $effort', async ({ harness, model, effort, status, field, message }) => {
+    const response = await setup().app.inject({
+      method: 'POST', url: '/runs', headers: operatorHeaders,
+      payload: { preset: 'fake-duel', roster: [{ id: 'entrant', harness, model, effort }] },
+    });
+    expect(response.statusCode).toBe(status);
+    if (status === 400) {
+      expect(response.json().error).toBe('Invalid request body');
+      expect(response.json().issues[0].path).toEqual(['roster', 0, field]);
+      if (message) expect(response.json().issues[0].message).toBe(message);
+    } else {
+      expect(response.json().run.entrants[0].effort).toBe(effort);
+    }
+  });
+
+  it.each(['absent', 'offline'] as const)('rejects a custom model when %s', async (state) => {
+    const response = await setup(state).app.inject({
+      method: 'POST', url: '/runs', headers: operatorHeaders,
+      payload: { preset: 'fake-duel', roster: [{ id: 'entrant', harness: 'opencode', model, effort: 'high' }] },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: 'Invalid request body',
+      issues: [{ path: ['roster', 0, 'model'], message: state === 'absent'
+        ? `opencode does not run ${model}; pick a listed model or an OpenRouter model that supports reasoning`
+        : `could not verify ${model} against OpenRouter; retry or pick a listed model` }],
+    });
+  });
+
   it('rejects a model outside the harness allowlist', async () => {
     const server = createServer({ dbPath: ':memory:', operatorToken: OPERATOR_TOKEN });
     servers.push(server);
@@ -1619,13 +1698,13 @@ describe('run rosters', () => {
       headers: operatorHeaders,
       payload: {
         preset: 'fake-duel',
-        roster: [{ id: 'codex-main', harness: 'codex', model: 'gpt-4' }],
+        roster: [{ id: 'codex-main', harness: 'codex', model: 'gpt-4', effort: 'high' }],
       },
     });
 
     expect(response.statusCode).toBe(400);
     expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
-      .toBe('codex models must be one of: gpt-5.5');
+      .toBe('codex does not run gpt-4');
   });
 
   it('rejects a model allowed only for another harness', async () => {
@@ -1638,13 +1717,13 @@ describe('run rosters', () => {
       headers: operatorHeaders,
       payload: {
         preset: 'fake-duel',
-        roster: [{ id: 'codex-main', harness: 'codex', model: 'claude-opus-5' }],
+        roster: [{ id: 'codex-main', harness: 'codex', model: 'claude-opus-5', effort: 'high' }],
       },
     });
 
     expect(response.statusCode).toBe(400);
     expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
-      .toBe('codex models must be one of: gpt-5.5');
+      .toBe('codex does not run claude-opus-5');
   });
 
   it('accepts effort for a Codex roster entrant and exposes it in the snapshot', async () => {
@@ -1751,7 +1830,7 @@ describe('run rosters', () => {
 
     expect(response.statusCode).toBe(400);
     expect((response.json() as { issues: Array<{ message: string }> }).issues[0]?.message)
-      .toBe('opencode effort through openrouter must be one of: low, medium, high');
+      .toBe('openrouter/z-ai/glm-5.3 accepts effort low, medium, high');
   });
 
   it('rejects an invalid roster effort', async () => {
@@ -1778,36 +1857,37 @@ describe('run rosters', () => {
         id: `entrant-${index}`,
         harness: 'codex',
         model: 'gpt-5.5',
+        effort: 'high',
       })),
     },
     {
       caseName: 'duplicate entrant ids',
       roster: [
-        { id: 'same-id', harness: 'codex', model: 'gpt-5.5' },
-        { id: 'same-id', harness: 'claude', model: 'claude-opus-5' },
+        { id: 'same-id', harness: 'codex', model: 'gpt-5.5', effort: 'high' },
+        { id: 'same-id', harness: 'claude', model: 'claude-opus-5', effort: 'high' },
       ],
       expectedMessage: 'entrant ids must be unique within the roster',
     },
     {
       caseName: 'invalid entrant id characters',
-      roster: [{ id: 'Bad_id', harness: 'codex', model: 'gpt-5.5' }],
+      roster: [{ id: 'Bad_id', harness: 'codex', model: 'gpt-5.5', effort: 'high' }],
     },
     {
       caseName: 'an entrant id longer than 20 characters',
-      roster: [{ id: 'abcdefghijklmnopqrstu', harness: 'codex', model: 'gpt-5.5' }],
+      roster: [{ id: 'abcdefghijklmnopqrstu', harness: 'codex', model: 'gpt-5.5', effort: 'high' }],
     },
     {
       caseName: 'the reserved run entrant id',
-      roster: [{ id: 'run', harness: 'codex', model: 'gpt-5.5' }],
+      roster: [{ id: 'run', harness: 'codex', model: 'gpt-5.5', effort: 'high' }],
       expectedMessage: 'entrant id "run" is reserved for run-level feed events',
     },
     {
       caseName: 'the default model because it is outside the allowlist',
-      roster: [{ id: 'codex-main', harness: 'codex', model: 'default' }],
+      roster: [{ id: 'codex-main', harness: 'codex', model: 'default', effort: 'high' }],
     },
     {
       caseName: 'a whitespace-padded model because it is outside the allowlist',
-      roster: [{ id: 'codex-main', harness: 'codex', model: ' gpt-5.5' }],
+      roster: [{ id: 'codex-main', harness: 'codex', model: ' gpt-5.5', effort: 'high' }],
     },
     {
       caseName: 'an empty roster',
@@ -1850,8 +1930,8 @@ describe('run rosters', () => {
         preset: 'fake-duel',
         autoStart: true,
         roster: [
-          { id: 'claude-a', harness: 'claude', model: 'claude-opus-5' },
-          { id: 'claude-b', harness: 'claude', model: 'claude-sonnet-5' },
+          { id: 'claude-a', harness: 'claude', model: 'claude-opus-5', effort: 'high' },
+          { id: 'claude-b', harness: 'claude', model: 'claude-sonnet-5', effort: 'high' },
         ],
       },
     });
@@ -1876,7 +1956,7 @@ describe('run rosters', () => {
     const snapshot = server.manager.snapshot(run.id);
     expect(snapshot.entrants).toMatchObject([
       { id: 'claude-a', harness: 'claude', model: 'claude-opus-5', costUsd: 0.0224 },
-      { id: 'claude-b', harness: 'claude', model: 'claude-sonnet-5', costUsd: 0.01344 },
+      { id: 'claude-b', harness: 'claude', model: 'claude-sonnet-5', costUsd: 0.00896 },
     ]);
   });
 });
@@ -2443,3 +2523,42 @@ async function readSseEvents(response: Response, count: number): Promise<ArenaEv
   await reader.cancel();
   return events;
 }
+
+describe('agent endpoints', () => {
+  it('serves the ordered agent list without auth and with a cache header', async () => {
+    const response = await setup().app.inject({ method: 'GET', url: '/agents' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('public, max-age=60');
+    expect(response.json()).toEqual({
+      harnesses: [
+        { id: 'codex', label: 'Codex CLI', customModels: false },
+        { id: 'claude', label: 'Claude Code', customModels: false },
+        { id: 'opencode', label: 'OpenCode', customModels: true },
+      ],
+      agents: CURATED_AGENTS,
+    });
+  });
+
+  it.each(['', '?q=google', '?harness=other&q=google', '?harness=codex', '?harness=codex&q=%20a%20'])
+    ('rejects invalid search query %s', async (query) => {
+      const response = await setup().app.inject({ method: 'GET', url: `/agents/search${query}` });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toMatch(/^Invalid (harness|q) query value$/);
+    });
+
+  it('rejects an unknown search query parameter', async () => {
+    const response = await setup().app.inject({ method: 'GET', url: '/agents/search?harness=codex&q=gpt&extra=1' });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'Unknown query parameter: extra' });
+  });
+
+  it('searches an injected source and reports an unavailable source', async () => {
+    const response = await setup().app.inject({ method: 'GET', url: '/agents/search?harness=opencode&q=google' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('public, max-age=60');
+    expect(response.json()).toEqual({ agents: [custom] });
+    const failed = await setup('offline').app.inject({ method: 'GET', url: '/agents/search?harness=opencode&q=google' });
+    expect(failed.statusCode).toBe(503);
+    expect(failed.json()).toEqual({ error: 'OpenRouter model list is unavailable' });
+  });
+});

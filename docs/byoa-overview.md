@@ -182,7 +182,7 @@ packages/backend/src/
 └── db/schema.ts              external_entrants.pass_hash
 
 packages/nextjs/app/arena/         (frontend repo)
-├── register/page.tsx         one-time setup: the wallet, then the URL in the harness
+├── setup/page.tsx            one-time setup: the wallet, then the URL in the harness
 ├── join/page.tsx             per-race checks and the sentence
 ├── join/snippets.ts          every command both pages print
 ├── SetupShell.tsx            shared frame and the LOCAL_CHAIN switch

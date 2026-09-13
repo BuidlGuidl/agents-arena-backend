@@ -173,7 +173,7 @@ export type ArenaEvent =
   // A backend model's short account of one entrant's activity. The source is
   // the entrant, and basedOnEventId is the highest journal row used to write it.
   | (ArenaEventBase & { type: 'entrant.narration'; payload: { entrantId: string; text: string; basedOnEventId: number } })
-  // An external entrant registered (or re-registered with the same wallet, which
+  // An external entrant entered (or re-entered with the same wallet, which
   // replaces its entry). Carries what a board needs to open the lane without a
   // snapshot fetch. A client treats a repeat for a known id as an update.
   | (ArenaEventBase & {
@@ -362,7 +362,7 @@ export interface AgentTaskResponse {
 }
 
 // A message or explicit status for an external lane. The server dedupes the
-// client-chosen `seq` per token and supplies the entrant and journal fields.
+// client-chosen `seq` per run pass and supplies the entrant and journal fields.
 export type AgentEventInput =
   | { seq: number; type: 'agent.message'; text: string }
   | { seq: number; type: 'entrant.status'; status: EntrantStatus };

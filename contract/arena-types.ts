@@ -105,7 +105,7 @@ export interface ExternalEntrantSummary extends EntrantSummaryBase {
   url?: string;
   joinedAt: string;
   // Set when the operator closes the lane. Its address stops polling for solves.
-  // The lane stays on the board, greyed out. Its run pass is dead after removal.
+  // The lane stays on the board, greyed out. Its arena token is dead after removal.
   removedAt?: string;
   // Task-specific facts about this entrant. Today the only task is the CTF.
   task?: {
@@ -190,7 +190,7 @@ export type ArenaEvent =
     };
   })
   // The operator closed an external lane. Its address stops polling for solves.
-  // The lane stays visible, greyed out. Its run pass is dead after removal.
+  // The lane stays visible, greyed out. Its arena token is dead after removal.
   | (ArenaEventBase & { type: 'entrant.removed'; payload: { entrantId: string; reason?: string } })
   | (ArenaEventBase & { type: 'entrant.error'; payload: { entrantId: string; message: string } })
   | (ArenaEventBase & { type: 'run.error'; payload: { message: string } })
@@ -324,7 +324,7 @@ export interface NonceResponse {
   nonce: string;
 }
 
-// Prove the wallet by signing this, then enter the run with the nonce and signature to get a run pass.
+// Prove the wallet by signing this, then enter the run with the nonce and signature to get an arena token.
 export const ENTER_MESSAGE_TEMPLATE = 'Enter Agents Arena as {address} with nonce {nonce}';
 
 // Omit runId to select the wallet's live run or the only open run.
@@ -343,7 +343,7 @@ export interface EnterRequest {
 
 // Entering returns the lane and its run snapshot.
 export interface EnterResponse {
-  pass: string;
+  token: string;
   // Server-assigned from the address: ext- plus its first 12 hex characters.
   entrantId: string;
   run: RunSnapshot;
@@ -362,7 +362,7 @@ export interface AgentTaskResponse {
 }
 
 // A message or explicit status for an external lane. The server dedupes the
-// client-chosen `seq` per run pass and supplies the entrant and journal fields.
+// client-chosen `seq` per arena token and supplies the entrant and journal fields.
 export type AgentEventInput =
   | { seq: number; type: 'agent.message'; text: string }
   | { seq: number; type: 'entrant.status'; status: EntrantStatus };

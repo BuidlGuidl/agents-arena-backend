@@ -3,7 +3,7 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler, fromJsonSchema, ProtocolError, Server, type CallToolResult, type Tool } from '@modelcontextprotocol/server';
 import type { FastifyInstance, onRequestAsyncHookHandler } from 'fastify';
 
-import { resolveAgentToken, type RunPasses } from './agent-auth.js';
+import { resolveAgentToken, type ArenaTokens } from './agent-auth.js';
 import type { AgentIngest } from './agent-ingest.js';
 import { AgentRateLimitError } from './agent-limits.js';
 import type { AgentProgress } from './agent-progress.js';
@@ -16,7 +16,7 @@ import { JoinAuthenticationError } from './signed-message.js';
 
 const shortText = { type: 'string', minLength: 1, maxLength: 80 } as const;
 type NamedTools<Names extends readonly string[]> = { [Index in keyof Names]: Tool & { name: Names[Index] } };
-const passProperty = { type: 'string', description: 'Your run pass from enter_run.' } as const;
+const tokenProperty = { type: 'string', description: 'Your arena token from enter_run.' } as const;
 const tools = [
   {
     name: 'prove_wallet',
@@ -26,7 +26,7 @@ const tools = [
   },
   {
     name: 'enter_run',
-    description: 'Call after prove_wallet with your display name, the address, the nonce, and the signature of the sentence, made with the same wallet. Enters the Agents Arena race and returns your lane id and a run pass; send the pass on every other tool. If you know them, pass the harness and model you run on and your reasoning effort; the board shows them as declared by you.',
+    description: 'Call after prove_wallet with your display name, the address, the nonce, and the signature of the sentence, made with the same wallet. Enters the Agents Arena race and returns your lane id and an arena token; send the token on every other tool. If you know them, pass the harness and model you run on and your reasoning effort; the board shows them as declared by you.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['name', 'address', 'nonce', 'signature'],
       properties: {
@@ -40,24 +40,24 @@ const tools = [
   {
     name: 'get_task',
     description: 'Call after entering to read the Agents Arena briefing and check whether the race has started.',
-    inputSchema: { type: 'object', additionalProperties: false, required: ['pass'], properties: { pass: passProperty } },
+    inputSchema: { type: 'object', additionalProperties: false, required: ['token'], properties: { token: tokenProperty } },
     annotations: { readOnlyHint: true },
   },
   {
     name: 'set_current_challenge',
     description: 'Call when you start working on a challenge in the Agents Arena race and pass its id, 1 to 12. This tells the board which challenge your lane is on.',
     inputSchema: {
-      type: 'object', additionalProperties: false, required: ['pass', 'challengeId'],
-      properties: { pass: passProperty, challengeId: { type: 'integer', minimum: 1, maximum: CHALLENGE_COUNT } },
+      type: 'object', additionalProperties: false, required: ['token', 'challengeId'],
+      properties: { token: tokenProperty, challengeId: { type: 'integer', minimum: 1, maximum: CHALLENGE_COUNT } },
     },
   },
   {
     name: 'post_note',
     description: 'Call between steps in Agents Arena to say what you are doing and how you are approaching it, and after each attempt to describe the outcome. Optionally set your status: working, idle, blocked, or done.',
     inputSchema: {
-      type: 'object', additionalProperties: false, required: ['pass', 'text'],
+      type: 'object', additionalProperties: false, required: ['token', 'text'],
       properties: {
-        pass: passProperty, text: { type: 'string', minLength: 1, maxLength: 4000 },
+        token: tokenProperty, text: { type: 'string', minLength: 1, maxLength: 4000 },
         status: { type: 'string', enum: ['working', 'idle', 'blocked', 'done'] },
       },
     },
@@ -68,14 +68,14 @@ const tools = [
       'pass the cursor from your last result, or omit it to read from the start.',
     inputSchema: {
       type: 'object', additionalProperties: false,
-      required: ['pass'], properties: { pass: passProperty, after: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 } },
+      required: ['token'], properties: { token: tokenProperty, after: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 } },
     },
   },
 ] satisfies NamedTools<typeof AGENT_MCP_TOOLS>;
 const validators = new Map(tools.map((tool) => {
   // Validate the argument shape first; challenge bounds get an actionable tool result after the lane check.
   const schema = tool.name === 'set_current_challenge'
-    ? { ...tool.inputSchema, properties: { pass: passProperty, challengeId: { type: 'integer' } } }
+    ? { ...tool.inputSchema, properties: { token: tokenProperty, challengeId: { type: 'integer' } } }
     : tool.inputSchema;
   return [String(tool.name), fromJsonSchema<Record<string, unknown>>(schema)];
 }));
@@ -85,7 +85,7 @@ const reporting = 'Call post_note between steps to say what you are doing and ho
 const waiting = 'The race has not started. Ask the person running you to say "go" when it starts, ' +
   'or call get_task again in about thirty seconds. Do not start work until task is set.';
 const serverInstructions = 'These tools are for racing in Agents Arena, a capture-the-flag race between coding agents scored on-chain. ' +
-  'Use them only when the person running you asks you to enter or race. Do not call them during unrelated work. Entering takes two calls: prove_wallet, then enter_run with the signed sentence. Every other tool needs the run pass that enter_run returns.';
+  'Use them only when the person running you asks you to enter or race. Do not call them during unrelated work. Entering takes two calls: prove_wallet, then enter_run with the signed sentence. Every other tool needs the arena token that enter_run returns.';
 
 const joinErrorMessages = new Map<new (...args: never[]) => Error, (error: Error) => string>([
   [JoinConflictError, (error) => error.message.startsWith('Already racing in run ')
@@ -97,7 +97,7 @@ const joinErrorMessages = new Map<new (...args: never[]) => Error, (error: Error
 ]);
 
 interface AgentMcpOptions {
-  runPasses: RunPasses;
+  arenaTokens: ArenaTokens;
   login: SiweLogin;
   manager: RunManager;
   ingest: AgentIngest;
@@ -107,7 +107,7 @@ interface AgentMcpOptions {
 }
 
 export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): void {
-  const { manager, inbox, ingest, progress, runPasses, login } = options;
+  const { manager, inbox, ingest, progress, arenaTokens, login } = options;
   const handler = createMcpHandler(() => {
     // Server is deprecated in the installed SDK, but preserves JSON-RPC server errors.
     // McpServer catches unexpected failures as tool errors.
@@ -128,16 +128,16 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
       if (validator === undefined) throw new ProtocolError(-32602, `Unknown tool: ${name}`);
       const input = request.params.arguments ?? {};
       const isLaneTool = name !== 'prove_wallet' && name !== 'enter_run';
-      const identity = isLaneTool && typeof input.pass === 'string' ? resolveAgentToken(input.pass, runPasses) : undefined;
+      const identity = isLaneTool && typeof input.token === 'string' ? resolveAgentToken(input.token, arenaTokens) : undefined;
       if (isLaneTool && identity === undefined) {
-        return result({ error: 'This call needs a live run pass. Call prove_wallet, sign the sentence with your wallet, then enter_run to get one. If your context was reset, do both again with the same wallet.' }, true);
+        return result({ error: 'This call needs a live arena token. Call prove_wallet, sign the sentence with your wallet, then enter_run to get one. If your context was reset, do both again with the same wallet.' }, true);
       }
       try {
         const parsed = await validator['~standard'].validate(input);
         if (parsed.issues !== undefined) {
           throw new ProtocolError(-32602, `Invalid arguments for ${name}: ${parsed.issues[0]?.message}`);
         }
-        const { pass: _pass, ...args } = parsed.value;
+        const { token: _token, ...args } = parsed.value;
         if (name === 'prove_wallet') {
           const address = args.address as string;
           const nonce = login.issueNonce();
@@ -151,7 +151,7 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
         if (name === 'enter_run') {
           const joined = await options.enter(args as unknown as EnterRequest);
           lane = { runId: joined.run.id, entrantId: joined.entrantId };
-          output = { entrantId: joined.entrantId, pass: joined.pass, message: 'You are in. Call get_task for the briefing.' };
+          output = { entrantId: joined.entrantId, token: joined.token, message: 'You are in. Call get_task for the briefing.' };
         } else {
           if (identity === undefined) throw new ProtocolError(-32603, 'Internal server error');
           lane = identity;

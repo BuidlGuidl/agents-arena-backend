@@ -103,7 +103,7 @@ export function buildTaskText(
     // The self-announce channel (#4). $-references keep the token out of this
     // prompt, which is journalled verbatim as entrant.prompt.
     entrant.kind === 'external'
-      ? `- Report as you go through the arena tools, sending the run pass from enter_run on every call: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. If you do not have the tools, use the agent API at ${apiUrl}, documented at ${siteUrl}/arena/join.`
+      ? `- Report as you go through the arena tools, sending the arena token from enter_run on every call: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. If you do not have the tools, use the agent API at ${apiUrl}, documented at ${siteUrl}/arena/join.`
       : `- Always report the challenge you are working on: when you start one (before you read or write anything for it), and again whenever you switch or move to the next. Report it with: curl -fsS -X POST "${apiUrl}/agent/progress" -H "authorization: Bearer $ARENA_AGENT_TOKEN" -H "content-type: application/json" -d '{"challengeId": N}' with N replaced by the challenge number.`,
     `- Do not stop until your address holds all ${CHALLENGE_COUNT} flags.`,
   ].join("\n");

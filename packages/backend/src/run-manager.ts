@@ -350,7 +350,7 @@ export class RunManager {
   }
 
   async join(
-    input: Omit<EnterRequest, 'nonce' | 'signature'> & { runId: string; passHash: string; flagsBeforeJoin: number; claim: () => void },
+    input: Omit<EnterRequest, 'nonce' | 'signature'> & { runId: string; arenaTokenHash: string; flagsBeforeJoin: number; claim: () => void },
   ): Promise<{ entrantId: string; run: RunSnapshot; created: boolean }> {
     const address = getAddress(input.address);
     const entrantId = `ext-${address.slice(2, 14).toLowerCase()}`;
@@ -377,7 +377,7 @@ export class RunManager {
           runId: run.id, id: entrantId, kind: 'external', address, harness: null, model: null, status: 'idle',
         }).run();
       }
-      this.external.register(entrant, input.passHash);
+      this.external.register(entrant, input.arenaTokenHash);
       this.journal.append(run.id, entrantId, 'entrant.joined', {
         entrantId, kind: 'external', address, name: input.name, ...declaredFields(input),
       });

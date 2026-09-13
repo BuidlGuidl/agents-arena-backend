@@ -887,7 +887,7 @@ describe('seed endpoint', () => {
 
       expect(response.statusCode).toBe(201);
       const { run: created } = response.json() as { run: RunSnapshot };
-      const external = await server.manager.join({ runId: created.id, address: LOCAL_DEV_OPERATOR.address, name: 'External', flagsBeforeJoin: 0, passHash: 'test-pass-hash', claim: () => {} });
+      const external = await server.manager.join({ runId: created.id, address: LOCAL_DEV_OPERATOR.address, name: 'External', flagsBeforeJoin: 0, arenaTokenHash: 'test-arena-token-hash', claim: () => {} });
       const run = await server.manager.start(created.id);
       expect(run.entrants.find((entrant) => entrant.id === external.entrantId)?.address).toBe(LOCAL_DEV_OPERATOR.address);
       expect(server.journal.after(run.id, 0).filter((event) => event.type === 'wallet.assigned').map((event) => event.source))
@@ -1166,7 +1166,7 @@ describe('sweep endpoint', () => {
     const operatorPrivateKey = generatePrivateKey();
     const operator = privateKeyToAccount(operatorPrivateKey);
     const { run } = await server.manager.create({ preset: 'fake-duel' });
-    await server.manager.join({ runId: run.id, address: LOCAL_DEV_OPERATOR.address, name: 'External', flagsBeforeJoin: 0, passHash: 'test-pass-hash', claim: () => {} });
+    await server.manager.join({ runId: run.id, address: LOCAL_DEV_OPERATOR.address, name: 'External', flagsBeforeJoin: 0, arenaTokenHash: 'test-arena-token-hash', claim: () => {} });
     sweepRunIds.add(run.id);
     const signature = await operator.signTypedData(seedTypedData(run.id, 31337));
     const walletSignature = (options.walletChainId ?? 31337) === 31337

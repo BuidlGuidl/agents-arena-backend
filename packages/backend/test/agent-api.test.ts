@@ -42,7 +42,7 @@ async function setup(options: Partial<ServerOptions> = {}) {
   const response = await enter(server, { runId: run.id, model: 'gpt-5.5' });
   expect(response.statusCode).toBe(201);
   const joined = response.json<EnterResponse>();
-  const token = joined.pass as string;
+  const token = joined.token as string;
   const headers = { authorization: `Bearer ${token}` };
   const post = (events: unknown[]) => server.app.inject({ method: 'POST', url: '/agent/events', headers, payload: { events } });
   const inbox = (after?: string | number) => server.app.inject({ method: 'GET', url: `/agent/inbox${after === undefined ? '' : `?after=${after}`}`, headers });
@@ -52,7 +52,7 @@ async function setup(options: Partial<ServerOptions> = {}) {
 }
 const message = (seq = 1, text = 'hello'): AgentEventInput => ({ seq, type: 'agent.message', text });
 
-describe('run pass authentication', () => {
+describe('arena token authentication', () => {
   it.each(['missing', 'wrong', 'dead'])('rejects a %s bearer on lane routes', async (kind) => {
     const f = await setup();
     if (kind === 'dead') await f.manager.remove(f.runId, f.entrantId);
@@ -63,13 +63,13 @@ describe('run pass authentication', () => {
     ] as const) {
       const response = await f.app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload }) });
       expect(response.statusCode).toBe(401);
-      expect(response.json()).toEqual({ error: 'Run pass required' });
+      expect(response.json()).toEqual({ error: 'Arena token required' });
     }
   });
 });
 
 describe('agent task', () => {
-  it('requires a token and returns null before running, then shared external and hosted text', async () => {
+  it('requires an arena token and returns null before running, then shared external and hosted text', async () => {
     const f = await setup();
     expect((await f.app.inject({ method: 'GET', url: '/agent/task' })).statusCode).toBe(401);
     const get = (headers = f.headers) => f.app.inject({ method: 'GET', url: '/agent/task', headers });
@@ -188,7 +188,7 @@ describe('event ingest', () => {
   });
 
 
-  it('redacts echoed byoa tokens', async () => {
+  it('redacts echoed arena tokens', async () => {
     const f = await setup();
     await f.post([message(1, f.token)]);
     expect(JSON.stringify(f.events())).not.toContain(f.token);
@@ -204,12 +204,12 @@ describe('event ingest', () => {
     expect((await f.app.inject({ method: 'GET', url: '/agent/task', headers: f.headers })).statusCode).toBe(401);
   });
 
-  it('accepts the same sequence once more after entry rotates the run pass', async () => {
+  it('accepts the same sequence once more after entry rotates the arena token', async () => {
     const f = await setup();
     expect((await f.post([message()])).json()).toEqual({ accepted: 1, duplicates: 0 });
     const response = await enter(f, { runId: f.runId, name: 'Again' });
     expect(response.statusCode).toBe(200);
-    f.headers.authorization = `Bearer ${response.json().pass}`;
+    f.headers.authorization = `Bearer ${response.json().token}`;
     expect((await f.post([message()])).json()).toEqual({ accepted: 1, duplicates: 0 });
     expect((await f.post([message()])).json()).toEqual({ accepted: 0, duplicates: 1 });
   });
@@ -406,7 +406,7 @@ it('narrates a late joiner and ends its lane after the closing done line', async
   const response = await enter(f, { runId: f.runId, name: 'Late' }, lateAccount);
   expect(response.statusCode).toBe(201);
   const late = response.json<EnterResponse>();
-  const token = late.pass as string;
+  const token = late.token as string;
   const headers = { authorization: `Bearer ${token}` };
   await f.app.inject({ method: 'POST', url: '/agent/events', headers, payload: { events: [message()] } });
   await vi.advanceTimersByTimeAsync(30);

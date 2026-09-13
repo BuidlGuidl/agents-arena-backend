@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
-import { RunPasses, passHash, resolveAgentToken } from '../src/agent-auth.js';
+import { ArenaTokens, arenaTokenHash, resolveAgentToken } from '../src/agent-auth.js';
 import { ENTER_MESSAGE_TEMPLATE, TERMINAL_RUN_STATES } from '../src/contract.js';
 import { externalEntrants, runs } from '../src/db/schema.js';
 import { createServer } from '../src/server.js';
@@ -16,32 +16,32 @@ async function setup() {
 }
 
 describe('signed entry', () => {
-  it('creates a lane and rotates its hashed run pass with a fresh signature', async () => {
+  it('creates a lane and rotates its hashed arena token with a fresh signature', async () => {
     const f = await setup();
     expect(ENTER_MESSAGE_TEMPLATE).toBe('Enter Agents Arena as {address} with nonce {nonce}');
     const first = await enter(f);
     expect(first.statusCode).toBe(201);
     expect(first.headers['cache-control']).toBe('no-store');
     const body = first.json();
-    expect(Object.keys(body).sort()).toEqual(['entrantId', 'pass', 'run']);
-    expect(body.pass).toMatch(/^byoa_[0-9a-f]{48}$/);
-    const store = new RunPasses(f.journal.database);
-    const record = resolveAgentToken(body.pass, store);
+    expect(Object.keys(body).sort()).toEqual(['entrantId', 'run', 'token']);
+    expect(body.token).toMatch(/^byoa_[0-9a-f]{48}$/);
+    const store = new ArenaTokens(f.journal.database);
+    const record = resolveAgentToken(body.token, store);
     expect(record).toEqual({ runId: f.runId, entrantId: body.entrantId, address: racer.address });
-    expect(resolveAgentToken(body.pass, store)).toBe(record);
+    expect(resolveAgentToken(body.token, store)).toBe(record);
     const second = await enter(f, { address: racer.address.toLowerCase() });
     expect(second.statusCode).toBe(200);
     expect(second.headers['cache-control']).toBe('no-store');
     expect(second.json().entrantId).toBe(body.entrantId);
-    expect(second.json().pass).not.toBe(body.pass);
-    expect(store.resolve(body.pass)).toBeUndefined();
-    expect(store.resolve(second.json().pass)).toEqual(record);
-    expect(store.resolve(second.json().pass)).not.toBe(record);
+    expect(second.json().token).not.toBe(body.token);
+    expect(store.resolve(body.token)).toBeUndefined();
+    expect(store.resolve(second.json().token)).toEqual(record);
+    expect(store.resolve(second.json().token)).not.toBe(record);
     const rows = f.journal.database.select().from(externalEntrants).all();
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.passHash).toBe(passHash(second.json().pass));
-    expect(JSON.stringify(rows)).not.toContain(second.json().pass);
-    expect((await f.app.inject({ url: '/agent/task', headers: { authorization: `Bearer ${body.pass}` } })).statusCode).toBe(401);
+    expect(rows[0]?.arenaTokenHash).toBe(arenaTokenHash(second.json().token));
+    expect(JSON.stringify(rows)).not.toContain(second.json().token);
+    expect((await f.app.inject({ url: '/agent/task', headers: { authorization: `Bearer ${body.token}` } })).statusCode).toBe(401);
   });
 
   it.each([{ address: 'bad' }, { nonce: 12 }, { signature: '0x1234' }, { extra: true }])('rejects malformed entry: %j', async (invalid) => {
@@ -108,8 +108,8 @@ describe('signed entry', () => {
     const winner = responses.find((response) => response.statusCode === 201)!;
     const loser = responses.find((response) => response.statusCode === 401)!;
     expect(loser.json()).toEqual({ error: 'Unknown or already used nonce' });
-    const store = new RunPasses(f.journal.database);
-    expect(store.resolve(winner.json().pass)).toEqual({ runId: winner.json().run.id, entrantId: winner.json().entrantId, address: racer.address });
+    const store = new ArenaTokens(f.journal.database);
+    expect(store.resolve(winner.json().token)).toEqual({ runId: winner.json().run.id, entrantId: winner.json().entrantId, address: racer.address });
     expect(f.journal.database.select().from(externalEntrants).all()).toHaveLength(1);
   });
 
@@ -130,24 +130,24 @@ describe('signed entry', () => {
       .toMatchObject({ task: { ctfFlagsBeforeJoin: 4 } });
   });
 
-  it('kills the pass on removal and bars another entry', async () => {
+  it('kills the arena token on removal and bars another entry', async () => {
     const f = await setup();
     const body = (await enter(f)).json();
     await f.manager.remove(f.runId, body.entrantId);
-    expect(new RunPasses(f.journal.database).resolve(body.pass)).toBeUndefined();
+    expect(new ArenaTokens(f.journal.database).resolve(body.token)).toBeUndefined();
     const response = await enter(f);
     expect(response.statusCode).toBe(403);
     expect(response.json()).toEqual({ error: 'This wallet was removed from the run' });
   });
 
-  it.each(TERMINAL_RUN_STATES)('kills the pass when the run is %s', async (state) => {
+  it.each(TERMINAL_RUN_STATES)('kills the arena token when the run is %s', async (state) => {
     const f = await setup();
     const body = (await enter(f)).json();
-    const store = new RunPasses(f.journal.database);
-    expect(store.resolve(body.pass)).toBeDefined();
+    const store = new ArenaTokens(f.journal.database);
+    expect(store.resolve(body.token)).toBeDefined();
     f.journal.database.update(runs).set({ state }).where(eq(runs.id, f.runId)).run();
-    expect(store.resolve(body.pass)).toBeUndefined();
-    const response = await f.app.inject({ url: '/agent/task', headers: { authorization: `Bearer ${body.pass}` } });
+    expect(store.resolve(body.token)).toBeUndefined();
+    const response = await f.app.inject({ url: '/agent/task', headers: { authorization: `Bearer ${body.token}` } });
     expect(response.statusCode).toBe(401);
   });
 });

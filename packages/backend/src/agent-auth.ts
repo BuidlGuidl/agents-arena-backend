@@ -8,12 +8,12 @@ import { externalEntrants, runs } from './db/schema.js';
 
 export const AGENT_TOKEN_PATTERN = /byoa_[0-9a-f]{48}/;
 
-export function mintRunPass(): string {
+export function mintArenaToken(): string {
   return `byoa_${randomBytes(24).toString('hex')}`;
 }
 
 // Hosted credentials live in memory and die with their containers.
-// Run passes use the database-backed store below. Both resolve through one function.
+// Arena tokens use the database-backed store below. Both resolve through one function.
 
 export interface AgentTokenRecord {
   runId: string;
@@ -42,8 +42,8 @@ export function issueAgentToken(runId: string, entrantId: string): string {
   return token;
 }
 
-export function resolveAgentToken(token: string, passes?: RunPasses): AgentTokenRecord | undefined {
-  return byToken.get(token) ?? passes?.resolve(token);
+export function resolveAgentToken(token: string, arenaTokens?: ArenaTokens): AgentTokenRecord | undefined {
+  return byToken.get(token) ?? arenaTokens?.resolve(token);
 }
 
 export function revokeAgentToken(runId: string, entrantId: string): void {
@@ -64,17 +64,17 @@ export function agentTokenSecrets(runId: string): readonly string[] {
 }
 
 // Each server preserves record identity because request limits key on the record object.
-export class RunPasses {
+export class ArenaTokens {
   private readonly states = new Map<string, AgentTokenRecord>();
 
   constructor(private readonly database: ArenaDatabase) {}
 
-  resolve(pass: string): AgentTokenRecord | undefined {
-    if (pass.match(AGENT_TOKEN_PATTERN)?.[0] !== pass) return undefined;
-    const hash = passHash(pass);
+  resolve(token: string): AgentTokenRecord | undefined {
+    if (token.match(AGENT_TOKEN_PATTERN)?.[0] !== token) return undefined;
+    const hash = arenaTokenHash(token);
     const lane = this.database.select({ runId: externalEntrants.runId, entrantId: externalEntrants.id, address: externalEntrants.address })
       .from(externalEntrants).innerJoin(runs, eq(runs.id, externalEntrants.runId))
-      .where(and(eq(externalEntrants.passHash, hash), isNull(externalEntrants.removedAt),
+      .where(and(eq(externalEntrants.arenaTokenHash, hash), isNull(externalEntrants.removedAt),
         notInArray(runs.state, TERMINAL_RUN_STATES))).get();
     if (lane === undefined) {
       this.states.delete(hash);
@@ -86,6 +86,6 @@ export class RunPasses {
   }
 }
 
-export function passHash(pass: string): string {
-  return createHash('sha256').update(pass).digest('hex');
+export function arenaTokenHash(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
 }

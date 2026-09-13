@@ -11,7 +11,7 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { RunPasses, resolveAgentToken } from '../src/agent-auth.js';
+import { ArenaTokens, resolveAgentToken } from '../src/agent-auth.js';
 import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
 import { ExternalDriver } from '../src/adapters/external.js';
 import { noopDriver, serverHarness } from './fixtures/server.js';
@@ -50,7 +50,7 @@ async function signed(target: ArenaServer, runId: string, overrides: Partial<Ent
 
 async function join(target: ArenaServer, payload: object): Promise<LightMyRequestResponse> {
   const response = await target.app.inject({ method: 'POST', url: '/agent/enter', payload });
-  if (response.statusCode === 200 || response.statusCode === 201) tokens.set(target, response.json().pass as string);
+  if (response.statusCode === 200 || response.statusCode === 201) tokens.set(target, response.json().token as string);
   return response;
 }
 function progress(target: ArenaServer, token: string, challengeId = 1) {
@@ -67,7 +67,7 @@ async function setup(options: Partial<ServerOptions> = {}) {
 }
 
 describe('external entrant join', () => {
-  it('resolves a persisted token in a new server', async () => {
+  it('resolves a persisted arena token in a new server', async () => {
     const directory = await mkdtemp(joinPath(tmpdir(), 'arena-external-'));
     directories.push(directory);
     const dbPath = joinPath(directory, 'arena.db');
@@ -82,7 +82,7 @@ describe('external entrant join', () => {
 
   });
 
-  it('keeps per-token progress rate state', async () => {
+  it('keeps progress rate state per arena token', async () => {
     const { target, runId } = await setup();
     const body = (await join(target, await signed(target, runId))).json<EnterResponse>();
     expect((await progress(target, tokens.get(target)!, 1)).statusCode).toBe(200);
@@ -110,7 +110,7 @@ describe('external entrant join', () => {
       .toMatchObject({ status: 'done', removedAt: expect.any(String) });
   });
 
-  it('creates a lane, journals its declared fields, and stores only a token hash', async () => {
+  it('creates a lane, journals its declared fields, and stores only an arena token hash', async () => {
     const flagsHeld = vi.fn(async () => 4);
     const { target, runId } = await setup({ flagsHeld });
     const payload = await signed(target, runId, { harness: 'my-cli', model: 'my-model', effort: 'whatever', url: 'https://agent.test' });
@@ -131,9 +131,9 @@ describe('external entrant join', () => {
       harness: payload.harness, model: payload.model, effort: payload.effort, url: payload.url,
     }]);
     const rows = target.journal.database.select().from(externalEntrants).all();
-    expect(rows[0]?.passHash).toBe(createHash('sha256').update(tokens.get(target)!).digest('hex'));
+    expect(rows[0]?.arenaTokenHash).toBe(createHash('sha256').update(tokens.get(target)!).digest('hex'));
     expect(JSON.stringify(rows)).not.toContain(tokens.get(target)!);
-    expect(resolveAgentToken(tokens.get(target)!, new RunPasses(target.journal.database)))
+    expect(resolveAgentToken(tokens.get(target)!, new ArenaTokens(target.journal.database)))
       .toMatchObject({ address: account.address, runId, entrantId: body.entrantId });
     expect((await progress(target, tokens.get(target)!)).statusCode).toBe(200);
     expect(target.manager.list(10)[0]?.agentCount).toBe(3);
@@ -225,7 +225,7 @@ describe('external entrant join', () => {
     expect((await join(target, await signed(target, runId))).statusCode).toBe(409);
     target.journal.database.update(entrants).set({ id: 'codex-1' }).where(eq(entrants.id, entrantId)).run();
     await join(target, await signed(target, runId));
-    await expect(target.manager.join({ runId, address: `${account.address.slice(0, 14)}${'0'.repeat(28)}`, name: 'collision', flagsBeforeJoin: 0, passHash: 'test-pass-hash', claim: () => {} }))
+    await expect(target.manager.join({ runId, address: `${account.address.slice(0, 14)}${'0'.repeat(28)}`, name: 'collision', flagsBeforeJoin: 0, arenaTokenHash: 'test-arena-token-hash', claim: () => {} }))
       .rejects.toThrow('Entrant id is already in use');
   });
 });
@@ -270,7 +270,7 @@ describe('external lane lifecycle', () => {
     expect(resolve).not.toHaveBeenCalled();
     expect(prompts[0]?.payload).toMatchObject({ text: expect.stringContaining('The challenge briefing is at https://site.test/llms.txt.') });
     expect(prompts[0]?.payload).toMatchObject({ text: expect.stringContaining(
-      'Report as you go through the arena tools, sending the run pass from enter_run on every call: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
+      'Report as you go through the arena tools, sending the arena token from enter_run on every call: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
       'If you do not have the tools, use the agent API at https://arena.test, documented at https://site.test/arena/join.',
     ) });
     expect(JSON.stringify(prompts)).not.toContain('WALLET_PRIVATE_KEY');
@@ -303,7 +303,7 @@ describe('external lane lifecycle', () => {
     await target.manager.stop(runId);
   });
 
-  it('removes a lane, preserves display and kills its run pass, and bars rejoin', async () => {
+  it('removes a lane, preserves display and kills its arena token, and bars rejoin', async () => {
     const { target, runId } = await setup();
     const body = (await join(target, await signed(target, runId))).json<EnterResponse>();
     expect((await remove(target, runId, body.entrantId)).statusCode).toBe(202);

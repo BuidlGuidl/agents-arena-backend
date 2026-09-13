@@ -23,7 +23,7 @@ describe('openArenaDatabase', () => {
       expect(columns('entrants')).toContainEqual(expect.objectContaining({ name: 'model', notnull: 0 }));
       expect(columns('external_entrants').map((column) => column.name)).toEqual([
         'run_id', 'id', 'address', 'name', 'harness', 'model', 'effort', 'url',
-        'flags_before_join', 'joined_at', 'removed_at', 'pass_hash',
+        'flags_before_join', 'joined_at', 'removed_at', 'arena_token_hash',
       ]);
       expect(columns('inbox_messages').map((column) => column.name)).toEqual([
         'id', 'run_id', 'entrant_id', 'kind', 'text', 'created_at', 'delivered_at',
@@ -33,7 +33,7 @@ describe('openArenaDatabase', () => {
     }
   });
 
-  it('keeps lane pass hashes unique and preserves them after reopening', async () => {
+  it('keeps lane arena token hashes unique and preserves them after reopening', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'arena-db-test-'));
     temporaryPaths.push(directory);
     const path = join(directory, 'arena.db');
@@ -42,11 +42,11 @@ describe('openArenaDatabase', () => {
       try {
         if (attempt === 0) {
           sqlite.exec("INSERT INTO runs (id, state, preset, created_at) VALUES ('run', 'created', 'fake-duel', 'now')");
-          const insert = sqlite.prepare('INSERT INTO external_entrants (run_id, id, address, name, flags_before_join, joined_at, pass_hash) VALUES (?, ?, ?, ?, ?, ?, ?)');
+          const insert = sqlite.prepare('INSERT INTO external_entrants (run_id, id, address, name, flags_before_join, joined_at, arena_token_hash) VALUES (?, ?, ?, ?, ?, ?, ?)');
           insert.run('run', 'one', '0xAb', 'One', 0, 'now', 'new-hash');
           expect(() => insert.run('run', 'two', '0xCd', 'Two', 0, 'now', 'new-hash')).toThrow();
         }
-        expect(sqlite.prepare('SELECT pass_hash FROM external_entrants WHERE id = ?').get('one')).toEqual({ pass_hash: 'new-hash' });
+        expect(sqlite.prepare('SELECT arena_token_hash FROM external_entrants WHERE id = ?').get('one')).toEqual({ arena_token_hash: 'new-hash' });
       } finally {
         sqlite.close();
       }

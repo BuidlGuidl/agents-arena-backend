@@ -33,7 +33,7 @@ import {
 } from './contract.js';
 import { OpenRouterUnavailableError, createAgentRegistry, rosterIssues, type AgentRegistry } from './agents/registry.js';
 import type { Schedule } from './adapters/fake.js';
-import { RunPasses, mintRunPass, passHash, resolveAgentToken } from './agent-auth.js';
+import { ArenaTokens, mintArenaToken, arenaTokenHash, resolveAgentToken } from './agent-auth.js';
 import { useSolvedLookup } from './ctf/challenge-tracker.js';
 import {
   bearerToken,
@@ -197,7 +197,7 @@ export function createServer(options: ServerOptions): ArenaServer {
     .where(and(eq(scores.runId, runId), eq(scores.entrantId, entrantId)))
     .all()
     .map((row) => row.challengeId)));
-  const runPasses = new RunPasses(journal.database);
+  const arenaTokens = new ArenaTokens(journal.database);
   const externalStatus = new ExternalStatus(journal);
   const pack = options.challengePack ?? createChallengePackResolver(activeChainProfile);
   const ingest = new AgentIngest(journal, externalStatus, pack.addressesFor);
@@ -324,14 +324,14 @@ export function createServer(options: ServerOptions): ArenaServer {
         app.log.warn('Could not read flags held at entry; recording zero');
       }
     }
-    const pass = mintRunPass();
+    const token = mintArenaToken();
     const result = await manager.join({
-      runId: run.id, address, name: body.name, ...declaredFields(body), flagsBeforeJoin, passHash: passHash(pass),
+      runId: run.id, address, name: body.name, ...declaredFields(body), flagsBeforeJoin, arenaTokenHash: arenaTokenHash(token),
       claim: () => {
         if (!login.consumeNonce(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
       },
     });
-    return { ...result, pass };
+    return { ...result, token };
   }
 
   app.post('/agent/enter', async (request, reply) => {
@@ -340,10 +340,10 @@ export function createServer(options: ServerOptions): ArenaServer {
     const result = await enterAgent({ address: body.address, nonce: body.nonce, signature: body.signature,
       name: body.name, ...declaredFields(body), ...(body.runId === undefined ? {} : { runId: body.runId }) });
     return reply.status(result.created ? 201 : 200).header('Cache-Control', 'no-store')
-      .send({ entrantId: result.entrantId, run: result.run, pass: result.pass });
+      .send({ entrantId: result.entrantId, run: result.run, token: result.token });
   });
 
-  mountAgentMcp(app, { runPasses, login, manager, ingest, inbox, progress, enter: enterAgent });
+  mountAgentMcp(app, { arenaTokens, login, manager, ingest, inbox, progress, enter: enterAgent });
 
   app.post('/auth/verify', async (request, reply) => {
     if (!login.enabled) return siweDisabled(reply);
@@ -519,8 +519,8 @@ export function createServer(options: ServerOptions): ArenaServer {
 
   function agentIdentity(request: FastifyRequest) {
     const token = bearerToken(request.headers.authorization);
-    const identity = token === undefined ? undefined : resolveAgentToken(token, runPasses);
-    if (identity === undefined) throw new JoinAuthenticationError('Run pass required');
+    const identity = token === undefined ? undefined : resolveAgentToken(token, arenaTokens);
+    if (identity === undefined) throw new JoinAuthenticationError('Arena token required');
     return identity;
   }
 
@@ -539,12 +539,12 @@ export function createServer(options: ServerOptions): ArenaServer {
   // announcement of the challenge it works on journals as entrant.challenge.
   app.post('/agent/progress', async (request, reply) => {
     const token = bearerToken(request.headers.authorization);
-    const identity = token === undefined ? undefined : resolveAgentToken(token, runPasses);
+    const identity = token === undefined ? undefined : resolveAgentToken(token, arenaTokens);
     if (identity === undefined) {
       return reply
         .status(401)
         .header('WWW-Authenticate', 'Bearer realm="agents-arena-agent"')
-        .send({ error: 'Agent token required' });
+        .send({ error: 'Arena token required' });
     }
     return progress.announce(identity, request.body);
   });

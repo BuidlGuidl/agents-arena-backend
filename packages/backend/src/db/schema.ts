@@ -110,9 +110,9 @@ export const externalEntrants = sqliteTable('external_entrants', {
   flagsBeforeJoin: integer('flags_before_join').notNull(),
   joinedAt: text('joined_at').notNull(),
   removedAt: text('removed_at'),
-  passHash: text('pass_hash'),
+  arenaTokenHash: text('arena_token_hash'),
 }, (table) => [
-  uniqueIndex('external_entrants_pass_hash').on(table.passHash),
+  uniqueIndex('external_entrants_arena_token_hash').on(table.arenaTokenHash),
   uniqueIndex('external_entrants_run_id_id').on(table.runId, table.id),
   uniqueIndex('external_entrants_run_id_address').on(table.runId, table.address),
 ]);

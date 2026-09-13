@@ -80,7 +80,7 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
     CREATE TABLE IF NOT EXISTS external_entrants (
       run_id TEXT NOT NULL REFERENCES runs(id), id TEXT NOT NULL, address TEXT NOT NULL COLLATE NOCASE,
       name TEXT NOT NULL, harness TEXT, model TEXT, effort TEXT, url TEXT,
-      flags_before_join INTEGER NOT NULL, joined_at TEXT NOT NULL, removed_at TEXT, pass_hash TEXT
+      flags_before_join INTEGER NOT NULL, joined_at TEXT NOT NULL, removed_at TEXT, arena_token_hash TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS external_entrants_run_id_id ON external_entrants (run_id, id);
     CREATE UNIQUE INDEX IF NOT EXISTS external_entrants_run_id_address ON external_entrants (run_id, address);
@@ -91,10 +91,10 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
     );
   `);
   const externalColumns = sqlite.prepare('PRAGMA table_info(external_entrants)').all() as Array<{ name: string }>;
-  if (!externalColumns.some((column) => column.name === 'pass_hash')) {
-    sqlite.exec('ALTER TABLE external_entrants ADD COLUMN pass_hash TEXT');
+  if (!externalColumns.some((column) => column.name === 'arena_token_hash')) {
+    sqlite.exec('ALTER TABLE external_entrants ADD COLUMN arena_token_hash TEXT');
   }
-  sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS external_entrants_pass_hash ON external_entrants (pass_hash)');
+  sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS external_entrants_arena_token_hash ON external_entrants (arena_token_hash)');
   const runColumns = sqlite.prepare('PRAGMA table_info(runs)').all() as Array<{ name: string; notnull: number }>;
   if (!runColumns.some((column) => column.name === 'duration_ms')) {
     sqlite.exec('ALTER TABLE runs ADD COLUMN duration_ms INTEGER');

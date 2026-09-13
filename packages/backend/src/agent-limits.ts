@@ -27,7 +27,7 @@ export function checkAgentStrings(value: unknown): void {
 }
 
 export class AgentRequestLimit {
-  // AgentTokens.states preserves record identity; a rotated token gets fresh rate state.
+  // RunPasses.states preserves record identity; a rotated token gets fresh rate state.
   private readonly windows = new WeakMap<AgentTokenRecord, { start: number; count: number }>();
 
   constructor(private readonly limit: number, private readonly intervalMs: number, private readonly now = Date.now) {}

@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto';
 
-import { and, asc, count, desc, eq, inArray, max, ne, notInArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, max, ne, notInArray, sql } from 'drizzle-orm';
 import { getAddress, recoverTypedDataAddress, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
-import { AgentTokens } from './agent-auth.js';
 import { EntrantOperationError } from './adapters/types.js';
 import { ExternalEntrants, declaredFields, toEntrantRecord } from './external-entrants.js';
 import { TERMINAL_RUN_STATES } from './contract.js';
@@ -12,7 +11,7 @@ import { DEFAULT_PUBLIC_URL } from './config.js';
 import type {
   CreateRunRequest,
   AgentTaskResponse,
-  JoinRunRequest,
+  EnterRequest,
   EntrantSolve,
   EntrantSummary,
   RosterEntry,
@@ -163,7 +162,6 @@ export type NarrationWatch = (
 ) => void;
 
 export interface RunManagerOptions {
-  agentTokens?: AgentTokens;
   prepareTimeoutMs?: number;
   fundingTimeoutMs?: number;
   operatorAddresses?: readonly string[];
@@ -217,7 +215,6 @@ export const profilePromptBuilder: OpeningPromptBuilder = (entrant) =>
 
 export class RunManager {
   private readonly external: ExternalEntrants;
-  private readonly agentTokens: AgentTokens;
   private readonly inFlightStarts = new Map<string, Promise<RunSnapshot>>();
   private readonly inFlightSweeps = new Set<string>();
   private readonly startControllers = new Map<string, AbortController>();
@@ -242,7 +239,6 @@ export class RunManager {
     options: RunManagerOptions = {},
   ) {
     this.external = new ExternalEntrants(journal.database);
-    this.agentTokens = options.agentTokens ?? new AgentTokens(journal.database);
     this.prepareTimeoutMs = options.prepareTimeoutMs ?? DEFAULT_PREPARE_TIMEOUT_MS;
     this.fundingTimeoutMs = options.fundingTimeoutMs ?? activeChainProfile.fundingTimeoutMs;
     this.operatorAddresses = new Set(normalizeOperatorAddresses(options.operatorAddresses ?? []));
@@ -319,9 +315,22 @@ export class RunManager {
     };
   }
 
+  private liveLane(address: string): { runId: string; entrantId: string } | undefined {
+    return this.journal.database.select({ runId: externalEntrants.runId, entrantId: externalEntrants.id })
+      .from(externalEntrants).innerJoin(runs, eq(runs.id, externalEntrants.runId))
+      .where(and(eq(externalEntrants.address, address), isNull(externalEntrants.removedAt),
+        notInArray(runs.state, TERMINAL_RUN_STATES)))
+      .orderBy(desc(externalEntrants.joinedAt)).get();
+  }
+
+  hasLane(runId: string, address: string): boolean {
+    return this.journal.database.select({ id: externalEntrants.id }).from(externalEntrants)
+      .where(and(eq(externalEntrants.runId, runId), eq(externalEntrants.address, getAddress(address)))).get() !== undefined;
+  }
+
   selectJoinRun(runId?: string, address?: string): RunRecord {
     if (runId !== undefined) return this.assertJoinable(runId);
-    const lane = address === undefined ? undefined : this.agentTokens.liveLane(getAddress(address));
+    const lane = address === undefined ? undefined : this.liveLane(getAddress(address));
     if (lane !== undefined) return this.assertJoinable(lane.runId);
     const open = this.journal.database.select().from(runs)
       .where(notInArray(runs.state, TERMINAL_RUN_STATES)).all();
@@ -341,13 +350,13 @@ export class RunManager {
   }
 
   async join(
-    input: JoinRunRequest & { runId: string; address: string; flagsBeforeJoin: number },
+    input: Omit<EnterRequest, 'nonce' | 'signature'> & { runId: string; passHash: string; flagsBeforeJoin: number; claim: () => void },
   ): Promise<{ entrantId: string; run: RunSnapshot; created: boolean }> {
     const address = getAddress(input.address);
     const entrantId = `ext-${address.slice(2, 14).toLowerCase()}`;
     const result = this.journal.transaction(() => {
       const run = this.assertJoinable(input.runId);
-      const live = this.agentTokens.liveLane(address);
+      const live = this.liveLane(address);
       if (live !== undefined && live.runId !== run.id) throw new JoinConflictError(`Already racing in run ${live.runId}`);
       const previous = this.entrants(run.id).find((entrant) => entrant.id === entrantId);
       if (previous?.kind === 'hosted' || (previous !== undefined && previous.address !== address)) {
@@ -368,10 +377,11 @@ export class RunManager {
           runId: run.id, id: entrantId, kind: 'external', address, harness: null, model: null, status: 'idle',
         }).run();
       }
-      this.external.register(entrant);
+      this.external.register(entrant, input.passHash);
       this.journal.append(run.id, entrantId, 'entrant.joined', {
         entrantId, kind: 'external', address, name: input.name, ...declaredFields(input),
       });
+      input.claim();
       return { run, entrant, created: previous === undefined };
     });
     if (result.created && result.run.state === 'running') {

@@ -12,7 +12,7 @@ async function setup() {
   const journal = createJournal();
   const manager = new RunManager(journal, noopDriver);
   const { run } = await manager.create({ preset: 'fake-duel' });
-  const joined = await manager.join({ runId: run.id, address: '0x1234567890123456789012345678901234567890', name: 'Agent', flagsBeforeJoin: 0 });
+  const joined = await manager.join({ runId: run.id, address: '0x1234567890123456789012345678901234567890', name: 'Agent', flagsBeforeJoin: 0, passHash: 'test-pass-hash', claim: () => {} });
   return { journal, manager, runId: run.id, entrantId: joined.entrantId };
 }
 

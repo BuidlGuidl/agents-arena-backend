@@ -110,17 +110,12 @@ export const externalEntrants = sqliteTable('external_entrants', {
   flagsBeforeJoin: integer('flags_before_join').notNull(),
   joinedAt: text('joined_at').notNull(),
   removedAt: text('removed_at'),
+  passHash: text('pass_hash'),
 }, (table) => [
+  uniqueIndex('external_entrants_pass_hash').on(table.passHash),
   uniqueIndex('external_entrants_run_id_id').on(table.runId, table.id),
   uniqueIndex('external_entrants_run_id_address').on(table.runId, table.address),
 ]);
-
-export const agentTokens = sqliteTable('agent_tokens', {
-  address: text('address').primaryKey(),
-  tokenHash: text('token_hash').notNull().unique(),
-  createdAt: text('created_at').notNull(),
-  expiresAt: text('expires_at').notNull(),
-});
 
 export const inboxMessages = sqliteTable('inbox_messages', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -132,4 +127,4 @@ export const inboxMessages = sqliteTable('inbox_messages', {
   deliveredAt: text('delivered_at'),
 });
 
-export const schema = { events, runs, entrants, scores, externalEntrants, agentTokens, inboxMessages };
+export const schema = { events, runs, entrants, scores, externalEntrants, inboxMessages };

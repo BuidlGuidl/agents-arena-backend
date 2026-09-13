@@ -105,7 +105,7 @@ export interface ExternalEntrantSummary extends EntrantSummaryBase {
   url?: string;
   joinedAt: string;
   // Set when the operator closes the lane. Its address stops polling for solves.
-  // The lane stays on the board, greyed out. Its agent token stays valid for another run.
+  // The lane stays on the board, greyed out. Its run pass is dead after removal.
   removedAt?: string;
   // Task-specific facts about this entrant. Today the only task is the CTF.
   task?: {
@@ -190,7 +190,7 @@ export type ArenaEvent =
     };
   })
   // The operator closed an external lane. Its address stops polling for solves.
-  // The lane stays visible, greyed out. Its agent token stays valid for another run.
+  // The lane stays visible, greyed out. Its run pass is dead after removal.
   | (ArenaEventBase & { type: 'entrant.removed'; payload: { entrantId: string; reason?: string } })
   | (ArenaEventBase & { type: 'entrant.error'; payload: { entrantId: string; message: string } })
   | (ArenaEventBase & { type: 'run.error'; payload: { message: string } })
@@ -324,26 +324,14 @@ export interface NonceResponse {
   nonce: string;
 }
 
-// Register a wallet, then use its bearer token to join and report through the agent API.
-export const REGISTER_MESSAGE_TEMPLATE =
-  'Register {address} as an Agents Arena agent with nonce {nonce}';
+// Prove the wallet by signing this, then enter the run with the nonce and signature to get a run pass.
+export const ENTER_MESSAGE_TEMPLATE = 'Enter Agents Arena as {address} with nonce {nonce}';
 
-// Prove wallet control with an EIP-191 signature and a single-use nonce from GET /auth/nonce.
-export interface RegisterRequest {
+// Omit runId to select the wallet's live run or the only open run.
+export interface EnterRequest {
   address: string;
   nonce: string;
   signature: string;
-}
-
-// Registration creates or rotates a wallet token. The token lasts one year and is shown once.
-export interface RegisterResponse {
-  address: string;
-  token: string;
-  expiresAt: string;
-}
-
-// Join with a wallet bearer token. Omit runId to select the only open run.
-export interface JoinRunRequest {
   runId?: string;
   name: string;
   // Optional, unverified display fields. Each is at most 80 characters; url allows 200 and requires http(s).
@@ -353,8 +341,9 @@ export interface JoinRunRequest {
   url?: string;
 }
 
-// A new join or rejoin returns the lane and its run snapshot.
-export interface JoinRunResponse {
+// Entering returns the lane and its run snapshot.
+export interface EnterResponse {
+  pass: string;
   // Server-assigned from the address: ext- plus its first 12 hex characters.
   entrantId: string;
   run: RunSnapshot;
@@ -427,4 +416,4 @@ export type SessionResponse =
   | { authenticated: true; address: string; expiresAt: string };
 
 // Public arena tools, in the order returned by the MCP server.
-export const AGENT_MCP_TOOLS = ['join_run', 'get_task', 'set_current_challenge', 'post_note', 'read_inbox'] as const;
+export const AGENT_MCP_TOOLS = ['prove_wallet', 'enter_run', 'get_task', 'set_current_challenge', 'post_note', 'read_inbox'] as const;

@@ -1,15 +1,16 @@
+import { enter, racer } from './enter-helper.js';
 import { privateKeyToAccount } from 'viem/accounts';
 
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AgentTokens, issueAgentToken, revokeAgentToken } from '../src/agent-auth.js';
+import { issueAgentToken, revokeAgentToken } from '../src/agent-auth.js';
 import { activeChainProfile } from '../src/chain/profile.js';
 import { buildTaskText } from '../src/ctf/prompt.js';
 import { dropCurrentChallenge, takePendingGuess } from '../src/ctf/challenge-tracker.js';
 import { SolvePoller } from '../src/chain/solve-poller.js';
 import type { PublicClient } from 'viem';
-import type { AgentEventInput, AgentInboxResponse, AgentTaskResponse } from '../src/contract.js';
+import type { EnterResponse, AgentEventInput, AgentInboxResponse, AgentTaskResponse } from '../src/contract.js';
 import { entrants, externalEntrants, inboxMessages, scores } from '../src/db/schema.js';
 import { toEntrantRecord } from '../src/external-entrants.js';
 import { enqueueMessage } from '../src/inbox.js';
@@ -17,7 +18,7 @@ import { createServer, type ServerOptions } from '../src/server.js';
 import { serverHarness } from './fixtures/server.js';
 
 const operator = privateKeyToAccount('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
-const address = '0x1234567890123456789012345678901234567890';
+const address = racer.address;
 const servers = serverHarness((server) => {
   for (const run of server.manager.list(200)) {
     for (const entrant of server.manager.snapshot(run.id).entrants) {
@@ -38,8 +39,10 @@ async function setup(options: Partial<ServerOptions> = {}) {
   });
   servers.push(server);
   const { run } = await server.manager.create({ preset: 'fake-duel' });
-  const joined = await server.manager.join({ runId: run.id, address, name: 'Agent', model: 'gpt-5.5', flagsBeforeJoin: 0 });
-  const { token } = new AgentTokens(server.journal.database).register(address, () => {});
+  const response = await enter(server, { runId: run.id, model: 'gpt-5.5' });
+  expect(response.statusCode).toBe(201);
+  const joined = response.json<EnterResponse>();
+  const token = joined.pass as string;
   const headers = { authorization: `Bearer ${token}` };
   const post = (events: unknown[]) => server.app.inject({ method: 'POST', url: '/agent/events', headers, payload: { events } });
   const inbox = (after?: string | number) => server.app.inject({ method: 'GET', url: `/agent/inbox${after === undefined ? '' : `?after=${after}`}`, headers });
@@ -48,6 +51,22 @@ async function setup(options: Partial<ServerOptions> = {}) {
   return { ...server, runId: run.id, ...joined, token, headers, post, inbox, lane, events };
 }
 const message = (seq = 1, text = 'hello'): AgentEventInput => ({ seq, type: 'agent.message', text });
+
+describe('run pass authentication', () => {
+  it.each(['missing', 'wrong', 'dead'])('rejects a %s bearer on lane routes', async (kind) => {
+    const f = await setup();
+    if (kind === 'dead') await f.manager.remove(f.runId, f.entrantId);
+    const headers = kind === 'missing' ? {} : { authorization: `Bearer ${kind === 'wrong' ? 'wrong' : f.token}` };
+    for (const [method, url, payload] of [
+      ['GET', '/agent/task', undefined], ['GET', '/agent/inbox', undefined],
+      ['POST', '/agent/events', { events: [message()] }],
+    ] as const) {
+      const response = await f.app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload }) });
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toEqual({ error: 'Run pass required' });
+    }
+  });
+});
 
 describe('agent task', () => {
   it('requires a token and returns null before running, then shared external and hosted text', async () => {
@@ -176,19 +195,22 @@ describe('event ingest', () => {
     expect(f.events().find((event) => event.type === 'agent.message')?.payload).toMatchObject({ text: '[redacted-key]' });
   });
 
-  it.each(['remove', 'stop'] as const)('requires a new join after %s', async (action) => {
+  it.each(['remove', 'stop'] as const)('requires a new entry after %s', async (action) => {
     const f = await setup();
     if (action === 'remove') await f.manager.remove(f.runId, f.entrantId);
     if (action === 'stop') { await f.manager.start(f.runId); await f.manager.stop(f.runId); }
-    expect((await f.post([message()])).statusCode).toBe(409);
-    expect((await f.inbox()).statusCode).toBe(409);
-    expect((await f.app.inject({ method: 'GET', url: '/agent/task', headers: f.headers })).statusCode).toBe(409);
+    expect((await f.post([message()])).statusCode).toBe(401);
+    expect((await f.inbox()).statusCode).toBe(401);
+    expect((await f.app.inject({ method: 'GET', url: '/agent/task', headers: f.headers })).statusCode).toBe(401);
   });
 
-  it('keeps dedupe state when the wallet rejoins', async () => {
+  it('accepts the same sequence once more after entry rotates the run pass', async () => {
     const f = await setup();
-    await f.post([message()]);
-    await f.manager.join({ runId: f.runId, address, name: 'Again', flagsBeforeJoin: 0 });
+    expect((await f.post([message()])).json()).toEqual({ accepted: 1, duplicates: 0 });
+    const response = await enter(f, { runId: f.runId, name: 'Again' });
+    expect(response.statusCode).toBe(200);
+    f.headers.authorization = `Bearer ${response.json().pass}`;
+    expect((await f.post([message()])).json()).toEqual({ accepted: 1, duplicates: 0 });
     expect((await f.post([message()])).json()).toEqual({ accepted: 0, duplicates: 1 });
   });
 
@@ -380,8 +402,11 @@ it('narrates a late joiner and ends its lane after the closing done line', async
   const narrate = vi.fn<import('../src/narration/openrouter.js').Narrate>(async () => 'Lane update.');
   const f = await setup({ narrate, narrationMinMs: 10, narrationMaxMs: 30 });
   await f.manager.start(f.runId);
-  const late = await f.manager.join({ runId: f.runId, address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', name: 'Late', flagsBeforeJoin: 0 });
-  const { token } = new AgentTokens(f.journal.database).register('0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', () => {});
+  const lateAccount = privateKeyToAccount(`0x${'02'.repeat(32)}`);
+  const response = await enter(f, { runId: f.runId, name: 'Late' }, lateAccount);
+  expect(response.statusCode).toBe(201);
+  const late = response.json<EnterResponse>();
+  const token = late.pass as string;
   const headers = { authorization: `Bearer ${token}` };
   await f.app.inject({ method: 'POST', url: '/agent/events', headers, payload: { events: [message()] } });
   await vi.advanceTimersByTimeAsync(30);

@@ -17,12 +17,12 @@ import { flagsHeld } from './chain/flags-held.js';
 import { activeChainProfile } from './chain/profile.js';
 import { buildTaskText } from './ctf/prompt.js';
 import {
-  registerMessage,
+  enterMessage,
   HARNESS_IDS,
   ROSTER_EFFORTS,
   type ArenaEvent,
   type AgentTaskResponse,
-  type JoinRunRequest,
+  type EnterRequest,
   type BroadcastResponse,
   type CreateRunRequest,
   type RestartResponse,
@@ -33,7 +33,7 @@ import {
 } from './contract.js';
 import { OpenRouterUnavailableError, createAgentRegistry, rosterIssues, type AgentRegistry } from './agents/registry.js';
 import type { Schedule } from './adapters/fake.js';
-import { AgentTokens, resolveAgentToken, requireLane, NotInRunError, type AgentIdentityRecord } from './agent-auth.js';
+import { RunPasses, mintRunPass, passHash, resolveAgentToken } from './agent-auth.js';
 import { useSolvedLookup } from './ctf/challenge-tracker.js';
 import {
   bearerToken,
@@ -88,13 +88,10 @@ const rosterEntrySchema = z.object({
   effort: z.enum(ROSTER_EFFORTS),
 }).strict();
 
-const registerSchema = z.object({
+const enterSchema = z.object({
   address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
   nonce: z.string(),
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
-}).strict();
-
-const joinSchema = z.object({
   runId: z.string().min(1).optional(),
   name: z.string().min(1).max(40),
   harness: z.string().max(80).optional(),
@@ -200,7 +197,7 @@ export function createServer(options: ServerOptions): ArenaServer {
     .where(and(eq(scores.runId, runId), eq(scores.entrantId, entrantId)))
     .all()
     .map((row) => row.challengeId)));
-  const agentTokens = new AgentTokens(journal.database);
+  const runPasses = new RunPasses(journal.database);
   const externalStatus = new ExternalStatus(journal);
   const pack = options.challengePack ?? createChallengePackResolver(activeChainProfile);
   const ingest = new AgentIngest(journal, externalStatus, pack.addressesFor);
@@ -210,7 +207,6 @@ export function createServer(options: ServerOptions): ArenaServer {
     journal, { status: externalStatus, schedule: options.schedule, pack },
   );
   const runManagerOptions: RunManagerOptions = {
-    agentTokens,
     promptBuilder: (entrant) => buildTaskText(entrant, activeChainProfile, { publicUrl, siteUrl }),
     operatorAddresses: options.siwe?.operatorAddresses ?? [],
     ...(options.solveWatchFactory === undefined
@@ -249,9 +245,6 @@ export function createServer(options: ServerOptions): ArenaServer {
     }
     if (error instanceof JoinAuthenticationError) {
       return reply.status(401).send({ error: error.message });
-    }
-    if (error instanceof NotInRunError) {
-      return reply.status(409).send({ error: error.message });
     }
     if (error instanceof JoinConflictError) {
       return reply.status(409).send({ error: error.message });
@@ -317,46 +310,40 @@ export function createServer(options: ServerOptions): ArenaServer {
     return reply.header('Cache-Control', 'no-store').send({ nonce: login.issueNonce() });
   });
 
-  app.post('/agent/register', async (request, reply) => {
-    const body = parseBody(registerSchema, request.body, reply);
-    if (body === undefined) return;
-    await verifySignedMessage(login, body.nonce, registerMessage(body), body.signature as Hex, body.address as Address);
-    const result = agentTokens.register(getAddress(body.address), () => {
-      if (!login.consumeNonce(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
-    });
-    return reply.status(result.created ? 201 : 200).header('Cache-Control', 'no-store')
-      .send({ address: result.address, token: result.token, expiresAt: result.expiresAt });
-  });
-
-  async function joinAgent(identity: AgentIdentityRecord, body: JoinRunRequest) {
-    if (identity.address === undefined) throw new JoinAuthenticationError('Wallet token required');
-    const run = manager.selectJoinRun(body.runId, identity.address);
+  async function enterAgent(body: EnterRequest) {
+    await verifySignedMessage(login, body.nonce, enterMessage(body), body.signature as Hex, body.address as Address);
+    const address = getAddress(body.address);
+    const run = manager.selectJoinRun(body.runId, address);
     let flagsBeforeJoin = 0;
-    try {
-      flagsBeforeJoin = options.flagsHeld !== undefined
-        ? await options.flagsHeld(getAddress(identity.address))
-        : presetSubstrate(run.preset) === 'fake' ? 0 : await flagsHeld(getAddress(identity.address));
-    } catch {
-      app.log.warn('Could not read flags held at join; recording zero');
+    if (!manager.hasLane(run.id, address)) {
+      try {
+        flagsBeforeJoin = options.flagsHeld !== undefined
+          ? await options.flagsHeld(address)
+          : presetSubstrate(run.preset) === 'fake' ? 0 : await flagsHeld(address);
+      } catch {
+        app.log.warn('Could not read flags held at entry; recording zero');
+      }
     }
-    return manager.join({
-      runId: run.id, address: identity.address, name: body.name, ...declaredFields(body), flagsBeforeJoin,
+    const pass = mintRunPass();
+    const result = await manager.join({
+      runId: run.id, address, name: body.name, ...declaredFields(body), flagsBeforeJoin, passHash: passHash(pass),
+      claim: () => {
+        if (!login.consumeNonce(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
+      },
     });
+    return { ...result, pass };
   }
 
-  app.post('/agent/join', async (request, reply) => {
-    const identity = agentIdentity(request);
-    const body = parseBody(joinSchema, request.body, reply);
+  app.post('/agent/enter', async (request, reply) => {
+    const body = parseBody(enterSchema, request.body, reply);
     if (body === undefined) return;
-    const result = await joinAgent(identity, { name: body.name, ...declaredFields(body),
-      ...(body.runId === undefined ? {} : { runId: body.runId }) });
-    return reply.status(result.created ? 201 : 200).send({ entrantId: result.entrantId, run: result.run });
+    const result = await enterAgent({ address: body.address, nonce: body.nonce, signature: body.signature,
+      name: body.name, ...declaredFields(body), ...(body.runId === undefined ? {} : { runId: body.runId }) });
+    return reply.status(result.created ? 201 : 200).header('Cache-Control', 'no-store')
+      .send({ entrantId: result.entrantId, run: result.run, pass: result.pass });
   });
 
-  mountAgentMcp(app, {
-    agentTokens, manager, ingest, inbox, progress, join: joinAgent,
-    publicUrl, siteUrl,
-  });
+  mountAgentMcp(app, { runPasses, login, manager, ingest, inbox, progress, enter: enterAgent });
 
   app.post('/auth/verify', async (request, reply) => {
     if (!login.enabled) return siweDisabled(reply);
@@ -532,34 +519,34 @@ export function createServer(options: ServerOptions): ArenaServer {
 
   function agentIdentity(request: FastifyRequest) {
     const token = bearerToken(request.headers.authorization);
-    const identity = token === undefined ? undefined : resolveAgentToken(token, agentTokens);
-    if (identity === undefined) throw new JoinAuthenticationError('Agent token required');
+    const identity = token === undefined ? undefined : resolveAgentToken(token, runPasses);
+    if (identity === undefined) throw new JoinAuthenticationError('Run pass required');
     return identity;
   }
 
   app.get('/agent/task', async (request): Promise<AgentTaskResponse> => {
-    const identity = requireLane(agentIdentity(request));
+    const identity = agentIdentity(request);
     return manager.agentTask(identity.runId, identity.entrantId);
   });
 
   app.post('/agent/events', { bodyLimit: AGENT_BODY_LIMIT }, async (request) =>
-    ingest.events(requireLane(agentIdentity(request)), request.body));
+    ingest.events(agentIdentity(request), request.body));
 
-  app.get('/agent/inbox', async (request) => inbox.read(requireLane(agentIdentity(request)), request.query));
+  app.get('/agent/inbox', async (request) => inbox.read(agentIdentity(request), request.query));
 
   // The agent-facing channel: authenticated by the per-entrant token the driver
   // injects as ARENA_AGENT_TOKEN, never by the operator credential. The agent's
   // announcement of the challenge it works on journals as entrant.challenge.
   app.post('/agent/progress', async (request, reply) => {
     const token = bearerToken(request.headers.authorization);
-    const identity = token === undefined ? undefined : resolveAgentToken(token, agentTokens);
+    const identity = token === undefined ? undefined : resolveAgentToken(token, runPasses);
     if (identity === undefined) {
       return reply
         .status(401)
         .header('WWW-Authenticate', 'Bearer realm="agents-arena-agent"')
         .send({ error: 'Agent token required' });
     }
-    return progress.announce(requireLane(identity), request.body);
+    return progress.announce(identity, request.body);
   });
 
   app.get('/runs/:id/events', async (request, reply) => {

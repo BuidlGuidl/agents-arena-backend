@@ -182,7 +182,7 @@ describe('external task text', () => {
     expect(text).toContain('Use the wallet the person running you set up, and pay your own gas');
     expect(text).toContain(`- The race is on chain id ${chainId}.`);
     expect(text).toContain(
-      'Report as you go through the arena tools: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
+      'Report as you go through the arena tools, sending the run pass from enter_run on every call: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
       'If you do not have the tools, use the agent API at https://arena.test, documented at https://site.test/arena/join.',
     );
     expect(text).not.toContain('WALLET_PRIVATE_KEY');

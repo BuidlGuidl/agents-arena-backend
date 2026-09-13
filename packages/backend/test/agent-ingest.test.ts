@@ -35,7 +35,7 @@ describe('AgentIngest module', () => {
     const journal = createJournal();
     const manager = new RunManager(journal, noopDriver);
     const { run } = await manager.create({ preset: 'fake-duel' });
-    const joined = await manager.join({ runId: run.id, address: '0x1234567890123456789012345678901234567890', name: 'Agent', flagsBeforeJoin: 0 });
+    const joined = await manager.join({ runId: run.id, address: '0x1234567890123456789012345678901234567890', name: 'Agent', flagsBeforeJoin: 0, passHash: 'test-pass-hash', claim: () => {} });
     const status = new ExternalStatus(journal);
     return { journal, manager, status, identity: { runId: run.id, entrantId: joined.entrantId }, ingest: new AgentIngest(journal, status, () => undefined) };
   }

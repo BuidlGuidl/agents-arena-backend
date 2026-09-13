@@ -1,23 +1,19 @@
-import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { agentMcpOriginGuard } from '../src/agent-mcp.js';
-import { AgentTokens } from '../src/agent-auth.js';
+import { privateKeyToAccount } from 'viem/accounts';
+import { racer } from './enter-helper.js';
 import { AGENT_MCP_TOOLS } from '../src/contract.js';
 import { dropCurrentChallenge } from '../src/ctf/challenge-tracker.js';
-import { agentTokens } from '../src/db/schema.js';
 import { createServer, type ArenaServer } from '../src/server.js';
 import { serverHarness } from './fixtures/server.js';
 
-const address = '0x1234567890123456789012345678901234567890';
+const address = racer.address;
 const publicUrl = 'https://arena.test';
 const siteUrl = 'https://site.test';
-const registerText = `This MCP server has no valid arena token. Ask the person running you to follow ${siteUrl}/arena/join, ` +
-  "which explains how to create one, and to add it to this server's Authorization header.";
-const expiredText = `This arena token expired on 2000-01-01. Ask the person running you to follow ${siteUrl}/arena/join ` +
-  "to create a new one and update this server's Authorization header.";
+const passText = 'This call needs a live run pass. Call prove_wallet, sign the sentence with your wallet, then enter_run to get one. If your context was reset, do both again with the same wallet.';
 const serverInstructions = 'These tools are for racing in Agents Arena, a capture-the-flag race between coding agents scored on-chain. ' +
-  'Use them only when the person running you asks you to join or race. Do not call them during unrelated work.';
+  'Use them only when the person running you asks you to enter or race. Do not call them during unrelated work. Entering takes two calls: prove_wallet, then enter_run with the signed sentence. Every other tool needs the run pass that enter_run returns.';
 const servers = serverHarness((server) => {
   for (const run of server.manager.list(200)) {
     for (const entrant of server.manager.snapshot(run.id).entrants) dropCurrentChallenge(run.id, entrant.id);
@@ -29,12 +25,14 @@ function setup() {
   const server = createServer({ dbPath: ':memory:', operatorToken: 'operator', publicUrl, siteUrl,
     corsOrigins: [publicUrl], schedule: () => {}, flagsHeld: async () => 4 });
   servers.push(server);
-  const { token } = new AgentTokens(server.journal.database).register(address, () => {});
-  return { ...server, token };
+  return { ...server, token: 'invalid' };
 }
 
 function modern(server: ArenaServer, method: string, params: Record<string, unknown> = {}, token?: string,
   headers: Record<string, string> = {}) {
+  if (method === 'tools/call' && token !== undefined && params.name !== 'enter_run' && params.name !== 'prove_wallet') {
+    params = { ...params, arguments: { ...params.arguments as object, pass: token } };
+  }
   return server.app.inject({ method: 'POST', url: '/mcp', headers: {
     accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2026-07-28', 'mcp-method': method,
     ...(typeof params.name === 'string' ? { 'mcp-name': params.name } : {}),
@@ -45,6 +43,7 @@ function modern(server: ArenaServer, method: string, params: Record<string, unkn
 }
 
 async function call(server: ArenaServer, name: string, args = {}, token?: string) {
+  if (name === 'enter_run') args = { ...await proof(server), ...args };
   const response = await modern(server, 'tools/call', { name, arguments: args }, token);
   expect(response.statusCode).toBe(200);
   const body = response.json();
@@ -54,13 +53,20 @@ async function call(server: ArenaServer, name: string, args = {}, token?: string
   return result;
 }
 
+async function proof(server: ArenaServer, account = racer) {
+  const result = await call(server, 'prove_wallet', { address: account.address });
+  const { message, nonce } = result.structuredContent;
+  expect(result.structuredContent).toEqual({ message: `Enter Agents Arena as ${account.address} with nonce ${nonce}`, nonce: expect.any(String) });
+  return { address: account.address, nonce, signature: await account.signMessage({ message }) };
+}
+
 async function joined() {
   const f = setup();
   const { run } = await f.manager.create({ preset: 'fake-duel' });
-  const joined = await call(f, 'join_run', { name: 'Agent', harness: 'codex', model: 'model' }, f.token);
-  expect(joined.structuredContent).toEqual({ entrantId: expect.any(String),
+  const joined = await call(f, 'enter_run', { name: 'Agent', harness: 'codex', model: 'model' }, f.token);
+  expect(joined.structuredContent).toEqual({ entrantId: expect.any(String), pass: expect.stringMatching(/^byoa_[0-9a-f]{48}$/),
     message: 'You are in. Call get_task for the briefing.', run: { id: run.id, state: 'created' }, inbox: { unread: 0 } });
-  return { ...f, runId: run.id, entrantId: joined.structuredContent.entrantId as string };
+  return { ...f, token: joined.structuredContent.pass as string, runId: run.id, entrantId: joined.structuredContent.entrantId as string };
 }
 
 function legacyBody(body: string) {
@@ -68,52 +74,71 @@ function legacyBody(body: string) {
 }
 
 describe('arena MCP', () => {
-  it('lists the same five tools publicly with absent, dead, expired, and valid tokens', async () => {
-    const f = setup();
+  it('lists the same six tools publicly with absent, wrong, dead, and valid passes', async () => {
+    const f = await joined();
     const first = await modern(f, 'tools/list');
     expect(first.statusCode).toBe(200);
     const expected = first.json();
     expect(expected.result.cacheScope).toBe('public');
-    expect(expected.result.tools.map((tool: { name: string }) => tool.name)).toEqual(AGENT_MCP_TOOLS);
+    expect(expected.result.tools.map((tool: { name: string }) => tool.name)).toEqual(['prove_wallet', 'enter_run', 'get_task', 'set_current_challenge', 'post_note', 'read_inbox']);
     for (const token of ['dead', f.token]) expect((await modern(f, 'tools/list', {}, token)).json()).toEqual(expected);
-    f.journal.database.update(agentTokens).set({ expiresAt: '2000-01-01T00:00:00.000Z' }).run();
+    await f.manager.remove(f.runId, f.entrantId);
     expect((await modern(f, 'tools/list', {}, f.token)).json()).toEqual(expected);
     for (const tool of expected.result.tools) {
       expect(tool.description).toContain('Agents Arena');
       expect(tool.inputSchema.additionalProperties).toBe(false);
-      expect(tool.inputSchema.properties.token).toBeUndefined();
+      expect(tool.inputSchema.required.includes('pass')).toBe(
+        ['get_task', 'set_current_challenge', 'post_note', 'read_inbox'].includes(tool.name));
     }
-    expect(expected.result.tools[1].annotations.readOnlyHint).toBe(true);
+    expect(expected.result.tools[0].annotations.readOnlyHint).toBe(true);
   });
 
-  it.each([
-    { corsOrigins: ['https://browser.test', 'https://other.test'], expected: 'https://browser.test' },
-    { corsOrigins: [], expected: publicUrl },
-  ])('defaults the join link to $expected when siteUrl is omitted', async ({ corsOrigins, expected }) => {
-    const server = createServer({ dbPath: ':memory:', operatorToken: 'operator', publicUrl, corsOrigins });
-    servers.push(server);
-    const result = await call(server, 'get_task');
-    expect(result.isError).toBe(true);
-    expect(result.structuredContent.error).toBe(registerText.replace(siteUrl, expected));
-  });
-
-  it.each(['missing', 'unknown', 'expired', 'rotated'])('returns the registration text for a %s token', async (kind) => {
-    const f = setup();
-    if (kind === 'expired') f.journal.database.update(agentTokens).set({ expiresAt: '2000-01-01T00:00:00.000Z' })
-      .where(eq(agentTokens.address, address)).run();
-    if (kind === 'rotated') new AgentTokens(f.journal.database).register(address, () => {});
-    const token = kind === 'missing' ? undefined : kind === 'unknown' ? 'dead' : f.token;
-    for (const name of AGENT_MCP_TOOLS) {
+  it.each(['missing', 'wrong', 'removed', 'stopped', 'rotated'])('returns the fixed sentence for each lane tool with a %s pass', async (kind) => {
+    const f = await joined();
+    if (kind === 'removed') await f.manager.remove(f.runId, f.entrantId);
+    if (kind === 'stopped') { await f.manager.start(f.runId); await f.manager.stop(f.runId); }
+    if (kind === 'rotated') await call(f, 'enter_run', { name: 'Again' });
+    const token = kind === 'missing' ? undefined : kind === 'wrong' ? 'wrong' : f.token;
+    for (const name of AGENT_MCP_TOOLS.slice(2)) {
       const result = await call(f, name, {}, token);
       expect(result.isError).toBe(true);
-      expect(result.structuredContent).toEqual({ error: kind === 'expired' ? expiredText : registerText });
+      expect(result.structuredContent).toEqual({ error: passText });
     }
+  });
+
+  it('rejects a malformed entry address as invalid params', async () => {
+    const f = setup();
+    const response = await modern(f, 'tools/call', { name: 'enter_run', arguments: {
+      name: 'Agent', ...await proof(f), address: 'bad',
+    } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().error).toMatchObject({ code: -32602, message: expect.stringContaining('Invalid arguments for enter_run:') });
+  });
+
+  it('rejects a wrong signer and a used nonce with the fixed entry sentence', async () => {
+    const f = await joined();
+    const args = { name: 'Again', ...await proof(f) };
+    const error = 'The signature does not match the address, or the nonce is unknown, expired, or already used. Call prove_wallet again and sign the new sentence with the wallet you race as.';
+    const wrong = await modern(f, 'tools/call', { name: 'enter_run', arguments: {
+      ...args, address: '0x1234567890123456789012345678901234567890',
+    } });
+    expect(wrong.statusCode).toBe(200);
+    expect(wrong.json().result).toMatchObject({ isError: true, structuredContent: { error } });
+    expect(wrong.json().result.structuredContent).toEqual({ error });
+    const good = await modern(f, 'tools/call', { name: 'enter_run', arguments: args });
+    expect(good.statusCode).toBe(200);
+    expect(good.json().result.isError).toBeUndefined();
+    expect(good.json().result.structuredContent).toMatchObject({ entrantId: f.entrantId, pass: expect.stringMatching(/^byoa_[0-9a-f]{48}$/) });
+    const replay = await modern(f, 'tools/call', { name: 'enter_run', arguments: args });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().result).toMatchObject({ isError: true, structuredContent: { error } });
+    expect(replay.json().result.structuredContent).toEqual({ error });
   });
 
   it.each([{ name: 'Agent' }, { name: 'Agent', harness: 'codex' }])('joins with optional display fields omitted: %j', async (args) => {
     const f = setup();
     const { run } = await f.manager.create({ preset: 'fake-duel' });
-    const result = await call(f, 'join_run', args, f.token);
+    const result = await call(f, 'enter_run', args, f.token);
     expect(result.isError).toBeUndefined();
     expect(result.structuredContent.run.id).toBe(run.id);
     expect(f.manager.snapshot(run.id).entrants.find((entrant) => entrant.id === result.structuredContent.entrantId))
@@ -127,13 +152,6 @@ describe('arena MCP', () => {
     expect(response.json().result.supportedVersions).toContain('2026-07-28');
   });
 
-  it('tells a registered wallet to join first', async () => {
-    const f = setup();
-    const result = await call(f, 'get_task', {}, f.token);
-    expect(result.isError).toBe(true);
-    expect(result.structuredContent.error).toBe('Not in a run. Call join_run first.');
-  });
-
   it('joins without a run id and serves all tools with run state and unread counts', async () => {
     const f = await joined();
     const task = await call(f, 'get_task', {}, f.token);
@@ -144,7 +162,7 @@ describe('arena MCP', () => {
     const briefing = await call(f, 'get_task', {}, f.token);
     expect(briefing.structuredContent.run.state).toBe('running');
     expect(briefing.structuredContent.task).toContain(
-      '- Report as you go through the arena tools: call set_current_challenge before you start each challenge, ' +
+      '- Report as you go through the arena tools, sending the run pass from enter_run on every call: call set_current_challenge before you start each challenge, ' +
       'post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
       `If you do not have the tools, use the agent API at ${publicUrl}, documented at ${siteUrl}/arena/join.`,
     );
@@ -178,7 +196,7 @@ describe('arena MCP', () => {
     await f.manager.start(f.runId);
     const prompts = () => f.journal.after(f.runId, 0).filter((event) => event.source === f.entrantId && event.type === 'entrant.prompt');
     const before = prompts().length;
-    const rejoin = await call(f, 'join_run', { runId: f.runId, name: 'Updated', harness: 'codex', model: 'new-model' }, f.token);
+    const rejoin = await call(f, 'enter_run', { runId: f.runId, name: 'Updated', harness: 'codex', model: 'new-model' }, f.token);
     expect(rejoin.structuredContent.entrantId).toBe(f.entrantId);
     expect(rejoin.structuredContent.run.state).toBe('running');
     expect(prompts()).toHaveLength(before);
@@ -224,7 +242,7 @@ describe('arena MCP', () => {
   it('tells a wallet in another live run to finish or leave that race', async () => {
     const f = await joined();
     const { run } = await f.manager.create({ preset: 'fake-duel' });
-    const response = await call(f, 'join_run', {
+    const response = await call(f, 'enter_run', {
       runId: run.id, name: 'Agent', harness: 'codex', model: 'model',
     }, f.token);
     expect(response.isError).toBe(true);
@@ -235,7 +253,7 @@ describe('arena MCP', () => {
     const f = setup();
     const response = await call(f, 'set_current_challenge', { challengeId: 13 }, f.token);
     expect(response.isError).toBe(true);
-    expect(response.structuredContent.error).toBe('Not in a run. Call join_run first.');
+    expect(response.structuredContent.error).toBe(passText);
   });
 
   it('includes the validation issue in post_note errors', async () => {
@@ -252,10 +270,10 @@ describe('arena MCP', () => {
   });
 
   it.each([
-    ['join_run', { name: 'Agent', harness: '', model: 'model' }],
-    ['join_run', { harness: 'codex' }],
-    ['join_run', { name: 'Agent', harness: 'codex', model: 'model', url: 'file:///tmp/x' }],
-    ['join_run', { name: 'Agent', harness: 'codex', model: 'model', url: 'https://' }],
+    ['enter_run', { name: 'Agent', harness: '', model: 'model' }],
+    ['enter_run', { harness: 'codex' }],
+    ['enter_run', { name: 'Agent', harness: 'codex', model: 'model', url: 'file:///tmp/x' }],
+    ['enter_run', { name: 'Agent', harness: 'codex', model: 'model', url: 'https://' }],
     ['get_task', { token: 'secret' }],
     ['set_current_challenge', { challengeId: '3' }],
     ['set_current_challenge', { challengeId: 1.5 }],
@@ -314,9 +332,9 @@ describe('arena MCP', () => {
 
   it('keeps concurrent callers in their own lanes', async () => {
     const f = await joined();
-    const otherAddress = '0x2234567890123456789012345678901234567890';
-    const { token } = new AgentTokens(f.journal.database).register(otherAddress, () => {});
-    const other = await call(f, 'join_run', { name: 'Other', harness: 'codex', model: 'model' }, token);
+    const otherAccount = privateKeyToAccount(`0x${'02'.repeat(32)}`);
+    const other = await call(f, 'enter_run', { name: 'Other', ...await proof(f, otherAccount) });
+    const token = other.structuredContent.pass as string;
     await Promise.all([
       call(f, 'post_note', { text: 'first wallet' }, f.token),
       call(f, 'post_note', { text: 'second wallet' }, token),
@@ -326,12 +344,12 @@ describe('arena MCP', () => {
     expect(messages.find((event) => event.payload.text === 'second wallet')?.source).toBe(other.structuredContent.entrantId);
   });
 
-  it('uses the request bearer and shared inbox limit on the legacy path', async () => {
+  it('uses the argument pass and shared inbox limit on the legacy path', async () => {
     const f = await joined();
     const response = await f.app.inject({ method: 'POST', url: '/mcp', headers: {
       accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2025-06-18',
       authorization: `Bearer ${f.token}`,
-    }, payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_inbox', arguments: {} } } });
+    }, payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_inbox', arguments: { pass: f.token } } } });
     expect(response.statusCode).toBe(200);
     const result = legacyBody(response.body).result;
     expect(result.structuredContent).toEqual({ messages: [], cursor: 0,
@@ -357,7 +375,7 @@ describe('arena MCP', () => {
     expect(legacyBody(listed.body).result.tools).toEqual((await modern(f, 'tools/list')).json().result.tools);
     const noToken = await f.app.inject({ method: 'POST', url: '/mcp', headers: { ...headers, 'mcp-protocol-version': '2025-06-18' },
       payload: { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_task', arguments: {} } } });
-    expect(legacyBody(noToken.body).result).toMatchObject({ isError: true, structuredContent: { error: registerText } });
+    expect(legacyBody(noToken.body).result).toMatchObject({ isError: true, structuredContent: { error: passText } });
     for (const method of ['GET', 'DELETE'] as const) expect((await f.app.inject({ method, url: '/mcp' })).statusCode).toBe(405);
   });
 });

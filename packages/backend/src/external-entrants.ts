@@ -7,14 +7,14 @@ import { entrants, externalEntrants } from './db/schema.js';
 export class ExternalEntrants {
   constructor(private readonly database: ArenaDatabase) {}
 
-  register(entrant: ExternalEntrantRecord): void {
+  register(entrant: ExternalEntrantRecord, passHash: string): void {
     if (entrant.address === null) throw new Error('External entrant needs a wallet address');
     const values = {
       runId: entrant.runId, id: entrant.id, address: entrant.address, name: entrant.name,
       harness: entrant.harness ?? null, model: entrant.model ?? null,
       effort: entrant.effort ?? null, url: entrant.url ?? null,
       flagsBeforeJoin: entrant.flagsBeforeJoin, joinedAt: entrant.joinedAt,
-      removedAt: entrant.removedAt,
+      removedAt: entrant.removedAt, passHash,
     };
     this.database.insert(externalEntrants).values(values).onConflictDoUpdate({
       target: [externalEntrants.runId, externalEntrants.id], set: values,

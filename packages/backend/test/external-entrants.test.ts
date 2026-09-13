@@ -1,3 +1,4 @@
+import { signedEntry } from './enter-helper.js';
 import { ExternalStatus } from '../src/adapters/external-status.js';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -10,7 +11,7 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { AgentTokens, resolveAgentToken } from '../src/agent-auth.js';
+import { RunPasses, resolveAgentToken } from '../src/agent-auth.js';
 import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
 import { ExternalDriver } from '../src/adapters/external.js';
 import { noopDriver, serverHarness } from './fixtures/server.js';
@@ -19,8 +20,8 @@ import { recordSolve } from '../src/chain/storage.js';
 import { SolvePoller } from '../src/chain/solve-poller.js';
 import { dropRunKeys, getWallet } from '../src/chain/wallet.js';
 import { dropCurrentChallenge } from '../src/ctf/challenge-tracker.js';
-import { type JoinRunRequest, type JoinRunResponse } from '../src/contract.js';
-import { agentTokens, entrants, externalEntrants, inboxMessages } from '../src/db/schema.js';
+import { type EnterRequest, type EnterResponse } from '../src/contract.js';
+import { entrants, externalEntrants, inboxMessages } from '../src/db/schema.js';
 import { createServer, type ArenaServer, type ServerOptions } from '../src/server.js';
 
 const account = privateKeyToAccount('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
@@ -43,19 +44,14 @@ afterEach(async () => {
 });
 
 const tokens = new WeakMap<ArenaServer, string>();
-async function signed(target: ArenaServer, runId: string, overrides: Partial<JoinRunRequest> = {}): Promise<JoinRunRequest> {
-  if (!tokens.has(target)) {
-    const nonce = (await target.app.inject({ url: '/auth/nonce' })).json().nonce as string;
-    const signature = await account.signMessage({ message: `Register ${account.address} as an Agents Arena agent with nonce ${nonce}` });
-    const response = await target.app.inject({ method: 'POST', url: '/agent/register', payload: { address: account.address, nonce, signature } });
-    expect(response.statusCode).toBe(201);
-    tokens.set(target, response.json().token as string);
-  }
-  return { runId, name: 'My agent', ...overrides };
+async function signed(target: ArenaServer, runId: string, overrides: Partial<EnterRequest> = {}): Promise<EnterRequest> {
+  return signedEntry(target, { runId, name: 'My agent', ...overrides });
 }
 
 async function join(target: ArenaServer, payload: object): Promise<LightMyRequestResponse> {
-  return target.app.inject({ method: 'POST', url: '/agent/join', headers: { authorization: `Bearer ${tokens.get(target)}` }, payload });
+  const response = await target.app.inject({ method: 'POST', url: '/agent/enter', payload });
+  if (response.statusCode === 200 || response.statusCode === 201) tokens.set(target, response.json().pass as string);
+  return response;
 }
 function progress(target: ArenaServer, token: string, challengeId = 1) {
   return target.app.inject({ method: 'POST', url: '/agent/progress', headers: { authorization: `Bearer ${token}` }, payload: { challengeId } });
@@ -78,7 +74,7 @@ describe('external entrant join', () => {
     const first = server({ dbPath });
     const { run } = await first.manager.create({ preset: 'fake-duel' });
     const response = await join(first, await signed(first, run.id));
-    const body = response.json<JoinRunResponse>();
+    const body = response.json<EnterResponse>();
     await first.app.close();
     servers.splice(servers.indexOf(first), 1);
     const second = server({ dbPath });
@@ -88,16 +84,16 @@ describe('external entrant join', () => {
 
   it('keeps per-token progress rate state', async () => {
     const { target, runId } = await setup();
-    const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
+    const body = (await join(target, await signed(target, runId))).json<EnterResponse>();
     expect((await progress(target, tokens.get(target)!, 1)).statusCode).toBe(200);
     expect((await progress(target, tokens.get(target)!, 2)).statusCode).toBe(429);
   });
 
   it('keeps the wallet registered after removal', async () => {
     const { target, runId } = await setup();
-    const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
+    const body = (await join(target, await signed(target, runId))).json<EnterResponse>();
     await remove(target, runId, body.entrantId);
-    expect((await progress(target, tokens.get(target)!)).statusCode).toBe(409);
+    expect((await progress(target, tokens.get(target)!)).statusCode).toBe(401);
   });
 
   it('removes through the injected driver stop seam', async () => {
@@ -107,20 +103,20 @@ describe('external entrant join', () => {
       stop.mockImplementation((run, entrant) => driver.stop(run, entrant));
       return { ...noopDriver, stop };
     } });
-    const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
+    const body = (await join(target, await signed(target, runId))).json<EnterResponse>();
     expect((await remove(target, runId, body.entrantId)).statusCode).toBe(202);
     expect(stop).toHaveBeenCalledWith(expect.objectContaining({ id: runId }), expect.objectContaining({ id: body.entrantId }));
     expect(target.manager.snapshot(runId).entrants.find((entrant) => entrant.id === body.entrantId))
       .toMatchObject({ status: 'done', removedAt: expect.any(String) });
   });
 
-  it('registers a lane, journals its declared fields, and stores only a token hash', async () => {
+  it('creates a lane, journals its declared fields, and stores only a token hash', async () => {
     const flagsHeld = vi.fn(async () => 4);
     const { target, runId } = await setup({ flagsHeld });
     const payload = await signed(target, runId, { harness: 'my-cli', model: 'my-model', effort: 'whatever', url: 'https://agent.test' });
     const response = await join(target, payload);
     expect(response.statusCode).toBe(201);
-    const body = response.json<JoinRunResponse>();
+    const body = response.json<EnterResponse>();
     expect(body.entrantId).toBe(`ext-${account.address.slice(2, 14).toLowerCase()}`);
     expect(tokens.get(target)!).toMatch(/^byoa_[0-9a-f]{48}$/);
     const lane = body.run.entrants.find((entrant) => entrant.id === body.entrantId);
@@ -134,10 +130,10 @@ describe('external entrant join', () => {
       entrantId: body.entrantId, kind: 'external', name: payload.name, address: account.address,
       harness: payload.harness, model: payload.model, effort: payload.effort, url: payload.url,
     }]);
-    const rows = target.journal.database.select().from(agentTokens).all();
-    expect(rows[0]?.tokenHash).toBe(createHash('sha256').update(tokens.get(target)!).digest('hex'));
+    const rows = target.journal.database.select().from(externalEntrants).all();
+    expect(rows[0]?.passHash).toBe(createHash('sha256').update(tokens.get(target)!).digest('hex'));
     expect(JSON.stringify(rows)).not.toContain(tokens.get(target)!);
-    expect(resolveAgentToken(tokens.get(target)!, new AgentTokens(target.journal.database)))
+    expect(resolveAgentToken(tokens.get(target)!, new RunPasses(target.journal.database)))
       .toMatchObject({ address: account.address, runId, entrantId: body.entrantId });
     expect((await progress(target, tokens.get(target)!)).statusCode).toBe(200);
     expect(target.manager.list(10)[0]?.agentCount).toBe(3);
@@ -149,7 +145,7 @@ describe('external entrant join', () => {
   it('replaces declared fields while retaining the first join time and flag baseline', async () => {
     const flagsHeld = vi.fn(async () => 2);
     const { target, runId } = await setup({ flagsHeld });
-    const first = (await join(target, await signed(target, runId, { harness: 'first' }))).json<JoinRunResponse>();
+    const first = (await join(target, await signed(target, runId, { harness: 'first' }))).json<EnterResponse>();
     expect((await progress(target, tokens.get(target)!)).statusCode).toBe(200);
     recordSolve(target.journal.database, target.journal, {
       runId, entrantId: first.entrantId, entrantAddress: account.address, challengeId: 3,
@@ -158,7 +154,7 @@ describe('external entrant join', () => {
     flagsHeld.mockResolvedValue(3);
     const response = await join(target, await signed(target, runId, { name: 'Renamed', model: 'new' }));
     expect(response.statusCode).toBe(200);
-    const second = response.json<JoinRunResponse>();
+    const second = response.json<EnterResponse>();
     expect(second.entrantId).toBe(first.entrantId);
     const lane = second.run.entrants.find((entrant) => entrant.id === second.entrantId);
     expect(lane).toMatchObject({ name: 'Renamed', model: 'new', flags: 1, task: { ctfFlagsBeforeJoin: 2 } });
@@ -167,7 +163,8 @@ describe('external entrant join', () => {
     if (original?.kind !== 'external' || lane?.kind !== 'external') throw new Error('Missing external lane');
     expect(lane.joinedAt).toBe(original.joinedAt);
     expect((await progress(target, tokens.get(target)!)).statusCode).toBe(200);
-    expect((await progress(target, tokens.get(target)!, 2)).statusCode).toBe(429);
+    expect((await progress(target, tokens.get(target)!, 2)).statusCode).toBe(200);
+    expect((await progress(target, tokens.get(target)!, 3)).statusCode).toBe(429);
     expect(target.journal.after(runId, 0).filter((event) => event.type === 'entrant.joined')).toHaveLength(2);
   });
 
@@ -202,7 +199,7 @@ describe('external entrant join', () => {
     const warning = vi.spyOn(target.app.log, 'warn');
     const response = await join(target, await signed(target, runId));
     expect(response.statusCode).toBe(201);
-    expect(response.json<JoinRunResponse>().run.entrants.find((entrant) => entrant.kind === 'external'))
+    expect(response.json<EnterResponse>().run.entrants.find((entrant) => entrant.kind === 'external'))
       .toMatchObject({ task: { ctfFlagsBeforeJoin: 0 } });
     expect(warning).toHaveBeenCalledOnce();
   });
@@ -228,7 +225,7 @@ describe('external entrant join', () => {
     expect((await join(target, await signed(target, runId))).statusCode).toBe(409);
     target.journal.database.update(entrants).set({ id: 'codex-1' }).where(eq(entrants.id, entrantId)).run();
     await join(target, await signed(target, runId));
-    await expect(target.manager.join({ runId, address: `${account.address.slice(0, 14)}${'0'.repeat(28)}`, name: 'collision', flagsBeforeJoin: 0 }))
+    await expect(target.manager.join({ runId, address: `${account.address.slice(0, 14)}${'0'.repeat(28)}`, name: 'collision', flagsBeforeJoin: 0, passHash: 'test-pass-hash', claim: () => {} }))
       .rejects.toThrow('Entrant id is already in use');
   });
 });
@@ -236,7 +233,7 @@ describe('external entrant join', () => {
 describe('external lane lifecycle', () => {
   it('drops an in-flight solve after removal and makes no further chain calls for that wallet', async () => {
     const { target, runId } = await setup();
-    const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
+    const body = (await join(target, await signed(target, runId))).json<EnterResponse>();
     let finish!: () => void;
     const barrier = new Promise<void>((resolve) => { finish = resolve; });
     const getLogs = vi.fn(async () => {
@@ -266,28 +263,28 @@ describe('external lane lifecycle', () => {
       challengePack: { resolve, addressesFor: () => undefined },
     });
     if (late) await target.manager.start(runId);
-    const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
+    const body = (await join(target, await signed(target, runId))).json<EnterResponse>();
     if (!late) await target.manager.start(runId);
     const prompts = target.journal.after(runId, 0).filter((event) => event.type === 'entrant.prompt' && event.source === body.entrantId);
     expect(prompts).toHaveLength(1);
     expect(resolve).not.toHaveBeenCalled();
     expect(prompts[0]?.payload).toMatchObject({ text: expect.stringContaining('The challenge briefing is at https://site.test/llms.txt.') });
     expect(prompts[0]?.payload).toMatchObject({ text: expect.stringContaining(
-      'Report as you go through the arena tools: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
+      'Report as you go through the arena tools, sending the run pass from enter_run on every call: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
       'If you do not have the tools, use the agent API at https://arena.test, documented at https://site.test/arena/join.',
     ) });
     expect(JSON.stringify(prompts)).not.toContain('WALLET_PRIVATE_KEY');
     expect(JSON.stringify(prompts)).toContain(account.address);
     expect(target.manager.snapshot(runId).entrants.find((entrant) => entrant.id === body.entrantId)?.status).toBe('idle');
     await target.manager.stop(runId);
-    expect((await progress(target, tokens.get(target)!)).statusCode).toBe(409);
+    expect((await progress(target, tokens.get(target)!)).statusCode).toBe(401);
     expect(target.manager.snapshot(runId).entrants.find((entrant) => entrant.id === body.entrantId)?.status).toBe('done');
-    expect(target.journal.database.select().from(agentTokens).all()).toHaveLength(1);
+    expect(target.journal.database.select().from(externalEntrants).all()).toHaveLength(1);
   });
 
   it('queues steer and broadcast with their kinds and refuses restart', async () => {
     const { target, runId } = await setup();
-    const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
+    const body = (await join(target, await signed(target, runId))).json<EnterResponse>();
     await target.manager.start(runId);
     const steer = await target.app.inject({ method: 'POST', url: `/runs/${runId}/entrants/${body.entrantId}/steer`, headers, payload: { text: 'Try 2' } });
     expect(steer.statusCode).toBe(202);
@@ -306,11 +303,11 @@ describe('external lane lifecycle', () => {
     await target.manager.stop(runId);
   });
 
-  it('removes a lane, preserves display and its wallet token, and bars rejoin', async () => {
+  it('removes a lane, preserves display and kills its run pass, and bars rejoin', async () => {
     const { target, runId } = await setup();
-    const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
+    const body = (await join(target, await signed(target, runId))).json<EnterResponse>();
     expect((await remove(target, runId, body.entrantId)).statusCode).toBe(202);
-    expect((await progress(target, tokens.get(target)!)).statusCode).toBe(409);
+    expect((await progress(target, tokens.get(target)!)).statusCode).toBe(401);
     expect(target.manager.snapshot(runId).entrants.find((entrant) => entrant.id === body.entrantId))
       .toMatchObject({ address: account.address, status: 'done', removedAt: expect.any(String) });
     expect(target.journal.database.select().from(entrants).where(and(eq(entrants.runId, runId), isNotNull(entrants.address))).all()).toEqual([]);
@@ -342,7 +339,7 @@ describe('external lane lifecycle', () => {
     const { run } = await target.manager.create({ preset: 'docker-duel', roster: [{ id: 'host', harness: 'codex', model: 'gpt-5.5', effort: 'high' }] });
     const starting = target.manager.start(run.id);
     await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
-    const body = (await join(target, await signed(target, run.id))).json<JoinRunResponse>();
+    const body = (await join(target, await signed(target, run.id))).json<EnterResponse>();
     expect(getWallet(run.id, body.entrantId)).toBeNull();
     ready();
     expect((await starting).state).toBe('ready');
@@ -364,11 +361,11 @@ describe('external lane lifecycle', () => {
     target.journal.database.delete(entrants).where(eq(entrants.id, 'opencode-1')).run();
     const starting = target.manager.start(runId).catch(() => undefined);
     await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
-    const body = (await join(target, await signed(target, runId))).json<JoinRunResponse>();
+    const body = (await join(target, await signed(target, runId))).json<EnterResponse>();
     fail(new Error('prepare failed'));
     await starting;
-    expect((await progress(target, tokens.get(target)!)).statusCode).toBe(409);
-    expect(target.journal.database.select().from(agentTokens).all()).toHaveLength(1);
+    expect((await progress(target, tokens.get(target)!)).statusCode).toBe(401);
+    expect(target.journal.database.select().from(externalEntrants).all()).toHaveLength(1);
   });
 
   it('reserves ext- roster ids', async () => {

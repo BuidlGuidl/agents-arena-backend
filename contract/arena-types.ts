@@ -416,4 +416,4 @@ export type SessionResponse =
   | { authenticated: true; address: string; expiresAt: string };
 
 // Public arena tools, in the order returned by the MCP server.
-export const AGENT_MCP_TOOLS = ['prove_wallet', 'enter_run', 'get_task', 'set_current_challenge', 'post_note', 'read_inbox'] as const;
+export const AGENT_MCP_TOOLS = ['request_nonce', 'enter_run', 'get_task', 'set_current_challenge', 'post_note', 'read_inbox'] as const;

@@ -11,9 +11,9 @@ import { serverHarness } from './fixtures/server.js';
 const address = racer.address;
 const publicUrl = 'https://arena.test';
 const siteUrl = 'https://site.test';
-const tokenText = 'This call needs a live arena token. Call prove_wallet, sign the sentence with your wallet, then enter_run to get one. If your context was reset, do both again with the same wallet.';
+const tokenText = 'This call needs a live arena token. Call request_nonce, sign the sentence with your wallet, then enter_run to get one. If your context was reset, do both again with the same wallet.';
 const serverInstructions = 'These tools are for racing in Agents Arena, a capture-the-flag race between coding agents scored on-chain. ' +
-  'Use them only when the person running you asks you to enter or race. Do not call them during unrelated work. Entering takes two calls: prove_wallet, then enter_run with the signed sentence. Every other tool needs the arena token that enter_run returns.';
+  'Use them only when the person running you asks you to enter or race. Do not call them during unrelated work. Entering takes two calls: request_nonce, then enter_run with the signed sentence. Every other tool needs the arena token that enter_run returns.';
 const servers = serverHarness((server) => {
   for (const run of server.manager.list(200)) {
     for (const entrant of server.manager.snapshot(run.id).entrants) dropCurrentChallenge(run.id, entrant.id);
@@ -30,7 +30,7 @@ function setup() {
 
 function modern(server: ArenaServer, method: string, params: Record<string, unknown> = {}, token?: string,
   headers: Record<string, string> = {}) {
-  if (method === 'tools/call' && token !== undefined && params.name !== 'enter_run' && params.name !== 'prove_wallet') {
+  if (method === 'tools/call' && token !== undefined && params.name !== 'enter_run' && params.name !== 'request_nonce') {
     params = { ...params, arguments: { ...params.arguments as object, token: token } };
   }
   return server.app.inject({ method: 'POST', url: '/mcp', headers: {
@@ -54,7 +54,7 @@ async function call(server: ArenaServer, name: string, args = {}, token?: string
 }
 
 async function proof(server: ArenaServer, account = racer) {
-  const result = await call(server, 'prove_wallet', { address: account.address });
+  const result = await call(server, 'request_nonce', { address: account.address });
   const { message, nonce } = result.structuredContent;
   expect(result.structuredContent).toEqual({ message: `Enter Agents Arena as ${account.address} with nonce ${nonce}`, nonce: expect.any(String) });
   return { address: account.address, nonce, signature: await account.signMessage({ message }) };
@@ -80,7 +80,7 @@ describe('arena MCP', () => {
     expect(first.statusCode).toBe(200);
     const expected = first.json();
     expect(expected.result.cacheScope).toBe('public');
-    expect(expected.result.tools.map((tool: { name: string }) => tool.name)).toEqual(['prove_wallet', 'enter_run', 'get_task', 'set_current_challenge', 'post_note', 'read_inbox']);
+    expect(expected.result.tools.map((tool: { name: string }) => tool.name)).toEqual(['request_nonce', 'enter_run', 'get_task', 'set_current_challenge', 'post_note', 'read_inbox']);
     for (const token of ['dead', f.token]) expect((await modern(f, 'tools/list', {}, token)).json()).toEqual(expected);
     await f.manager.remove(f.runId, f.entrantId);
     expect((await modern(f, 'tools/list', {}, f.token)).json()).toEqual(expected);
@@ -118,7 +118,7 @@ describe('arena MCP', () => {
   it('rejects a wrong signer and a used nonce with the fixed entry sentence', async () => {
     const f = await joined();
     const args = { name: 'Again', ...await proof(f) };
-    const error = 'The signature does not match the address, or the nonce is unknown, expired, or already used. Call prove_wallet again and sign the new sentence with the wallet you race as.';
+    const error = 'The signature does not match the address, or the nonce is unknown, expired, or already used. Call request_nonce again and sign the new sentence with the wallet you race as.';
     const wrong = await modern(f, 'tools/call', { name: 'enter_run', arguments: {
       ...args, address: '0x1234567890123456789012345678901234567890',
     } });

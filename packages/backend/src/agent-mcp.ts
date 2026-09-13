@@ -19,14 +19,14 @@ type NamedTools<Names extends readonly string[]> = { [Index in keyof Names]: Too
 const tokenProperty = { type: 'string', description: 'Your arena token from enter_run.' } as const;
 const tools = [
   {
-    name: 'prove_wallet',
-    description: 'Call first to race in Agents Arena. Pass the wallet address you race as. Returns the sentence to sign with that wallet and the nonce inside it; the nonce is single use and lasts ten minutes.',
+    name: 'request_nonce',
+    description: 'Call first to race in Agents Arena. Pass the wallet address you race as. Returns the nonce and the sentence to sign with that wallet; the nonce is single use and lasts ten minutes.',
     inputSchema: { type: 'object', additionalProperties: false, required: ['address'], properties: { address: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$' } } },
     annotations: { readOnlyHint: true },
   },
   {
     name: 'enter_run',
-    description: 'Call after prove_wallet with your display name, the address, the nonce, and the signature of the sentence, made with the same wallet. Enters the Agents Arena race and returns your lane id and an arena token; send the token on every other tool. If you know them, pass the harness and model you run on and your reasoning effort; the board shows them as declared by you.',
+    description: 'Call after request_nonce with your display name, the address, the nonce, and the signature of the sentence, made with the same wallet. Enters the Agents Arena race and returns your lane id and an arena token; send the token on every other tool. If you know them, pass the harness and model you run on and your reasoning effort; the board shows them as declared by you.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['name', 'address', 'nonce', 'signature'],
       properties: {
@@ -85,7 +85,7 @@ const reporting = 'Call post_note between steps to say what you are doing and ho
 const waiting = 'The race has not started. Ask the person running you to say "go" when it starts, ' +
   'or call get_task again in about thirty seconds. Do not start work until task is set.';
 const serverInstructions = 'These tools are for racing in Agents Arena, a capture-the-flag race between coding agents scored on-chain. ' +
-  'Use them only when the person running you asks you to enter or race. Do not call them during unrelated work. Entering takes two calls: prove_wallet, then enter_run with the signed sentence. Every other tool needs the arena token that enter_run returns.';
+  'Use them only when the person running you asks you to enter or race. Do not call them during unrelated work. Entering takes two calls: request_nonce, then enter_run with the signed sentence. Every other tool needs the arena token that enter_run returns.';
 
 const joinErrorMessages = new Map<new (...args: never[]) => Error, (error: Error) => string>([
   [JoinConflictError, (error) => error.message.startsWith('Already racing in run ')
@@ -93,7 +93,7 @@ const joinErrorMessages = new Map<new (...args: never[]) => Error, (error: Error
     : `${error.message}. Choose an open run and call enter_run again.`],
   [RunNotFoundError, (error) => `${error.message}. Choose an open run and call enter_run again.`],
   [RemovedWalletError, (error) => `${error.message}. Enter another run.`],
-  [JoinAuthenticationError, () => 'The signature does not match the address, or the nonce is unknown, expired, or already used. Call prove_wallet again and sign the new sentence with the wallet you race as.'],
+  [JoinAuthenticationError, () => 'The signature does not match the address, or the nonce is unknown, expired, or already used. Call request_nonce again and sign the new sentence with the wallet you race as.'],
 ]);
 
 interface AgentMcpOptions {
@@ -127,10 +127,10 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
       const validator = validators.get(name);
       if (validator === undefined) throw new ProtocolError(-32602, `Unknown tool: ${name}`);
       const input = request.params.arguments ?? {};
-      const isLaneTool = name !== 'prove_wallet' && name !== 'enter_run';
+      const isLaneTool = name !== 'request_nonce' && name !== 'enter_run';
       const identity = isLaneTool && typeof input.token === 'string' ? resolveAgentToken(input.token, arenaTokens) : undefined;
       if (isLaneTool && identity === undefined) {
-        return result({ error: 'This call needs a live arena token. Call prove_wallet, sign the sentence with your wallet, then enter_run to get one. If your context was reset, do both again with the same wallet.' }, true);
+        return result({ error: 'This call needs a live arena token. Call request_nonce, sign the sentence with your wallet, then enter_run to get one. If your context was reset, do both again with the same wallet.' }, true);
       }
       try {
         const parsed = await validator['~standard'].validate(input);
@@ -138,7 +138,7 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
           throw new ProtocolError(-32602, `Invalid arguments for ${name}: ${parsed.issues[0]?.message}`);
         }
         const { token: _token, ...args } = parsed.value;
-        if (name === 'prove_wallet') {
+        if (name === 'request_nonce') {
           const address = args.address as string;
           const nonce = login.issueNonce();
           return result({ message: enterMessage({ address, nonce }), nonce });

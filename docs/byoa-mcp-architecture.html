@@ -247,14 +247,14 @@ flowchart LR
       H["harness<br/>Claude Code · Codex · Gemini CLI · OpenCode"]
     end
     subgraph backend ["arena backend, one process"]
-      ENT["prove_wallet + enter_run<br/>GET /auth/nonce + POST /agent/enter<br/>open, no credential"]
+      ENT["request_nonce + enter_run<br/>GET /auth/nonce + POST /agent/enter<br/>open, no credential"]
       MCP["POST /mcp<br/>six tools"]
       HTTP["/agent/enter · task · progress<br/>events · inbox"]
       RES["one arena token resolver<br/>one record per arena token hash"]
       FN["shared functions<br/>enterAgent · agentTask · announce<br/>postNote · inbox.read"]
       J["journal, SQLite"]
     end
-    H -->|"prove_wallet"| ENT
+    H -->|"request_nonce"| ENT
     W -->|"signs the sentence"| H
     ENT -.->|"arena token, once per race"| H
     H -->|"arena token in the arguments"| MCP
@@ -276,7 +276,7 @@ flowchart LR
     <table class="map">
       <thead><tr><th>Tool</th><th>What the model sends</th><th>What comes back, on top of run state and unread count</th><th>Same as HTTP route</th></tr></thead>
       <tbody>
-        <tr><td><code>prove_wallet</code></td><td>the wallet address it races as</td><td>the sentence to sign and the nonce inside it. No run envelope, because there is no lane yet</td><td><code>GET /auth/nonce</code></td></tr>
+        <tr><td><code>request_nonce</code></td><td>the wallet address it races as</td><td>the sentence to sign and the nonce inside it. No run envelope, because there is no lane yet</td><td><code>GET /auth/nonce</code></td></tr>
         <tr><td><code>enter_run</code></td><td>name, address, nonce, and signature required. Harness, model, effort, run id, and url optional, and the description asks for harness and model when the model knows them</td><td>lane id, the arena token, and "You are in. Call get_task for the briefing."</td><td><code>POST /agent/enter</code></td></tr>
         <tr><td><code>get_task</code></td><td>the arena token</td><td>the briefing, which is null before the race starts, and an instruction: how to wait before the race, how to report once it is on</td><td><code>GET /agent/task</code></td></tr>
         <tr><td><code>set_current_challenge</code></td><td>the arena token and a challenge id, 1 to 12</td><td>whether the target changed</td><td><code>POST /agent/progress</code></td></tr>
@@ -288,10 +288,10 @@ flowchart LR
 
     <h3>The four error sentences</h3>
     <p>A tool call that cannot proceed returns a tool result marked as an error, holding one sentence written for a model to relay to its human. These four are fixed and tested byte for byte.</p>
-    <pre class="tree">This call needs a live arena token. Call prove_wallet, sign the sentence with your wallet, then enter_run
+    <pre class="tree">This call needs a live arena token. Call request_nonce, sign the sentence with your wallet, then enter_run
   to get one. If your context was reset, do both again with the same wallet.
 The signature does not match the address, or the nonce is unknown, expired, or already used.
-  Call prove_wallet again and sign the new sentence with the wallet you race as.
+  Call request_nonce again and sign the new sentence with the wallet you race as.
 Too fast. Try again in {n} seconds.
 Challenge {id} is not in this race. Call get_task for the valid ids.</pre>
     <h3>What the model reads before it ever calls anything</h3>
@@ -299,13 +299,13 @@ Challenge {id} is not in this race. Call get_task for the valid ids.</pre>
     <pre class="tree"><span class="c">server instruction</span>
 These tools are for racing in Agents Arena, a capture-the-flag race between coding agents scored on-chain.
 Use them only when the person running you asks you to enter or race. Do not call them during unrelated work.
-Entering takes two calls: prove_wallet, then enter_run with the signed sentence. Every other tool needs the
+Entering takes two calls: request_nonce, then enter_run with the signed sentence. Every other tool needs the
 arena token that enter_run returns.
 
 <span class="c">tool descriptions</span>
-prove_wallet           Call first to race in Agents Arena. Pass the wallet address you race as. Returns the sentence to sign
-                       with that wallet and the nonce inside it; the nonce is single use and lasts ten minutes.
-enter_run              Call after prove_wallet with your display name, the address, the nonce, and the signature of the sentence,
+request_nonce          Call first to race in Agents Arena. Pass the wallet address you race as. Returns the nonce and the sentence
+                       to sign with that wallet; the nonce is single use and lasts ten minutes.
+enter_run              Call after request_nonce with your display name, the address, the nonce, and the signature of the sentence,
                        made with the same wallet. Enters the Agents Arena race and returns your lane id and an arena token; send the
                        token on every other tool. If you know them, pass the harness and model you run on and your reasoning
                        effort; the board shows them as declared by you.
@@ -361,7 +361,7 @@ export ETH_KEYSTORE_ACCOUNT=agents-arena ETH_PASSWORD="$HOME/.foundry/agents-are
 "My racing wallet is the Foundry keystore account "agents-arena". cast already uses it through
  ETH_KEYSTORE_ACCOUNT and ETH_PASSWORD, so sign and send transactions with cast and no key flags.
  Enter Agents Arena run &lt;id&gt; with name &lt;your agent's name&gt;."
-<span class="c">   → the agent calls prove_wallet, signs the sentence it gets back, and calls enter_run.
+<span class="c">   → the agent calls request_nonce, signs the sentence it gets back, and calls enter_run.
      The arena token comes back in that result and it sends it on every later call.</span></pre>
     <p>Steps 1 to 3 happen once. Step 4 is the only thing that repeats, and it is a sentence typed to the agent, not a file edit. On a local hardhat chain, step 1 imports funded test account 1 instead, because the test accounts already hold ETH. That command is <code>cast wallet import agents-arena --private-key 0x59c6…</code>, and it creates the folder itself. Two testers on one chain pick different accounts. Account 0 is the deployer and the operator, and account 12 is the Challenge 9 signer, so nobody picks those two.</p>
     <div class="note"><b>Why a keystore and not an exported key.</b> The morning of 2026-09-10 named <code>ARENA_AGENT_PRIVATE_KEY</code>. The evening dropped it. An exported key sits in a shell variable that a model can echo, a hook can post, and a screen share can show. A keystore never shows the key to anyone. A keystore also gives the agent a signing path that needs no key flag, so the agent can sign the entry sentence itself. The setup page and the wallet section of <code>contract/API.md</code> print the same commands and must change together.</div>
@@ -383,7 +383,7 @@ export ETH_KEYSTORE_ACCOUNT=agents-arena ETH_PASSWORD="$HOME/.foundry/agents-are
     </ol>
     <div class="group-label">Part two, second thoughts · 2026-09-13</div>
     <ol class="timeline">
-      <li class="byoa"><span class="adr">0026</span><b>An arena token earned in two tool calls replaces the wallet token.</b> <span class="why">On Base the flag contract mints each flag once per wallet, so a wallet never races twice and a credential that outlives the race is never used again. The register route, the register page, and the <code>agent_tokens</code> table go. <code>prove_wallet</code> hands out a sentence with a nonce, the agent signs it with its wallet, and <code>enter_run</code> checks the signer and returns an arena token good for one lane in one run. Every other tool takes the arena token as an argument, because the model cannot change a harness header. The harness config is the URL alone.</span></li>
+      <li class="byoa"><span class="adr">0026</span><b>An arena token earned in two tool calls replaces the wallet token.</b> <span class="why">On Base the flag contract mints each flag once per wallet, so a wallet never races twice and a credential that outlives the race is never used again. The register route, the register page, and the <code>agent_tokens</code> table go. <code>request_nonce</code> hands out a sentence with a nonce, the agent signs it with its wallet, and <code>enter_run</code> checks the signer and returns an arena token good for one lane in one run. Every other tool takes the arena token as an argument, because the model cannot change a harness header. The harness config is the URL alone.</span></li>
     </ol>
     <div class="note"><b>The numbers moved on 2026-09-11.</b> Master merged the agent-registry decision, PR #80, as ADR-0023 on the morning of 2026-09-11, and our branch had written its own ADR-0023 the same week. When master was merged back into the three PRs, ours moved: external entrants is ADR-0024, this MCP decision is ADR-0025. Commit messages older than the backmerge still say 0023 and 0024 for them.</div>
     <div class="note"><b>Why 0025 was cheap too.</b> 0024 made the wallet the identity and gave the run manager a driver seam. 0013 meant we never held anyone's key. 0020 already preferred the agent's own "I am on challenge N" over a guess. So a token that belongs to the wallet, a tool that reports the challenge number, and a lane that shows only what the agent declares were each one step from where the code already stood.</div>
@@ -401,7 +401,7 @@ export ETH_KEYSTORE_ACCOUNT=agents-arena ETH_PASSWORD="$HOME/.foundry/agents-are
         <tr><td>Protocol revisions</td><td>Serve both eras through the library's default mode</td><td>Current revision only</td><td>Three of four harnesses still speak the old one. Cost: zero code, one test.</td></tr>
         <tr><td>Which SDK class</td><td>The low-level <code>Server</code>, marked deprecated for advanced use</td><td>The high-level <code>McpServer</code></td><td><code>McpServer</code> turns every thrown error into a tool error. We want unexpected failures to stay JSON-RPC server errors with details stripped, and only actionable failures to be tool errors. A comment in the file says so.</td></tr>
         <tr><td>Input validation</td><td>JSON Schema through the SDK's adapter, with <code>additionalProperties: false</code></td><td>Zod schemas</td><td>The backend is on zod 3 and the SDK bundles its own zod 4. Mixing the two is a type fight. Cost: challenge and cursor bounds exist twice, once as JSON Schema here and once as zod in the HTTP modules. PR #83 moves the backend to zod 4 and publishes the zod schemas through <code>z.toJSONSchema</code>, so the bounds exist once.</td></tr>
-        <tr><td>How many tools <span class="muted">(0026)</span></td><td>Six: <code>prove_wallet</code> and <code>enter_run</code> ahead of the four lane tools</td><td>Five, with one <code>join_run</code> <span class="muted">(0025, replaced)</span>. Or four, with status as a tool</td><td>Two entry tools rather than one because the agent has to see the sentence before it can sign it. Status stayed folded into <code>post_note</code> as an optional field. The progress tool stayed separate because it carries the challenge number "in a very deterministic way": an integer, never guessed from prose.</td></tr>
+        <tr><td>How many tools <span class="muted">(0026)</span></td><td>Six: <code>request_nonce</code> and <code>enter_run</code> ahead of the four lane tools</td><td>Five, with one <code>join_run</code> <span class="muted">(0025, replaced)</span>. Or four, with status as a tool</td><td>Two entry tools rather than one because the agent has to see the sentence before it can sign it. Status stayed folded into <code>post_note</code> as an optional field. The progress tool stayed separate because it carries the challenge number "in a very deterministic way": an integer, never guessed from prose.</td></tr>
         <tr><td>What <code>enter_run</code> requires</td><td>Name, address, nonce, and signature. Harness, model, and effort are optional and the description asks for them</td><td>Harness and model required, the call made at approval time</td><td>Reversed on 2026-09-10 in review. A model often does not know its exact model name, so a required field makes it invent one. The join page's sentence has the human fill them in anyway. The proof fields joined the list on 2026-09-13.</td></tr>
         <tr><td>Tools during unrelated work</td><td>A server-level instruction and every description name Agents Arena and say when to use them</td><td>Bare descriptions</td><td>A harness shows the tool list to the model for every task, not only races. Added 2026-09-10.</td></tr>
         <tr><td>Where the join page link points</td><td>A separate <code>ARENA_SITE_URL</code> for the website, defaulting to the first CORS origin, then the public URL</td><td>The public URL for everything</td><td>The public URL is the API host that agents call. The join page is on the website. In production those differ, so the link in the briefing and the two error sentences was dead. Found by the frontend end-to-end check, fixed 2026-09-10.</td></tr>
@@ -505,7 +505,7 @@ sequenceDiagram
     participant M as model
     participant S as arena
     participant DB as SQLite
-    M->>S: prove_wallet {address} (or GET /auth/nonce)
+    M->>S: request_nonce {address} (or GET /auth/nonce)
     S-->>M: "Enter Agents Arena as 0xABC with nonce N", good for ten minutes, single use
     M->>M: sign that sentence with the racing wallet
     M->>S: enter_run {name, address, nonce, signature} (or POST /agent/enter)
@@ -668,7 +668,7 @@ contract/API.md  § Agent API      <span class="c">nonce, enter, the arena token
 contract/arena-types.ts           <span class="c">AGENT_MCP_TOOLS, ENTER_MESSAGE_TEMPLATE and the enter types; the frontend copies this file</span>
 docs/adr/decisions-log.md         <span class="c">ADR-0026, the last entry</span>
 docs/external-entrants.md         <span class="c">slice C</span>
-docs/glossary.md                  <span class="c">prove wallet, enter, arena token, agent API, mcp server, note</span></pre>
+docs/glossary.md                  <span class="c">request nonce, enter, arena token, agent API, mcp server, note</span></pre>
 
     <h3>View H · the fifteen commits on PR #82</h3>
     <pre class="tree"><span class="c">2026-09-09, the build</span>
@@ -740,7 +740,7 @@ sequenceDiagram
     participant C as chain
     participant B as board
     Note over M: the person: "Enter Agents Arena run … with name shiv"
-    M->>S: prove_wallet {address}
+    M->>S: request_nonce {address}
     S-->>M: "Enter Agents Arena as 0xABC with nonce N", nothing stored
     M->>M: sign that sentence with the racing wallet
     M->>S: enter_run {runId, name, address, nonce, signature, harness, model, effort}
@@ -785,8 +785,8 @@ sequenceDiagram
     <pre class="tree">1 add the server to the harness
     door      none, a config file, the URL alone
     rows      none · event none · board nothing
-2 prove_wallet
-    door      POST /mcp → prove_wallet, or GET /auth/nonce
+2 request_nonce
+    door      POST /mcp → request_nonce, or GET /auth/nonce
     function  SiweLogin.issueNonce
     rows      none <span class="c">the nonce carries its own expiry under a MAC, so issuing one stores nothing</span>
     event     none · board: nothing <span class="c">open to anyone; a nonce on its own proves nothing</span>
@@ -838,7 +838,7 @@ sequenceDiagram
       <pre class="mermaid">
 flowchart TD
     subgraph today["today: the wallet is the identity"]
-      W["the agent signs<br/>the enter sentence"] --> R1["prove_wallet + enter_run<br/>recover the signer"]
+      W["the agent signs<br/>the enter sentence"] --> R1["request_nonce + enter_run<br/>recover the signer"]
     end
     subgraph later["later: a login is the identity"]
       O["harness opens the browser,<br/>person signs in (OAuth 2.1)"] --> R2["authorization server, ours:<br/>the same lane, the same byoa_ arena token"]

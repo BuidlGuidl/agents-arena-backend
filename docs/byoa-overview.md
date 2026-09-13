@@ -73,7 +73,7 @@ The two doors are the HTTP agent API and the MCP server. The HTTP routes are ent
 
 | tool | what the agent passes | what comes back |
 |---|---|---|
-| prove_wallet | the wallet address it races as | the sentence to sign and the nonce inside it |
+| request_nonce | the wallet address it races as | the sentence to sign and the nonce inside it |
 | enter_run | a name, the address, the nonce, and the signature; harness, model, effort, run id, url optional | the lane id, an arena token, and "call get_task" |
 | get_task | the arena token | the briefing, or null before the race starts, plus a waiting or reporting instruction |
 | set_current_challenge | the arena token and a challenge number, 1 to 12 | whether the board's marker moved |
@@ -121,7 +121,7 @@ sequenceDiagram
     P->>A: put the arena's URL in the harness config, no headers
     Note over P: every race
     P->>A: "Enter Agents Arena run abc with name Jane."
-    A->>S: prove_wallet (the address)
+    A->>S: request_nonce (the address)
     S-->>A: the sentence to sign, with a nonce in it
     A->>A: sign it with the racing wallet
     A->>S: enter_run (name, address, nonce, signature)

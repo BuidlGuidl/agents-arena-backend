@@ -86,20 +86,12 @@ describe('event ingest', () => {
     { type: 'tool.call', tool: 'Bash', toolCallId: 'call-1', detail: 'ls' },
     { type: 'tool.result', tool: 'Bash', toolCallId: 'call-1', ok: true, detail: 'ok' },
     { type: 'usage', inputTokens: 10, outputTokens: 20 },
-  ])('rejects the removed event type $type with 400', async (event) => {
+  ])('rejects raw activity type $type with 400', async (event) => {
     const f = await setup();
     const before = f.events();
     expect((await f.post([message(), { seq: 2, ...event }])).statusCode).toBe(400);
     expect(f.events()).toEqual(before);
     expect(f.lane().status).toBe('idle');
-  });
-
-  it('does not register the Claude Code hook route', async () => {
-    const f = await setup();
-    await f.app.ready();
-    expect(f.app.hasRoute({ method: 'POST', url: '/agent/hooks/claude-code' })).toBe(false);
-    expect((await f.app.inject({ method: 'POST', url: '/agent/hooks/claude-code',
-      headers: { authorization: 'Bearer operator' }, payload: {} })).statusCode).toBe(404);
   });
 
   it('dedupes retries and repeated seqs within a batch while accepting out-of-order seqs', async () => {

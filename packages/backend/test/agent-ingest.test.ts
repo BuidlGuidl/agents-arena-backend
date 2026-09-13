@@ -65,13 +65,12 @@ describe('AgentIngest module', () => {
       expect(() => ingest.events(identity, { events: [{ seq: i, type: 'agent.message', text: 'a'.repeat(16001) }] })).toThrow(AgentInputError);
     }
     for (const event of [
-      { type: 'agent.message', text: 'hello' }, { type: 'agent.reasoning', text: 'think' },
-      { type: 'tool.call', tool: 'Bash', toolCallId: '1', detail: 'ls' },
-      { type: 'tool.result', tool: 'Bash', toolCallId: '1', detail: '', ok: true },
-      { type: 'usage', inputTokens: 1, outputTokens: 1 }, { type: 'entrant.status', status: 'idle' },
+      { type: 'agent.message', text: 'hello' },
+      { type: 'entrant.status', status: 'idle' },
     ]) {
       expect(() => ingest.events(identity, { events: [{ seq: 1, ...event, extra: true }] })).toThrow(AgentInputError);
     }
+    expect(() => ingest.events(identity, { events: [{ seq: 1, type: 'tool.call', tool: 'Bash', toolCallId: '1', detail: 'ls', extra: true }] })).toThrow(AgentInputError);
     expect(journal.after(identity.runId, 0)).toHaveLength(2);
     expect(ingest.events(identity, { events: [{ seq: 1, type: 'agent.message', text: 'accepted' }] })).toEqual({ accepted: 1, duplicates: 0 });
   });

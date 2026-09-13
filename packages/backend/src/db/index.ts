@@ -84,7 +84,6 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
     );
     CREATE UNIQUE INDEX IF NOT EXISTS external_entrants_run_id_id ON external_entrants (run_id, id);
     CREATE UNIQUE INDEX IF NOT EXISTS external_entrants_run_id_address ON external_entrants (run_id, address);
-    DROP INDEX IF EXISTS external_entrants_token_hash;
     CREATE TABLE IF NOT EXISTS agent_tokens (
       address TEXT PRIMARY KEY COLLATE NOCASE,
       token_hash TEXT NOT NULL UNIQUE,

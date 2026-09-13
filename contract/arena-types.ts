@@ -104,8 +104,8 @@ export interface ExternalEntrantSummary extends EntrantSummaryBase {
   effort?: string;
   url?: string;
   joinedAt: string;
-  // Set when the operator removed the lane. Its token is dead and its address
-  // no longer polls for solves; the lane stays on the board, greyed out.
+  // Set when the operator closes the lane. Its address stops polling for solves.
+  // The lane stays on the board, greyed out. Its agent token stays valid for another run.
   removedAt?: string;
   // Task-specific facts about this entrant. Today the only task is the CTF.
   task?: {
@@ -189,8 +189,8 @@ export type ArenaEvent =
       url?: string;
     };
   })
-  // The operator removed an external entrant. Its token is revoked and its
-  // address stops polling for solves. The lane stays visible, greyed out.
+  // The operator closed an external lane. Its address stops polling for solves.
+  // The lane stays visible, greyed out. Its agent token stays valid for another run.
   | (ArenaEventBase & { type: 'entrant.removed'; payload: { entrantId: string; reason?: string } })
   | (ArenaEventBase & { type: 'entrant.error'; payload: { entrantId: string; message: string } })
   | (ArenaEventBase & { type: 'run.error'; payload: { message: string } })

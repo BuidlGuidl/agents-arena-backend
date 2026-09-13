@@ -34,28 +34,13 @@ describe('openArenaDatabase', () => {
     }
   });
 
-  it('keeps the legacy token column but drops its index and adds wallet credentials', async () => {
+  it('keeps token hashes unique across wallets and finds tokens after reopening regardless of address case', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'arena-db-test-'));
     temporaryPaths.push(directory);
     const path = join(directory, 'arena.db');
-    const legacy = new Database(path);
-    legacy.exec(`
-      CREATE TABLE external_entrants (
-        run_id TEXT NOT NULL, id TEXT NOT NULL, address TEXT NOT NULL COLLATE NOCASE,
-        name TEXT NOT NULL, harness TEXT, model TEXT, effort TEXT, url TEXT, token_hash TEXT,
-        flags_before_join INTEGER NOT NULL, joined_at TEXT NOT NULL, removed_at TEXT
-      );
-      CREATE UNIQUE INDEX external_entrants_token_hash ON external_entrants (token_hash);
-      INSERT INTO external_entrants (run_id, id, address, name, token_hash, flags_before_join, joined_at)
-        VALUES ('old-run', 'ext-old', '0xAb', 'Old agent', 'old-hash', 2, 'then');
-    `);
-    legacy.close();
     for (let attempt = 0; attempt < 2; attempt++) {
       const { sqlite } = openArenaDatabase(path);
       try {
-        expect(sqlite.prepare('SELECT token_hash, flags_before_join FROM external_entrants').get())
-          .toEqual({ token_hash: 'old-hash', flags_before_join: 2 });
-        expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE name = 'external_entrants_token_hash'").get()).toBeUndefined();
         if (attempt === 0) {
           sqlite.prepare('INSERT INTO agent_tokens VALUES (?, ?, ?, ?)').run('0xAb', 'new-hash', 'now', 'later');
           expect(() => sqlite.prepare('INSERT INTO agent_tokens VALUES (?, ?, ?, ?)').run('0xab', 'other-hash', 'now', 'later')).toThrow();

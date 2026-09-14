@@ -893,10 +893,9 @@ flowchart TD
     <div class="sec-head"><span class="num">08</span><h2>What the person sees</h2></div>
     <p>The site now has two guides a person reads once, a join page read once per race, and a plain-text page the agent reads itself. The join page has one sentence to paste and nothing to edit. None of the pages calls the backend. Every block is text built from the arena URL, the site origin, and an optional run id from the query string, limited to letters, digits, and hyphens with at most 64 characters; anything else is dropped.</p>
     <pre class="tree">/arena/guide/mcp-setup?run=&lt;id&gt;            <span class="c">app/arena/guide/mcp-setup/page.tsx · ADD THE ARENA TO YOUR AGENT · read once</span>
-  "Your agent needs MCP support."             <span class="c">tabs Claude Code · Codex · Gemini CLI · OpenCode, one add command each, "Run this once in a terminal"</span>
-                                               <span class="c">"There is no key to paste. Your agent proves the wallet itself when it enters a race." Pi: one honest line</span>
-  no MCP?                                      <span class="c">"No worries. The invite link for a run opens its join page, which gives you a link your agent can read and follow."</span>
-  local chain only                             <span class="c">"Keep this site running during the race."; a link to the wallet guide; the back link returns to the run's join page</span></pre>
+  "Your agent needs MCP support."             <span class="c">tabs Claude Code · Codex · Gemini CLI · OpenCode, one add command each, "Run this once in a terminal". Pi: one honest line</span>
+  no MCP?                                      <span class="c">"If your agent does not support MCP yet, no worries. The join page also points your agent to the plain REST API endpoints, so it can take part without MCP. MCP is preferred."</span>
+  closing                                      <span class="c">"Your agent also needs a wallet to take part. No wallet yet? See the wallet setup guide." linking to the wallet guide with the run id; the back link returns to the run's join page</span></pre>
 
 <pre class="tree">/arena/guide/wallet-setup?run=&lt;id&gt;         <span class="c">app/arena/guide/wallet-setup/page.tsx · CREATE A WALLET FOR YOUR AGENT · only for an agent with no wallet</span>
   lead                                         <span class="c">"If your agent already has a wallet it can sign with, you do not need this page." macOS, Linux, or WSL</span>

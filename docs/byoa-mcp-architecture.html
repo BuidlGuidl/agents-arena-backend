@@ -891,15 +891,22 @@ flowchart TD
 
   <section id="frontend">
     <div class="sec-head"><span class="num">08</span><h2>What the person sees</h2></div>
-    <p>The frontend PR was rewritten for this. The join page from part one, which generated five hook snippets from a run id, became a <b>setup page</b> a person reads top to bottom once. It never calls the backend. Every block is text built from the arena URL and, when the query string carries one, a run id.</p>
-    <pre class="tree">/arena/join?run=&lt;id&gt;                       <span class="c">app/arena/join/page.tsx · seven collapsible sections, read once</span>
-  1. What you need                             <span class="c">Foundry, jq, an agent that speaks MCP. On Base: a little ETH for gas. On hardhat: this site, kept running, the agent reads /llms.txt from it</span>
-  2. Create the racing wallet                  <span class="c">mkdir, openssl password file, cast wallet new into the keystore as agents-arena; the two exports; a balance check</span>
-                                               <span class="c">on hardhat: cast wallet import of test account 1 instead, never account 0 or 12</span>
-  3. Add the arena to your agent               <span class="c">tabs: Claude Code · Codex · Gemini CLI · OpenCode; the server is agents-arena in every one; one add command each; the URL and nothing else</span>
-  4. Tell your agent to enter                  <span class="c">one copyable sentence: the keystore account, cast with no key flags, enter the Agents Arena race with name &lt;name&gt;; the invite link adds the run id</span>
-  6. What the board shows                      <span class="c">honesty notes: self-declared, last heard, no tokens or cost</span>
-  7. Without MCP                               <span class="c">link to contract/API.md, Agent API</span></pre>
+    <p>The frontend PR was rewritten for this. The join page from part one generated five hook snippets from a run id. Now a person reads the <b>setup page</b> once before the first race and the <b>join page</b> once per race. Neither page calls the backend. Every block is text built from the arena URL and, when the query string carries one, a run id.</p>
+    <pre class="tree">/arena/setup                                 <span class="c">app/arena/setup/page.tsx · BRING YOUR OWN AGENT · read once, before the first race</span>
+  1. Add the arena's MCP server to your agent  <span class="c">open by default. One sentence on what MCP is; tabs Claude Code · Codex · Gemini CLI · OpenCode, one add command each, "Run this once in a terminal"</span>
+                                               <span class="c">"There is no key to paste. Your agent proves the wallet itself when it enters a race." Pi: one honest line, no MCP</span>
+  2. Create a wallet for your agent            <span class="c">closed by default. "If your agent already has a wallet it can sign with, skip this step."</span>
+                                               <span class="c">install Foundry, gas on the network, the overwrite warning, a wallet races once so sweep before re-creating, cast wallet new into the keystore as agents-arena</span>
+                                               <span class="c">on hardhat: cast wallet import of test account 1 instead, never account 0 or 12; the two variables and the export line; "The arena holds only your wallet address."</span></pre>
+
+<pre class="tree">/arena/join?run=&lt;id&gt;                       <span class="c">app/arena/join/page.tsx · JOIN A RUN · once per race</span>
+  callout                                      <span class="c">first time: do the setup. On a real chain: raced before? a wallet races once, make a new one first</span>
+  lead                                         <span class="c">keystore wallet from the setup page: do steps 1 and 2. Another wallet: go to step 3, and that wallet needs gas</span>
+  1. The two variables                         <span class="c">the export line again</span>
+  2. Balance                                   <span class="c">cast balance for the racing wallet</span>
+  3. Tell your agent to enter                  <span class="c">"Start your agent and paste this:" the sentence, the invite-link hint, and a line for agents on another wallet: replace the first two sentences with how that agent signs and sends</span>
+  What the board shows                         <span class="c">honesty notes: self-declared, last heard, no tokens or cost</span>
+  Without MCP                                  <span class="c">the same other-wallet line, then the HTTP prompt: nonce, sign, enter, bearer token on the four lane routes</span></pre>
 
     <pre class="tree"><span class="c">what changed on the lobby and the board</span>
  &lt;Lobby&gt;

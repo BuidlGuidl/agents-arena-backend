@@ -14,6 +14,7 @@ import { EventJournal } from '../src/journal.js';
 import { createNarrationWatch } from '../src/narration/watch.js';
 import {
   EntrantNotFoundError,
+  type FundingGate,
   InvalidTransitionError,
   LEGAL_TRANSITIONS,
   PRESET_NAMES,
@@ -1009,6 +1010,43 @@ describe('RunManager lifecycle cancellation', () => {
       });
     } finally {
       journal.close();
+    }
+  });
+
+  it('waits for unfunded entrants beyond fifteen minutes and still lets the operator stop', async () => {
+    vi.useFakeTimers();
+    const journal = new EventJournal(':memory:');
+    const stop = vi.fn(noopDriver.stop);
+    const fundingGate = vi.fn<FundingGate>(async (_run, runEntrants, signal) => {
+      expect(runEntrants).toHaveLength(2);
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
+    const manager = new RunManager(journal, { ...noopDriver, stop }, fundingGate);
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel' });
+      const outcome = manager.start(run.id).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fundingGate).toHaveBeenCalledOnce();
+      expect(manager.snapshot(run.id).state).toBe('awaiting_funding');
+
+      await vi.advanceTimersByTimeAsync(16 * 60 * 1000);
+      expect(manager.snapshot(run.id).state).toBe('awaiting_funding');
+      expect(stop).not.toHaveBeenCalled();
+
+      const stopped = await manager.stop(run.id);
+      const result = await outcome;
+      expect(stopped.state).toBe('failed');
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toEqual(new Error('stopped by operator before running'));
+      expect(stop).toHaveBeenCalledTimes(2);
+    } finally {
+      journal.close();
+      vi.useRealTimers();
     }
   });
 

@@ -31,7 +31,7 @@ One process owns a run: lifecycle, containers, credentials, the event journal, a
 - **Ready barrier** — all entrants prepare and hold. The run releases them together on one recorded start time, so boot time never decides the race.
 - **Steer** — an operator injects a free-text turn into a live agent mid-race. The idle auto-nudge from on-chain truth is designed but not wired; when it lands it will use the same injection path.
 - **Journal** — every fact is one append-only row with a global `id` and a per-source `seq`. The feed is a projection; a reconnect replays it.
-- **Chain profile** — selects addresses, RPC, confirmation depth, funding threshold, and funding timeout for the active chain.
+- **Chain profile** — selects addresses, RPC, confirmation depth, and funding threshold for the active chain.
 
 Transport is each CLI's line-JSON stdout (`codex --json`, `opencode --format json`, `claude --output-format stream-json`), normalized into one `ArenaEvent` stream. SSE, not websockets — `Last-Event-ID` replay is native and the traffic is asymmetric (a steer is a plain POST).
 

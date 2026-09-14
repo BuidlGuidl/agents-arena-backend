@@ -163,7 +163,6 @@ export type NarrationWatch = (
 
 export interface RunManagerOptions {
   prepareTimeoutMs?: number;
-  fundingTimeoutMs?: number;
   operatorAddresses?: readonly string[];
   solveWatch?: SolveWatch;
   narrationWatch?: NarrationWatch;
@@ -225,7 +224,6 @@ export class RunManager {
   private readonly narrationWatchControllers = new Map<string, AbortController>();
   private readonly narrationStopTimers = new Map<string, NodeJS.Timeout>();
   private readonly prepareTimeoutMs: number;
-  private readonly fundingTimeoutMs: number | undefined;
   private readonly operatorAddresses: ReadonlySet<string>;
   private readonly solveWatch: SolveWatch;
   private readonly narrationWatch: NarrationWatch;
@@ -240,7 +238,6 @@ export class RunManager {
   ) {
     this.external = new ExternalEntrants(journal.database);
     this.prepareTimeoutMs = options.prepareTimeoutMs ?? DEFAULT_PREPARE_TIMEOUT_MS;
-    this.fundingTimeoutMs = options.fundingTimeoutMs ?? activeChainProfile.fundingTimeoutMs;
     this.operatorAddresses = new Set(normalizeOperatorAddresses(options.operatorAddresses ?? []));
     this.solveWatch = options.solveWatch ?? passThroughSolveWatch;
     this.narrationWatch = options.narrationWatch ?? passThroughNarrationWatch;
@@ -858,12 +855,8 @@ export class RunManager {
           throw prepareFailure.reason;
         }
         run = this.transition(runId, 'awaiting_funding');
-        await withPhaseTimeout(
-          this.fundingGate(run, this.hostedEntrants(runId), controller.signal),
-          this.fundingTimeoutMs,
-          'funding',
-          controller,
-        );
+        if (controller.signal.aborted) throw abortReason(controller.signal);
+        await this.fundingGate(run, this.hostedEntrants(runId), controller.signal);
         run = this.transition(runId, 'ready');
         // The director starts the race, not the last wallet to be topped up.
         // Funding is theirs to drive by hand, so the run parks here and a second
@@ -1295,8 +1288,8 @@ export class RunManager {
 
 function withPhaseTimeout<T>(
   action: Promise<T>,
-  timeoutMs: number | undefined,
-  phase: 'prepare' | 'funding',
+  timeoutMs: number,
+  phase: 'prepare',
   controller: AbortController,
 ): Promise<T> {
   const { signal } = controller;
@@ -1304,14 +1297,12 @@ function withPhaseTimeout<T>(
 
   return new Promise<T>((resolve, reject) => {
     let settled = false;
-    const timer = timeoutMs === undefined
-      ? undefined
-      : setTimeout(() => {
-        controller.abort(new Error(`${phase} phase timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-    timer?.unref();
+    const timer = setTimeout(() => {
+      controller.abort(new Error(`${phase} phase timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref();
     const cleanup = (): void => {
-      if (timer !== undefined) clearTimeout(timer);
+      clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
     };
     const resolveOnce = (value: T): void => {

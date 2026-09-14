@@ -572,7 +572,7 @@ sequenceDiagram
       <li>On local, <code>runLocalDevFaucet</code> sends <code>0.1&nbsp;ETH</code> to each underfunded burner from anvil account&nbsp;0, then mines enough blocks for the confirmed-balance read. It is wired beside the gate in <code>src/index.ts</code>, not inside it. <span class="path">src/chain/funding-gate.ts</span></li>
       <li>On Base, a human funds the displayed addresses. The waiting-room UI carries the prompt, and multisend is the operator's tool of choice. The server never sends Base funds.</li>
       <li><code>fundingThresholdEth</code> is <code>0.05</code> on local and <code>0.005</code> on Base. It only confirms that money arrived: anyone can send it, because the gate watches balances rather than who paid. By convention, the seed signer funds the run, chooses the race stake, and can sweep leftovers later. <span class="path">config/chains.json</span></li>
-      <li>The local timeout is 15 minutes. Base omits <code>fundingTimeoutMs</code>, so it waits until funding, stop, or reset. Every balance change emits <code>funding.balance</code>; the run moves to <code>ready</code> when both balances cross the threshold.</li>
+      <li>Every chain waits until funding, stop, or reset. Every balance change emits <code>funding.balance</code>; the run moves to <code>ready</code> when both balances cross the threshold.</li>
     </ul>
 
     <h3>Stop, restart, and the leftover ETH</h3>

@@ -33,7 +33,7 @@ if (operatorToken.length === 0) {
   process.exit(1);
 }
 
-// The faucet tops entrants up the moment they exist, so the funding phase ends
+// The faucet tops entrants up the moment they exist, so the wait for funding ends
 // before an operator can reach the fund button. An unattended run needs it; a
 // demo driven from the arena UI funds by hand.
 const localFaucetEnabled = process.env.ARENA_LOCAL_FAUCET === 'true';

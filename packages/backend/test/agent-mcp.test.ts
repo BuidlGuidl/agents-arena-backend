@@ -85,7 +85,10 @@ describe('arena MCP', () => {
     await f.manager.remove(f.runId, f.entrantId);
     expect((await modern(f, 'tools/list', {}, f.token)).json()).toEqual(expected);
     for (const tool of expected.result.tools) {
-      expect(tool.description).toContain('Agents Arena');
+      expect(tool.description.includes('Agents Arena')).toBe(tool.name === 'request_nonce');
+      for (const property of Object.values(tool.inputSchema.properties) as Array<{ description?: string }>) {
+        expect(property.description).toEqual(expect.stringMatching(/\S/));
+      }
       expect(tool.inputSchema.additionalProperties).toBe(false);
       expect(tool.inputSchema.required.includes('token')).toBe(
         ['get_task', 'set_current_challenge', 'post_note', 'read_inbox'].includes(tool.name));

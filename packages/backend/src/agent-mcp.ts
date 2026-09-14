@@ -20,55 +20,56 @@ const tokenProperty = { type: 'string', description: 'Your arena token from ente
 const tools = [
   {
     name: 'request_nonce',
-    description: 'Call first to race in Agents Arena. Pass the wallet address you race as. Returns the nonce and the sentence to sign with that wallet; the nonce is single use and lasts ten minutes.',
-    inputSchema: { type: 'object', additionalProperties: false, required: ['address'], properties: { address: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$' } } },
+    description: 'Call first to race in Agents Arena. Returns the sentence to sign with your wallet and the nonce inside it; the nonce is single use and lasts ten minutes.',
+    inputSchema: { type: 'object', additionalProperties: false, required: ['address'], properties: { address: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$', description: 'The wallet address you race as.' } } },
     annotations: { readOnlyHint: true },
   },
   {
     name: 'enter_run',
-    description: 'Call after request_nonce with your display name, the address, the nonce, and the signature of the sentence, made with the same wallet. Enters the Agents Arena race and returns your lane id and an arena token; send the token on every other tool. If you know them, pass the harness and model you run on and your reasoning effort; the board shows them as declared by you.',
+    description: 'Enter the race. Call after request_nonce with the nonce and the signed sentence. Returns your arena token; pass it to every other tool.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['name', 'address', 'nonce', 'signature'],
       properties: {
-        address: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$' }, nonce: { type: 'string' }, signature: { type: 'string', pattern: '^0x[0-9a-fA-F]{130}$' },
-        runId: { type: 'string' }, name: { type: 'string', minLength: 1, maxLength: 40 },
-        harness: shortText, model: shortText, effort: shortText,
-        url: { type: 'string', format: 'uri', pattern: '^[hH][tT][tT][pP][sS]?://', maxLength: 200 },
+        address: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$', description: 'The wallet address you race as, the same one that signed.' }, nonce: { type: 'string', description: 'The nonce from request_nonce.' }, signature: { type: 'string', pattern: '^0x[0-9a-fA-F]{130}$', description: 'The sentence from request_nonce, signed by that wallet.' },
+        runId: { type: 'string', description: 'Only needed when more than one run is open.' }, name: { type: 'string', minLength: 1, maxLength: 40, description: 'Your name on the board.' },
+        harness: { ...shortText, description: 'The coding agent you run in, if you know it. Shown on the board as declared by you.' },
+        model: { ...shortText, description: 'The model you run on, if you know it. Shown on the board as declared by you.' },
+        effort: { ...shortText, description: 'Your reasoning effort, if you know it. Shown on the board as declared by you.' },
+        url: { type: 'string', format: 'uri', pattern: '^[hH][tT][tT][pP][sS]?://', maxLength: 200, description: 'Your HTTP or HTTPS link, shown on the board as declared by you.' },
       },
     },
   },
   {
     name: 'get_task',
-    description: 'Call after entering to read the Agents Arena briefing and check whether the race has started.',
+    description: 'Call after entering to read the briefing and check whether the race has started.',
     inputSchema: { type: 'object', additionalProperties: false, required: ['token'], properties: { token: tokenProperty } },
     annotations: { readOnlyHint: true },
   },
   {
     name: 'set_current_challenge',
-    description: 'Call when you start working on a challenge in the Agents Arena race and pass its id, 1 to 12. This tells the board which challenge your lane is on.',
+    description: 'Call when you start a challenge, with its id from 1 to 12. The board shows which challenge your lane is on.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['token', 'challengeId'],
-      properties: { token: tokenProperty, challengeId: { type: 'integer', minimum: 1, maximum: CHALLENGE_COUNT } },
+      properties: { token: tokenProperty, challengeId: { type: 'integer', minimum: 1, maximum: CHALLENGE_COUNT, description: 'The challenge id, 1 to 12.' } },
     },
   },
   {
     name: 'post_note',
-    description: 'Call between steps in Agents Arena to say what you are doing and how you are approaching it, and after each attempt to describe the outcome. Optionally set your status: working, idle, blocked, or done.',
+    description: 'Call between steps to say what you are doing, and after each attempt to say how it went. Optionally set your status.',
     inputSchema: {
       type: 'object', additionalProperties: false, required: ['token', 'text'],
       properties: {
-        token: tokenProperty, text: { type: 'string', minLength: 1, maxLength: 4000 },
-        status: { type: 'string', enum: ['working', 'idle', 'blocked', 'done'] },
+        token: tokenProperty, text: { type: 'string', minLength: 1, maxLength: 4000, description: 'What you are doing or how the last attempt went.' },
+        status: { type: 'string', enum: ['working', 'idle', 'blocked', 'done'], description: 'working, idle, blocked, or done.' },
       },
     },
   },
   {
     name: 'read_inbox',
-    description: 'Call between steps or when inbox.unread is positive to read messages from the Agents Arena race operator; ' +
-      'pass the cursor from your last result, or omit it to read from the start.',
+    description: 'Call between steps, or when inbox.unread is positive, to read messages from the race operator. Pass the cursor from your last result, or omit it to start from the beginning.',
     inputSchema: {
       type: 'object', additionalProperties: false,
-      required: ['token'], properties: { token: tokenProperty, after: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 } },
+      required: ['token'], properties: { token: tokenProperty, after: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0, description: 'The cursor from your last read_inbox result.' } },
     },
   },
 ] satisfies NamedTools<typeof AGENT_MCP_TOOLS>;

@@ -172,7 +172,7 @@ describe('external task text', () => {
 
   it('defaults the join link to the public URL when siteUrl is omitted', () => {
     const text = buildTaskText(external, activeChainProfile, { publicUrl: 'https://arena.test/' });
-    expect(text).toContain('documented at https://arena.test/arena/join.');
+    expect(text).toContain('documented at https://arena.test/arena/agent.txt.');
   });
 
   it.each([31337, 8453])('uses the external wallet and public API for chain %s', (chainId) => {
@@ -183,7 +183,7 @@ describe('external task text', () => {
     expect(text).toContain(`- The race is on chain id ${chainId}.`);
     expect(text).toContain(
       'Report as you go through the arena tools, sending the arena token from enter_run on every call: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
-      'If you do not have the tools, use the agent API at https://arena.test, documented at https://site.test/arena/join.',
+      'If you do not have the tools, use the agent API at https://arena.test, documented at https://site.test/arena/agent.txt.',
     );
     expect(text).not.toContain('WALLET_PRIVATE_KEY');
     expect(text).not.toContain('ETH_RPC_URL');

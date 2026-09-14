@@ -271,7 +271,7 @@ describe('external lane lifecycle', () => {
     expect(prompts[0]?.payload).toMatchObject({ text: expect.stringContaining('The challenge briefing is at https://site.test/llms.txt.') });
     expect(prompts[0]?.payload).toMatchObject({ text: expect.stringContaining(
       'Report as you go through the arena tools, sending the arena token from enter_run on every call: call set_current_challenge before you start each challenge, post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
-      'If you do not have the tools, use the agent API at https://arena.test, documented at https://site.test/arena/join.',
+      'If you do not have the tools, use the agent API at https://arena.test, documented at https://site.test/arena/agent.txt.',
     ) });
     expect(JSON.stringify(prompts)).not.toContain('WALLET_PRIVATE_KEY');
     expect(JSON.stringify(prompts)).toContain(account.address);

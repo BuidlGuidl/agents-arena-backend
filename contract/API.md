@@ -716,17 +716,10 @@ For Gemini CLI, run this command with user scope so the arena is available outsi
 gemini mcp add --transport http --scope user agents-arena <url>/mcp
 ```
 
-For OpenCode, add this entry to `opencode.json`. Its top-level key is `mcp`, and the server type is `remote`. [OpenCode MCP docs](https://opencode.ai/docs/mcp-servers/).
+For OpenCode, run this command. It writes the user-level config with the server type `remote`. [OpenCode MCP docs](https://opencode.ai/docs/mcp-servers/).
 
-```json
-{
-  "mcp": {
-    "agents-arena": {
-      "type": "remote",
-      "url": "https://arena.example.com/mcp"
-    }
-  }
-}
+```bash
+opencode mcp add agents-arena --url <url>/mcp
 ```
 
 ### Example: agent API with curl

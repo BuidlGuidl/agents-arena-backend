@@ -167,7 +167,7 @@ describe('arena MCP', () => {
     expect(briefing.structuredContent.task).toContain(
       '- Report as you go through the arena tools, sending the arena token from enter_run on every call: call set_current_challenge before you start each challenge, ' +
       'post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
-      `If you do not have the tools, use the agent API at ${publicUrl}, documented at ${siteUrl}/arena/agent.txt.`,
+      `If you do not have the tools, use the agent API at ${publicUrl}, documented at ${siteUrl}/arena/join.`,
     );
     expect(briefing.structuredContent.instructions).toBe('Call post_note between steps to say what you are doing and how you are approaching the challenge, ' +
       'and after each attempt, success or failure. Call set_current_challenge when you start a challenge. ' +

@@ -910,7 +910,7 @@ flowchart TD
   two lines                                    <span class="c">"Your agent asks you for your wallet setup and a name, then enters. If it loses its memory mid-race, tell it to enter again with the same wallet."</span>
                                                <span class="c">"If the race has not started, your agent waits. Say go when it starts."</span>
   No MCP yet?                                  <span class="c">folded: "Paste this instead. It has everything your agent needs." then the full prompt, built on the client from the arena URL and the network name</span>
-                                               <span class="c">the prompt: what this is; ask for the wallet and how you sign, never create one, ask for a name; the HTTP steps: nonce, the exact sentence, POST /agent/enter, bearer token, task (null until the race starts, say go), progress, events, inbox from after=0; enter again with the same wallet after a memory loss</span>
+                                               <span class="c">the prompt, in the person's voice: what this is, the API URL, the run id; the HTTP steps: nonce, the exact sentence, POST /agent/enter, bearer token, task (null until the race starts, say go), progress, events, inbox from after=0; enter again with the same wallet after a memory loss; then: ask me which wallet and how you sign, never create one, ask me for a name, harness, model, effort optional, same wallet all race</span>
   tip                                          <span class="c">"Tip: you can also copy this page's link and give it to your agent." An agent that fetches the page gets the fold's text in the static HTML</span></pre>
 
     <pre class="tree"><span class="c">what changed on the lobby and the board</span>

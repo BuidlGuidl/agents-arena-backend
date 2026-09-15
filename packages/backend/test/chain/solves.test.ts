@@ -1,6 +1,7 @@
 import { createPublicClient, http, type Address, type PublicClient } from 'viem';
+import { eq } from 'drizzle-orm';
 import { privateKeyToAccount } from 'viem/accounts';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ChainProfile } from '../../src/chain/profile.js';
 import { CHALLENGE_IDS, SolvePoller } from '../../src/chain/solve-poller.js';
@@ -55,6 +56,56 @@ async function seedEntrants(
   }))).run();
   return addresses;
 }
+
+describe('solve poller start block', () => {
+  it.each([99n, 100n, 101n])('scores only mints at or after block 100, mint=%s', async (mintBlock) => {
+    const journal = new EventJournal(':memory:');
+    const runId = `floor-${mintBlock}`;
+    try {
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
+      let head = 110n;
+      const getLogs = vi.fn(async () => [{ args: { tokenId: 1n }, blockNumber: mintBlock, transactionHash: `0x${'ab'.repeat(32)}`, logIndex: 0 }]);
+      const readContract = vi.fn(async ({ args, blockNumber }: { args: [Address, bigint]; blockNumber: bigint }) => args[1] === 3n && blockNumber >= mintBlock);
+      const client = { getBlockNumber: async () => head, getCode: async () => undefined, getLogs, readContract } as unknown as PublicClient;
+      const profile = testProfile('http://localhost:1', 0, address);
+      const poller = new SolvePoller({ journal, runId, profile, client, startBlock: 100n });
+      expect(await poller.pollOnce()).toBe(mintBlock < 100n ? 0 : 1);
+      expect(readContract).toHaveBeenCalledTimes(CHALLENGE_IDS.length);
+      expect(readContract.mock.calls.filter(([input]) => input.blockNumber === 99n)).toHaveLength(0);
+      expect(getLogs.mock.calls[0]).toEqual([expect.objectContaining({ fromBlock: 100n })]);
+      head = 111n;
+      expect(await poller.pollOnce()).toBe(0);
+      expect(getLogs).toHaveBeenCalledOnce();
+      expect(readContract.mock.calls.filter(([input]) => input.args[1] === 3n && input.blockNumber === 111n)).toHaveLength(0);
+      expect(journal.after(runId, 0).filter((event) => event.type === 'run.error')).toEqual([]);
+      expect(journal.after(runId, 0).filter((event) => event.type === 'score.flag')).toHaveLength(mintBlock < 100n ? 0 : 1);
+    } finally { journal.close(); }
+  });
+
+  it('ignores old mints outside the log window and advances the cursor across restart', async () => {
+    const journal = new EventJournal(':memory:');
+    const runId = 'floor-old-mint';
+    try {
+      const address = (await seedEntrants(journal, runId, ['e1'])).get('e1')!;
+      let head = 110n;
+      const getLogs = vi.fn(async (_input: unknown) => []);
+      const readContract = vi.fn(async ({ args, blockNumber }: { args: [Address, bigint]; blockNumber: bigint }) => args[1] === 3n || (args[1] === 5n && blockNumber > 110n));
+      const client = { getBlockNumber: async () => head, getCode: async () => undefined, getLogs, readContract } as unknown as PublicClient;
+      const profile = testProfile('http://localhost:1', 0, address);
+      journal.database.update(runs).set({ startBlock: 100 }).where(eq(runs.id, runId)).run();
+      const recoveredRun = journal.database.select().from(runs).where(eq(runs.id, runId)).get()!;
+      const poller = new SolvePoller({ journal, runId, profile, client, startBlock: BigInt(recoveredRun.startBlock!) });
+      expect(await poller.pollOnce()).toBe(0);
+      expect(journal.after(runId, 0)).toEqual([]);
+      head = 111n;
+      expect(await poller.pollOnce()).toBe(0);
+      expect(getLogs.mock.calls.at(-1)?.[0]).toMatchObject({ fromBlock: 111n });
+      // The missing race log remains an error, while the old holding stays skipped.
+      expect(journal.after(runId, 0).filter((event) => event.type === 'run.error')).toHaveLength(1);
+      expect(readContract.mock.calls.filter(([input]) => input.args[1] === 3n && input.blockNumber === 111n)).toHaveLength(0);
+    } finally { journal.close(); }
+  });
+});
 
 describe('solve poller', () => {
   let anvil: AnvilHandle;

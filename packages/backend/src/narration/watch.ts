@@ -110,6 +110,11 @@ export class NarrationWatcher {
             nowMs,
           });
           if (status === 'done' && !window.everActive) return;
+          if (entrant.kind === 'external' && window.eventCount === 0) {
+            basedOnEventId = window.basedOnEventId;
+            await wake.wait();
+            continue;
+          }
 
           // A failed attempt still counts as a call for the timing floor. The
           // retry deadline can extend it with exponential backoff.

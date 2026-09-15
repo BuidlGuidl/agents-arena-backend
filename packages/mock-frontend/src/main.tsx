@@ -769,6 +769,11 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
     [entrant, feed.entries],
   );
   const laneEvents = useMemo(() => laneEntries.map((entry) => entry.event), [laneEntries]);
+  const removal = [...laneEvents].reverse().find((event) => event.type === 'entrant.removed');
+  const removed = entrant.kind === 'external' && (entrant.removedAt !== undefined || removal !== undefined);
+  const removedReason = entrant.kind === 'external'
+    ? entrant.removedReason ?? (removal?.type === 'entrant.removed' ? removal.payload.reason : undefined)
+    : undefined;
   const laneGaps = useMemo(
     () => (entrant ? gapsForSource(feed.gaps, entrant.id) : []),
     [entrant, feed.gaps],
@@ -781,13 +786,17 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
   return (
     <article
       className="lane"
-      style={{ ['--lane' as string]: laneColor }}
+      style={{ ['--lane' as string]: laneColor, ...(removed ? { opacity: 0.6 } : {}) }}
     >
       <div className="lane-head">
         <h2 className="lane-name">{entrant.id}</h2>
-        <span className="lane-harness">{entrant.harness}</span>
+        <span className="lane-harness">{entrant.kind === 'hosted' ? entrant.harness : entrant.harness ?? entrant.name}</span>
       </div>
       <p className="lane-model">{entrant.model}</p>
+      {removed ? <div data-testid={`lane-removed-${entrant.id}`}>
+        <p>Removed</p>
+        {removedReason ? <p>{removedReason}</p> : null}
+      </div> : null}
 
       {wallet.address !== null ? (
         <div className="lane-wallet" data-testid={`lane-wallet-${entrant.id}`}>
@@ -798,7 +807,7 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
             </span>
           ) : wallet.wei !== null ? (
             <span className="wallet-fund" data-testid={`lane-fund-${entrant.id}`}>{formatWei(wallet.wei)} eth</span>
-          ) : wallet.awaitingFunds ? (
+          ) : entrant.kind === 'hosted' && wallet.awaitingFunds ? (
             <span className="wallet-fund awaiting" data-testid={`lane-fund-${entrant.id}`}>awaiting funds</span>
           ) : null}
         </div>
@@ -853,7 +862,7 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
         />
         <button
           className="btn steer-btn"
-          disabled={text.length === 0 || steer.isPending}
+          disabled={removed || text.length === 0 || steer.isPending}
           onClick={() => steer.mutate(text)}
         >
           steer
@@ -862,7 +871,7 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
           className="btn restart-btn"
           data-testid={`lane-restart-${entrant.id}`}
           title="drop this agent's session and re-feed its opening prompt"
-          disabled={runState !== 'running' || restart.isPending}
+          disabled={entrant.kind === 'external' || runState !== 'running' || restart.isPending}
           onClick={() => restart.mutate()}
         >
           {restart.isPending ? 'restarting…' : 'restart'}

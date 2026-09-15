@@ -13,7 +13,7 @@ import {
   HarnessEntrantDriver,
   type HarnessDriverOptions,
 } from './harness-driver.js';
-import type { EntrantRecord, RunRecord } from './types.js';
+import type { HostedEntrantRecord, RunRecord } from './types.js';
 
 export interface CodexDriverOptions extends HarnessDriverOptions {
   authPath?: string;
@@ -38,13 +38,13 @@ export class CodexDriver extends HarnessEntrantDriver {
     return 'codex';
   }
 
-  protected assertHarness(entrant: EntrantRecord): void {
+  protected assertHarness(entrant: HostedEntrantRecord): void {
     if (entrant.harness !== 'codex') {
       throw new Error(`CodexDriver cannot run harness ${entrant.harness}`);
     }
   }
 
-  protected async createContainer(run: RunRecord, entrant: EntrantRecord): Promise<EntrantContainer> {
+  protected async createContainer(run: RunRecord, entrant: HostedEntrantRecord): Promise<EntrantContainer> {
     const authJson = await readFile(this.authPath, 'utf8');
     registerCredentialSecrets(run.id, stringLeaves(JSON.parse(authJson) as unknown));
     const wallet = getWallet(run.id, entrant.id);
@@ -101,7 +101,7 @@ export class CodexDriver extends HarnessEntrantDriver {
   // turn boundary and rewrite any stored rows that already carry them.
   protected override async afterTurn(
     run: RunRecord,
-    entrant: EntrantRecord,
+    entrant: HostedEntrantRecord,
     container: EntrantContainer,
   ): Promise<void> {
     const seeded = this.seededAuth.get(authKey(run.id, entrant.id));
@@ -195,7 +195,7 @@ export class CodexDriver extends HarnessEntrantDriver {
     return ['codex', '--version'];
   }
 
-  protected startArgv(_entrant: EntrantRecord, prompt: string): string[] {
+  protected startArgv(_entrant: HostedEntrantRecord, prompt: string): string[] {
     return [
       'codex',
       'exec',
@@ -208,7 +208,7 @@ export class CodexDriver extends HarnessEntrantDriver {
     ];
   }
 
-  protected resumeArgv(_entrant: EntrantRecord, sessionId: string, text: string): string[] {
+  protected resumeArgv(_entrant: HostedEntrantRecord, sessionId: string, text: string): string[] {
     // -C is a global option: it must precede the `resume` subcommand or the CLI
     // rejects it with "unexpected argument '-C'" and the steer never runs.
     return [
@@ -225,13 +225,13 @@ export class CodexDriver extends HarnessEntrantDriver {
     ];
   }
 
-  protected createParser(entrant: EntrantRecord): CodexEventParser {
+  protected createParser(entrant: HostedEntrantRecord): CodexEventParser {
     return new CodexEventParser(entrant.id, this.logger);
   }
 
   protected override async recoveredUsage(
     _run: RunRecord,
-    _entrant: EntrantRecord,
+    _entrant: HostedEntrantRecord,
     container: EntrantContainer,
     sessionId: string | undefined,
   ) {

@@ -6,8 +6,14 @@ import { createOpenRouterModelSource } from './agents/openrouter.js';
 import { createFundingGate, runLocalDevFaucet } from './chain/funding-gate.js';
 import { activeChainProfile } from './chain/profile.js';
 import { createSolveWatch } from './chain/solve-poller.js';
+import { flagsHeld } from './chain/flags-held.js';
+import { currentBlockNumber } from './chain/block-number.js';
 import {
   InvalidNarrationConfigError,
+  MissingPublicUrlError,
+  resolvePublicUrl,
+  resolveSiteUrl,
+  InvalidSiteUrlError,
   resolveListenHost,
   resolveNarrationConfig,
 } from './config.js';
@@ -29,7 +35,7 @@ if (operatorToken.length === 0) {
   process.exit(1);
 }
 
-// The faucet tops entrants up the moment they exist, so the funding phase ends
+// The faucet tops entrants up the moment they exist, so the wait for funding ends
 // before an operator can reach the fund button. An unattended run needs it; a
 // demo driven from the arena UI funds by hand.
 const localFaucetEnabled = process.env.ARENA_LOCAL_FAUCET === 'true';
@@ -51,8 +57,13 @@ if (!localAutoSignEnabled() && operatorAddresses.length === 0) {
 const { app, manager } = ((): ReturnType<typeof createServer> => {
   try {
     const narration = resolveNarrationConfig();
+    const publicUrl = resolvePublicUrl(activeChainProfile.name, port, process.env.ARENA_PUBLIC_URL);
     return createServer({
+      flagsHeld,
+      getBlockNumber: currentBlockNumber,
       operatorToken,
+      publicUrl,
+      siteUrl: resolveSiteUrl(publicUrl, corsOrigins, process.env.ARENA_SITE_URL),
       agentRegistry: createAgentRegistry({ openRouter: createOpenRouterModelSource({ logger: console }) }),
       siwe,
       corsOrigins,
@@ -90,6 +101,10 @@ const { app, manager } = ((): ReturnType<typeof createServer> => {
       console.error(
         'ARENA_SIWE_DOMAINS is required for wallet login. Set it to the hostname the wallet will show, such as the frontend host.',
       );
+      process.exit(1);
+    }
+    if (error instanceof MissingPublicUrlError || error instanceof InvalidSiteUrlError) {
+      console.error(error.message);
       process.exit(1);
     }
     if (error instanceof InvalidNarrationConfigError) {

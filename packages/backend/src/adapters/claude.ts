@@ -9,7 +9,7 @@ import {
   HarnessEntrantDriver,
   type HarnessDriverOptions,
 } from './harness-driver.js';
-import type { EntrantRecord, RunRecord } from './types.js';
+import type { HostedEntrantRecord, RunRecord } from './types.js';
 
 export interface ClaudeDriverOptions extends HarnessDriverOptions {
   oauthToken?: string;
@@ -27,13 +27,13 @@ export class ClaudeDriver extends HarnessEntrantDriver {
     return 'claude';
   }
 
-  protected assertHarness(entrant: EntrantRecord): void {
+  protected assertHarness(entrant: HostedEntrantRecord): void {
     if (entrant.harness !== 'claude') {
       throw new Error(`ClaudeDriver cannot run harness ${entrant.harness}`);
     }
   }
 
-  protected async createContainer(run: RunRecord, entrant: EntrantRecord): Promise<EntrantContainer> {
+  protected async createContainer(run: RunRecord, entrant: HostedEntrantRecord): Promise<EntrantContainer> {
     const oauthToken = this.oauthToken;
     if (oauthToken === undefined || oauthToken.length === 0) {
       throw new Error('Claude OAuth token not found in CLAUDE_CODE_OAUTH_TOKEN');
@@ -65,7 +65,7 @@ export class ClaudeDriver extends HarnessEntrantDriver {
     return ['claude', '--version'];
   }
 
-  protected startArgv(entrant: EntrantRecord, prompt: string): string[] {
+  protected startArgv(entrant: HostedEntrantRecord, prompt: string): string[] {
     return [
       'claude',
       '-p',
@@ -80,7 +80,7 @@ export class ClaudeDriver extends HarnessEntrantDriver {
     ];
   }
 
-  protected resumeArgv(entrant: EntrantRecord, sessionId: string, text: string): string[] {
+  protected resumeArgv(entrant: HostedEntrantRecord, sessionId: string, text: string): string[] {
     return [
       'claude',
       '-p',
@@ -97,13 +97,13 @@ export class ClaudeDriver extends HarnessEntrantDriver {
     ];
   }
 
-  protected createParser(entrant: EntrantRecord): ClaudeEventParser {
+  protected createParser(entrant: HostedEntrantRecord): ClaudeEventParser {
     return new ClaudeEventParser(entrant.id, entrant.model, this.logger);
   }
 
   protected override async recoveredUsage(
     _run: RunRecord,
-    _entrant: EntrantRecord,
+    _entrant: HostedEntrantRecord,
     container: EntrantContainer,
     _sessionId: string | undefined,
   ) {

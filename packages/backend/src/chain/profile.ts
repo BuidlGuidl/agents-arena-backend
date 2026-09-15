@@ -12,7 +12,6 @@ export interface ChainProfile {
   challenge1: Address;
   identityRegistry: Address;
   fundingThresholdWei: bigint;
-  fundingTimeoutMs?: number;
   challengeAddresses?: Readonly<Record<string, Address>>;
   // Set when the chain has a public briefing the entrant can fetch. Absent means
   // the arena mounts a challenge pack instead (ADR-0009).
@@ -48,12 +47,6 @@ function parseProfile(name: string, value: RawChainProfile): ChainProfile {
   }
   if (!Number.isSafeInteger(value.confirmations) || value.confirmations < 0) {
     throw new Error(`Invalid confirmation count for profile ${name}`);
-  }
-  if (
-    value.fundingTimeoutMs !== undefined
-    && (!Number.isSafeInteger(value.fundingTimeoutMs) || value.fundingTimeoutMs <= 0)
-  ) {
-    throw new Error(`Invalid funding timeout for profile ${name}`);
   }
   if (typeof value.fundingThresholdEth !== 'string' || value.fundingThresholdEth.trim() === '') {
     throw new Error(`Invalid funding threshold for profile ${name}`);
@@ -106,9 +99,6 @@ function parseProfile(name: string, value: RawChainProfile): ChainProfile {
     challenge1,
     identityRegistry: parseAddress(value.identityRegistry, `${name}.identityRegistry`),
     fundingThresholdWei,
-    ...(value.fundingTimeoutMs === undefined
-      ? {}
-      : { fundingTimeoutMs: value.fundingTimeoutMs }),
     ...(value.briefingUrl === undefined ? {} : { briefingUrl: value.briefingUrl }),
     ...(challengeAddresses === undefined ? {} : { challengeAddresses }),
   };

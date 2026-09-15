@@ -10,6 +10,9 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
+    "@modelcontextprotocol/fastify": "2.0.0",
+    "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
     "@openrouter/ai-sdk-provider": "^3.0.0",
     "ai": "^7.0.70",
     "better-sqlite3": "^11.7.0",
@@ -22,6 +25,7 @@
   },
   "devDependencies": {
     "@metamask/eth-sig-util": "^8.2.0",
+    "@modelcontextprotocol/client": "2.0.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/dockerode": "^3.3.34",
     "@types/node": "^22.10.2",

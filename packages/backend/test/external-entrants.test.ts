@@ -111,7 +111,7 @@ describe('external entrant join', () => {
   });
 
   it('creates a lane, journals its declared fields, and stores only an arena token hash', async () => {
-    const flagsHeld = vi.fn(async () => 4);
+    const flagsHeld = vi.fn(async () => 0);
     const { target, runId } = await setup({ flagsHeld });
     const payload = await signed(target, runId, { harness: 'my-cli', model: 'my-model', effort: 'whatever', url: 'https://agent.test' });
     const response = await join(target, payload);
@@ -122,7 +122,7 @@ describe('external entrant join', () => {
     const lane = body.run.entrants.find((entrant) => entrant.id === body.entrantId);
     expect(lane).toMatchObject({ kind: 'external', name: payload.name, address: account.address, status: 'idle',
       harness: payload.harness, model: payload.model, effort: payload.effort, url: payload.url,
-      joinedAt: expect.any(String), task: { ctfFlagsBeforeJoin: 4 } });
+      joinedAt: expect.any(String) });
     expect(lane).not.toHaveProperty('removedAt');
     expect(body.run.entrants.filter((entrant) => entrant.kind === 'hosted')).toHaveLength(2);
     expect(flagsHeld).toHaveBeenCalledWith(account.address);
@@ -142,8 +142,8 @@ describe('external entrant join', () => {
     expect(history.json().events).toHaveLength(1);
   });
 
-  it('replaces declared fields while retaining the first join time and flag baseline', async () => {
-    const flagsHeld = vi.fn(async () => 2);
+  it('replaces declared fields while retaining the first join time and solves', async () => {
+    const flagsHeld = vi.fn(async () => 0);
     const { target, runId } = await setup({ flagsHeld });
     const first = (await join(target, await signed(target, runId, { harness: 'first' }))).json<EnterResponse>();
     expect((await progress(target, tokens.get(target)!)).statusCode).toBe(200);
@@ -157,7 +157,7 @@ describe('external entrant join', () => {
     const second = response.json<EnterResponse>();
     expect(second.entrantId).toBe(first.entrantId);
     const lane = second.run.entrants.find((entrant) => entrant.id === second.entrantId);
-    expect(lane).toMatchObject({ name: 'Renamed', model: 'new', flags: 1, task: { ctfFlagsBeforeJoin: 2 } });
+    expect(lane).toMatchObject({ name: 'Renamed', model: 'new', flags: 1 });
     expect(lane).not.toHaveProperty('harness');
     const original = first.run.entrants.find((entrant) => entrant.id === first.entrantId);
     if (original?.kind !== 'external' || lane?.kind !== 'external') throw new Error('Missing external lane');
@@ -194,13 +194,13 @@ describe('external entrant join', () => {
     expect((await join(target, await signed(target, next.run.id))).statusCode).toBe(409);
   });
 
-  it('records zero if the chain read fails', async () => {
+  it('rejects entry and warns if the chain read fails', async () => {
     const { target, runId } = await setup({ flagsHeld: async () => { throw new Error('unavailable'); } });
     const warning = vi.spyOn(target.app.log, 'warn');
     const response = await join(target, await signed(target, runId));
-    expect(response.statusCode).toBe(201);
-    expect(response.json<EnterResponse>().run.entrants.find((entrant) => entrant.kind === 'external'))
-      .toMatchObject({ task: { ctfFlagsBeforeJoin: 0 } });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: "Could not read this wallet's flags. Try again in a moment." });
+    expect(target.manager.hasLane(runId, account.address)).toBe(false);
     expect(warning).toHaveBeenCalledOnce();
   });
 
@@ -225,7 +225,7 @@ describe('external entrant join', () => {
     expect((await join(target, await signed(target, runId))).statusCode).toBe(409);
     target.journal.database.update(entrants).set({ id: 'codex-1' }).where(eq(entrants.id, entrantId)).run();
     await join(target, await signed(target, runId));
-    await expect(target.manager.join({ runId, address: `${account.address.slice(0, 14)}${'0'.repeat(28)}`, name: 'collision', flagsBeforeJoin: 0, arenaTokenHash: 'test-arena-token-hash', claim: () => {} }))
+    await expect(target.manager.join({ runId, address: `${account.address.slice(0, 14)}${'0'.repeat(28)}`, name: 'collision', arenaTokenHash: 'test-arena-token-hash', claim: () => {} }))
       .rejects.toThrow('Entrant id is already in use');
   });
 });

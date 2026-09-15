@@ -143,7 +143,7 @@ describe('external task text', () => {
   const external: ExternalEntrantRecord = {
     kind: 'external', runId: 'run-1', id: 'ext-1', name: 'My agent',
     address: '0x1234567890123456789012345678901234567890', status: 'idle',
-    joinedAt: '2026-09-08T00:00:00.000Z', removedAt: null, flagsBeforeJoin: 2,
+    joinedAt: '2026-09-08T00:00:00.000Z', removedAt: null,
   };
 
   it('points the outside entrant at the site briefing on every chain', () => {

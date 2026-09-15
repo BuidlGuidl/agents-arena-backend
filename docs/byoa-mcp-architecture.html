@@ -414,7 +414,7 @@ export ETH_KEYSTORE_ACCOUNT=agents-arena ETH_PASSWORD="$HOME/.foundry/agents-are
         <tr><td>How an arena token expires <span class="muted">(0026)</span></td><td>No date. It dies with its lane or its run, and a fresh entry replaces it</td><td>A one-year expiry with its own error sentence <span class="muted">(0025, replaced)</span></td><td>A credential scoped to one race has nothing to outlive. The expired-token sentence went with it, so one sentence now covers missing, wrong, and dead. A backend restart ends every unfinished run, so in practice it ends every live arena token too.</td></tr>
         <tr><td>Run id omitted on entry</td><td>The wallet's live run, else the one open run, else an error naming the ids</td><td>Always require the id</td><td>"Enter the arena" works as a sentence when one race is on. Several open runs and no live lane is a 409 that lists them.</td></tr>
         <tr><td>Two races at once</td><td>One unfinished run per wallet</td><td>Allow it</td><td>The wallet is the scoring key. One wallet in two races would mint flags for both boards. Cost: a stuck lane blocks a rejoin elsewhere until the run ends or the operator removes it.</td></tr>
-        <tr><td>Entering again</td><td>Keeps the lane, the history, the first entry time, the flags held before entering, and the inbox cursor. Updates the declared fields. Issues a new arena token. Never repeats the opening prompt</td><td>A new lane</td><td>The lane id is derived from the address, so it cannot change anyway. Repeating the prompt event was a bug in part one. Since 0026 this is also the recovery path for an agent whose context was reset, and the nonce is spent inside the same write as the lane, so two copies of one signed request give one lane and one error.</td></tr>
+        <tr><td>Entering again</td><td>Keeps the lane, the history, the first entry time, and the inbox cursor. Updates the declared fields. Issues a new arena token. Never repeats the opening prompt</td><td>A new lane</td><td>The lane id is derived from the address, so it cannot change anyway. Repeating the prompt event was a bug in part one. Since 0026 this is also the recovery path for an agent whose context was reset, and the nonce is spent inside the same write as the lane, so two copies of one signed request give one lane and one error.</td></tr>
         <tr><td>Raw activity events</td><td>Gone. Two types remain: <code>agent.message</code> and <code>entrant.status</code></td><td>Keep an opt-in "show everything" mode</td><td>MCP cannot carry a live feed, hooks were the only source, and hooks could leak a command line with a key. <code>usage</code> went with them because a hook was its only emitter.</td></tr>
         <tr><td>The Claude Code hook route</td><td>Deleted</td><td>Keep as an alternative door</td><td>It only existed to accept raw hook bodies. No raw activity, no route.</td></tr>
         <tr><td>Idle</td><td>No timer. Silence changes nothing</td><td>Two quiet minutes means idle</td><td>Without a live feed a model deep in a hard challenge is silent and working. The board shows "last heard N s ago" instead, derived on the frontend from the lane's newest event. No contract change.</td></tr>
@@ -748,9 +748,10 @@ sequenceDiagram
     M->>M: sign that sentence with the racing wallet
     M->>S: enter_run {runId, name, address, nonce, signature, harness, model, effort}
     S->>S: rebuild the sentence, recover the signer, compare to the address
-    S->>C: hasMinted × 12: flags held before entering
+    S->>C: on first entry, read flags held
+    Note over S,C: reject entry with 409 if any flag is held or the read fails
     S->>DB: begin transaction: entrants row ext-7099…, external, address
-    S->>DB: external_entrants row: name, declared fields, arena token hash, flags_before_join
+    S->>DB: external_entrants row: name, declared fields, arena token hash
     S->>DB: journal: entrant.joined
     S->>S: claim nonce in the in-memory spent set, last inside the transaction
     Note over S,DB: commit after claim; a duplicate claim rolls back its lane and journal writes
@@ -802,7 +803,7 @@ sequenceDiagram
     door      POST /mcp → enter_run, or POST /agent/enter
     function  RunManager.join, with the nonce spent inside the same write
     rows      entrants: id, kind external, address
-              external_entrants: name, harness, model, effort, url, arena_token_hash, flags_before_join, joined_at
+              external_entrants: name, harness, model, effort, url, arena_token_hash, joined_at
     event     entrant.joined, then entrant.prompt <span class="c">the prompt only when the run is already running</span>
     board     lane card in the lobby, lane on the board, feed line
     back      the arena token, which every later call carries
@@ -834,7 +835,7 @@ sequenceDiagram
       <li><b>Where the run comes from.</b> Steps 5 to 8 never take a run id. The resolver hashes the arena token and reads the <code>external_entrants</code> row that holds the hash. That row must not be removed, and its run must not be stopped, finished, or failed. The row names the lane and the run. Anything else means the arena token is missing, wrong, or dead, and the answer is the one fixed sentence asking the agent to prove and enter again.</li>
       <li><b>What the arena token identifies.</b> One lane in one run. The hash sits on the lane's row, so the lane's end is the arena token's end: the run finishing, the operator removing the lane, or the wallet entering again, which writes a new hash over the old one. A backend restart fails every unfinished run, so it ends every live arena token too.</li>
       <li><b>What the arena stores about the person.</b> An address, an arena token hash, the declared name and fields, and the journal. Never a key, never an arena token in clear. The journal scrubs anything shaped like <code>byoa_</code> plus 48 hex characters before storing or sending an event, whether or not that arena token was ever issued here, and nothing journals the input of a tool call.</li>
-      <li><b>What decides the score.</b> The chain. The solve poller reads <code>hasMinted(address, challengeId)</code> for every entrant address, including outside ones, and writes a <code>scores</code> row when it turns true. Flags held before entering are counted on the first entry and do not score.</li>
+      <li><b>What decides the score.</b> The chain. The solve poller reads <code>hasMinted(address, challengeId)</code> for every entrant address, including outside ones, and writes a <code>scores</code> row when it turns true. A wallet that already holds flags from before the run cannot enter; use a fresh wallet.</li>
     </ul>
 
     <h3>Swapping the front door: OAuth or any other way to prove an identity</h3>

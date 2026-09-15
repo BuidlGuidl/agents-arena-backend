@@ -139,7 +139,7 @@ describe('NarrationWatcher unit behavior in isolation', () => {
     fixture.entrant = {
       kind: 'external', runId: fixture.run.id, id: fixture.entrant.id,
       name: 'Outside agent', address: '0x1234567890123456789012345678901234567890',
-      status: 'working', joinedAt: '2026-08-20T00:00:00.000Z', removedAt: null, flagsBeforeJoin: 0,
+      status: 'working', joinedAt: '2026-08-20T00:00:00.000Z', removedAt: null,
     };
     setStatus(fixture, 'working');
     seedNarration(fixture);

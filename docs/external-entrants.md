@@ -22,7 +22,7 @@ open self-service from run creation until stop. entering takes two steps, and th
 
 entering rebuilds the sentence from the address and nonce, checks the signer against it, and spends the nonce inside the same database write that creates or rejoins the lane, so two copies of one signed request produce one lane and one error. it returns the server-assigned `entrantId`, the run details, and the arena token. the id is `ext-` plus the address's first twelve hex characters.
 
-one wallet can race in one unfinished run. without `runId`, entering selects the wallet's live run or the only open run. no open run returns 404; several without a live lane return 409 with their ids. entering a different run while racing returns 409. entering again keeps the lane id, history, and first flag count; it updates the declared fields and issues a new arena token. it does not repeat the opening prompt, and it does not read the chain again. a removed wallet cannot enter that run. flags held at first entry appear in `task.ctfFlagsBeforeJoin` and never block entering.
+one wallet can race in one unfinished run. without `runId`, entering selects the wallet's live run or the only open run. no open run returns 404; several without a live lane return 409 with their ids. entering a different run while racing returns 409. entering again keeps the lane id and history; it updates the declared fields and issues a new arena token. it does not repeat the opening prompt, and it does not read the chain again. a removed wallet cannot enter that run. a wallet that already holds any flag is rejected at first entry with 409 (updated 2026-09-15; it used to enter with a displayed count). a failed flags read is also a 409, so the agent can try again.
 
 ### the arena token
 
@@ -72,7 +72,7 @@ the reporting bullet carries the cadence: `set_current_challenge` before each ch
 
 ### storage
 
-`entrants` gains `kind` (default `hosted`) and its `harness` and `model` become nullable. a side table `external_entrants` (`run_id`, `id`, `name`, `harness`, `model`, `effort`, `url`, `arena_token_hash`, `flags_before_join`, `joined_at`, `removed_at`), with `arena_token_hash` unique across lanes, and a table `inbox_messages` (`id`, `run_id`, `entrant_id`, `kind`, `text`, `created_at`, `delivered_at`). the dedupe window for client `seq` and the per-arena-token rate counters live in memory; a backend restart or a fresh entry starts both fresh.
+`entrants` gains `kind` (default `hosted`) and its `harness` and `model` become nullable. a side table `external_entrants` (`run_id`, `id`, `name`, `harness`, `model`, `effort`, `url`, `arena_token_hash`, `joined_at`, `removed_at`), with `arena_token_hash` unique across lanes, and a table `inbox_messages` (`id`, `run_id`, `entrant_id`, `kind`, `text`, `created_at`, `delivered_at`). the dedupe window for client `seq` and the per-arena-token rate counters live in memory; a backend restart or a fresh entry starts both fresh.
 
 ## how it was built
 
@@ -84,7 +84,7 @@ integration: the frontend copies `arena-types.ts` and follows `contract/API.md` 
 
 - an outsider with a funded key and the join page can attach a Claude Code, Codex, OpenCode, Gemini CLI, or Pi agent through the HTTP API or the six MCP tools, and see their lane fill on the board.
 - flags they mint appear on their lane within a poll interval, exactly like a hosted lane.
-- the operator can steer, broadcast to, and remove them, and sees how many flags the wallet held before joining.
+- the operator can steer, broadcast to, and remove them.
 - nothing about a hosted run changes when no external entrant joins: same events, same state path, same tests.
 
 ## out of scope

@@ -13,7 +13,7 @@ export class ExternalEntrants {
       runId: entrant.runId, id: entrant.id, address: entrant.address, name: entrant.name,
       harness: entrant.harness ?? null, model: entrant.model ?? null,
       effort: entrant.effort ?? null, url: entrant.url ?? null,
-      flagsBeforeJoin: entrant.flagsBeforeJoin, joinedAt: entrant.joinedAt,
+      joinedAt: entrant.joinedAt,
       removedAt: entrant.removedAt, arenaTokenHash,
     };
     this.database.insert(externalEntrants).values(values).onConflictDoUpdate({
@@ -39,7 +39,7 @@ export function toEntrantRecord({ entrants: row, external_entrants: external }: 
   return {
     runId: row.runId, id: row.id, kind: 'external', status: row.status,
     address: external.address, name: external.name, joinedAt: external.joinedAt,
-    removedAt: external.removedAt, flagsBeforeJoin: external.flagsBeforeJoin,
+    removedAt: external.removedAt,
     ...declaredFields(external),
   };
 }

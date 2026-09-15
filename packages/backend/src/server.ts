@@ -56,6 +56,7 @@ import type { Narrate } from './narration/openrouter.js';
 import { createNarrationWatch } from './narration/watch.js';
 import {
   JoinConflictError,
+  JoinRejectedError,
   RemovedWalletError,
   presetSubstrate,
   ActiveRunConflictError,
@@ -246,7 +247,7 @@ export function createServer(options: ServerOptions): ArenaServer {
     if (error instanceof JoinAuthenticationError) {
       return reply.status(401).send({ error: error.message });
     }
-    if (error instanceof JoinConflictError) {
+    if (error instanceof JoinConflictError || error instanceof JoinRejectedError) {
       return reply.status(409).send({ error: error.message });
     }
     if (error instanceof RemovedWalletError) {
@@ -314,19 +315,23 @@ export function createServer(options: ServerOptions): ArenaServer {
     await verifySignedMessage(login, body.nonce, enterMessage(body), body.signature as Hex, body.address as Address);
     const address = getAddress(body.address);
     const run = manager.selectJoinRun(body.runId, address);
-    let flagsBeforeJoin = 0;
     if (!manager.hasLane(run.id, address)) {
+      let held: number;
       try {
-        flagsBeforeJoin = options.flagsHeld !== undefined
+        held = options.flagsHeld !== undefined
           ? await options.flagsHeld(address)
           : presetSubstrate(run.preset) === 'fake' ? 0 : await flagsHeld(address);
       } catch {
-        app.log.warn('Could not read flags held at entry; recording zero');
+        app.log.warn('Could not read flags held at entry');
+        throw new JoinRejectedError("Could not read this wallet's flags. Try again in a moment.");
+      }
+      if (held > 0) {
+        throw new JoinRejectedError('This wallet already holds flags from before this run. Enter with a wallet that holds none.');
       }
     }
     const token = mintArenaToken();
     const result = await manager.join({
-      runId: run.id, address, name: body.name, ...declaredFields(body), flagsBeforeJoin, arenaTokenHash: arenaTokenHash(token),
+      runId: run.id, address, name: body.name, ...declaredFields(body), arenaTokenHash: arenaTokenHash(token),
       claim: () => {
         if (!login.consumeNonce(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
       },

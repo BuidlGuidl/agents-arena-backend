@@ -107,7 +107,6 @@ export const externalEntrants = sqliteTable('external_entrants', {
   model: text('model'),
   effort: text('effort'),
   url: text('url'),
-  flagsBeforeJoin: integer('flags_before_join').notNull(),
   joinedAt: text('joined_at').notNull(),
   removedAt: text('removed_at'),
   arenaTokenHash: text('arena_token_hash'),

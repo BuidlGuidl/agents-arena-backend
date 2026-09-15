@@ -39,7 +39,7 @@ describe('funding gate', () => {
       const external = {
         kind: 'external' as const, runId: run.id, id: 'ext-1', name: 'External',
         address: null, status: 'idle' as const, joinedAt: new Date().toISOString(),
-        removedAt: null, flagsBeforeJoin: 0,
+        removedAt: null,
       };
       await createFundingGate(journal)(run, [external]);
       await runLocalDevFaucet(run, [external]);

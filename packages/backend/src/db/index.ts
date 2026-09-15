@@ -80,7 +80,7 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
     CREATE TABLE IF NOT EXISTS external_entrants (
       run_id TEXT NOT NULL REFERENCES runs(id), id TEXT NOT NULL, address TEXT NOT NULL COLLATE NOCASE,
       name TEXT NOT NULL, harness TEXT, model TEXT, effort TEXT, url TEXT,
-      flags_before_join INTEGER NOT NULL, joined_at TEXT NOT NULL, removed_at TEXT, arena_token_hash TEXT
+      joined_at TEXT NOT NULL, removed_at TEXT, arena_token_hash TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS external_entrants_run_id_id ON external_entrants (run_id, id);
     CREATE UNIQUE INDEX IF NOT EXISTS external_entrants_run_id_address ON external_entrants (run_id, address);
@@ -91,6 +91,9 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
     );
   `);
   const externalColumns = sqlite.prepare('PRAGMA table_info(external_entrants)').all() as Array<{ name: string }>;
+  if (externalColumns.some((column) => column.name === 'flags_before_join')) {
+    sqlite.exec('ALTER TABLE external_entrants DROP COLUMN flags_before_join');
+  }
   if (!externalColumns.some((column) => column.name === 'arena_token_hash')) {
     sqlite.exec('ALTER TABLE external_entrants ADD COLUMN arena_token_hash TEXT');
   }

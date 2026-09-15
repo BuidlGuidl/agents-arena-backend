@@ -113,10 +113,24 @@ describe('signed entry', () => {
     expect(f.journal.database.select().from(externalEntrants).all()).toHaveLength(1);
   });
 
-  it('keeps the stored flag count without reading the chain on reentry', async () => {
+  it.each([
+    { flagsHeld: async () => 2, message: 'This wallet already holds flags from before this run. Enter with a wallet that holds none.' },
+    { flagsHeld: async (): Promise<number> => { throw new Error('unavailable'); }, message: "Could not read this wallet's flags. Try again in a moment." },
+  ])('rejects first entry without a lane: $message', async ({ flagsHeld, message }) => {
+    const f = createServer({ dbPath: ':memory:', operatorToken: 'operator', schedule: () => {}, flagsHeld });
+    servers.push(f);
+    const { run } = await f.manager.create({ preset: 'fake-duel' });
+    const response = await enter(f);
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: message });
+    expect(f.manager.hasLane(run.id, racer.address)).toBe(false);
+    expect(f.journal.database.select().from(externalEntrants).all()).toEqual([]);
+  });
+
+  it('reenters without reading flags even when the wallet now holds flags', async () => {
     let reads = 0;
     const f = createServer({ dbPath: ':memory:', operatorToken: 'operator', schedule: () => {},
-      flagsHeld: async () => { reads++; return 4; } });
+      flagsHeld: async () => { reads++; return reads === 1 ? 0 : 4; } });
     servers.push(f);
     await f.manager.create({ preset: 'fake-duel' });
     const first = await enter(f);
@@ -126,8 +140,6 @@ describe('signed entry', () => {
     expect(second.statusCode).toBe(200);
     expect(reads).toBe(1);
     expect(second.json().entrantId).toBe(first.json().entrantId);
-    expect(second.json().run.entrants.find((lane: { id: string }) => lane.id === second.json().entrantId))
-      .toMatchObject({ task: { ctfFlagsBeforeJoin: 4 } });
   });
 
   it('kills the arena token on removal and bars another entry', async () => {

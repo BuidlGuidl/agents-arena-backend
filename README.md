@@ -203,6 +203,8 @@ when the host you are on is missing.
 in the dev proxy stops adding the token, so the buttons run on the session cookie and
 you are exercising the real path rather than a masked one. Without an allowlist, `/auth/verify` answers `503`.
 `/auth/nonce` always answers because external entrants also need a nonce to join.
+
+A wallet that already holds flags from before the run cannot enter; use a fresh wallet.
 `/auth/session` and `/auth/logout` still answer with `configured: false` when wallet login is off.
 
 ### Smoke tests

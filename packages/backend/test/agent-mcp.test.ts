@@ -21,9 +21,9 @@ const servers = serverHarness((server) => {
 });
 afterEach(() => { vi.restoreAllMocks(); });
 
-function setup() {
+function setup(options: Partial<Parameters<typeof createServer>[0]> = {}) {
   const server = createServer({ dbPath: ':memory:', operatorToken: 'operator', publicUrl, siteUrl,
-    corsOrigins: [publicUrl], schedule: () => {}, flagsHeld: async () => 4 });
+    corsOrigins: [publicUrl], schedule: () => {}, flagsHeld: async () => 0, ...options });
   servers.push(server);
   return { ...server, token: 'invalid' };
 }
@@ -74,6 +74,21 @@ function legacyBody(body: string) {
 }
 
 describe('arena MCP', () => {
+  it('returns a tool error when a wallet already holds flags', async () => {
+    const f = setup({ flagsHeld: async () => 2 });
+    const { run } = await f.manager.create({ preset: 'fake-duel' });
+    const response = await call(f, 'enter_run', { name: 'Agent' });
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent.error).toBe('This wallet already holds flags from before this run. Enter with a wallet that holds none.');
+    expect(f.manager.hasLane(run.id, address)).toBe(false);
+  });
+
+  it('allows no Origin and rejects an Origin when no CORS origins are configured', async () => {
+    const f = setup({ corsOrigins: [] });
+    expect((await modern(f, 'tools/list')).statusCode).toBe(200);
+    expect((await modern(f, 'tools/list', {}, undefined, { origin: 'https://example.com' })).statusCode).toBe(403);
+  });
+
   it('lists the same six tools publicly with absent, wrong, dead, and valid arena tokens', async () => {
     const f = await joined();
     const first = await modern(f, 'tools/list');
@@ -204,7 +219,7 @@ describe('arena MCP', () => {
     expect(rejoin.structuredContent.run.state).toBe('running');
     expect(prompts()).toHaveLength(before);
     expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)).toMatchObject({
-      name: 'Updated', model: 'new-model', task: { ctfFlagsBeforeJoin: 4 },
+      name: 'Updated', model: 'new-model',
     });
   });
 

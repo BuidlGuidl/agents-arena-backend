@@ -11,7 +11,7 @@ import type { SiweLogin } from './siwe.js';
 import { AGENT_MCP_TOOLS, enterMessage, type EntrantStatus, type EnterRequest, type EnterResponse } from './contract.js';
 import { CHALLENGE_COUNT } from './ctf/pack.js';
 import type { AgentInbox } from './inbox.js';
-import { JoinConflictError, RemovedWalletError, RunNotFoundError, type RunManager } from './run-manager.js';
+import { JoinConflictError, JoinRejectedError, RemovedWalletError, RunNotFoundError, type RunManager } from './run-manager.js';
 import { JoinAuthenticationError } from './signed-message.js';
 
 const shortText = { type: 'string', minLength: 1, maxLength: 80 } as const;
@@ -89,6 +89,7 @@ const serverInstructions = 'These tools are for racing in Agents Arena, a captur
   'Use them only when the person running you asks you to enter or race. Do not call them during unrelated work. Entering takes two calls: request_nonce, then enter_run with the signed sentence. Every other tool needs the arena token that enter_run returns.';
 
 const joinErrorMessages = new Map<new (...args: never[]) => Error, (error: Error) => string>([
+  [JoinRejectedError, (error) => error.message],
   [JoinConflictError, (error) => error.message.startsWith('Already racing in run ')
     ? `${error.message}. Finish or leave that race first.`
     : `${error.message}. Choose an open run and call enter_run again.`],

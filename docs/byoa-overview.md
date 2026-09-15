@@ -146,11 +146,11 @@ The model signs that sentence with its racing wallet between the two calls. `ent
 
 - The backend permits one external lane per wallet per run and one unfinished run per wallet.
 - Each flag counts once per wallet. `SolvePoller` reads `hasMinted` by wallet and challenge, then selects the first matching mint.
-- Entry records the initial flag count, so a fresh lane does not imply a fresh on-chain wallet.
+- A wallet that already holds flags from before the run cannot enter; use a fresh wallet.
 
 **Entering again**
 
-- A fresh signature with the same wallet keeps the lane ID, history, first entry time, and initial flag count.
+- A fresh signature with the same wallet keeps the lane ID, history, and first entry time.
 - Entry updates declared fields and issues a new token without repeating the opening prompt.
 - A wallet that the operator removes cannot enter that run again.
 
@@ -257,7 +257,7 @@ These four tables hold lane identity, outside metadata, messages, and reported e
 | Table | What it holds |
 | --- | --- |
 | `entrants` | The run and entrant IDs, `kind`, wallet address, and status. Hosted harness and model fields are nullable for outside lanes. |
-| `external_entrants` | The address, display name, optional declared fields, `arena_token_hash`, `flags_before_join`, `joined_at`, and `removed_at`. The token hash and run-address pair each have a unique index. |
+| `external_entrants` | The address, display name, optional declared fields, `arena_token_hash`, `joined_at`, and `removed_at`. The token hash and run-address pair each have a unique index. |
 | `inbox_messages` | The run and entrant IDs, `steer` or `broadcast` kind, text, creation time, and delivery time. Its integer ID supplies the cursor. |
 | `events` | Journal records with run, source, sequence, timestamp, event type, and JSON payload. Each run-source-sequence tuple is unique. |
 
@@ -372,7 +372,7 @@ The person can copy the prompt or give the agent the join-page link. `app/arena/
 | The briefing names the environment and reporting rules. Measured. | The outside agent owns its wallet tooling and RPC connection; the arena knows the race and its challenges. | The person must supply a working wallet and chain connection. | `ctf/prompt.ts`, `buildTaskText` |
 | Every outside briefing points at `/llms.txt`. Measured. | The agent and website read challenge descriptions with the same deployment addresses. | A stale website deployment can give the agent stale addresses; entry does not check them. | `ctf/prompt.ts`; frontend `app/llms.txt/route.ts` and `utils/llmsTxt.ts` |
 | Agents without MCP get an HTTP prompt. Measured. | The same shared functions remain available through HTTP routes. | The agent must compose requests, retain its bearer token, and manage event sequence numbers. | Frontend `app/arena/agentText.ts`; `server.ts` |
-| Initial flag counts remain visible. Measured. | Recording the first-entry count preserves evidence about the wallet's starting position. The scorer still reads chain truth. | Flags held before entry still contribute to the score and rank. | `server.ts`, `enterAgent`; `run-manager.ts`, `join`; frontend `app/arena/page.tsx` |
+| Wallets with existing flags cannot enter. | The poller reads lifetime mints, so existing flags would count as new solves. | First entry returns 409 if the wallet holds flags or the flag read fails. | `server.ts`, `enterAgent` |
 | Funding waits have no timeout. Measured. | The operator controls when funds arrive. An elapsed wait alone cannot decide to cancel that preparation. | An unfunded run can wait indefinitely until the operator funds or stops it. | `run-manager.ts`, `startOwned`; `chain/funding-watcher.ts` |
 | The deadline controls display. Measured behavior; inferred reason. | The clock can mark time up while leaving the operator in control of the race's end. | Time up does not stop agents or end scoring. The operator must distinguish the clock from run state. | `run-manager.ts`, `transition`; frontend `app/arena/page.tsx`, `arenaClock` |
 
@@ -380,7 +380,6 @@ The JSON Schema objects declare `type`, `required`, `properties`, and `additiona
 
 ## What is still open
 
-- Flags held before entry contribute to the score. The backend records the initial count, and the authenticated operator's focused-lane detail shows it. Entry into the same lane keeps the count without another chain read. There is no subtraction policy in the scorer.
 - The outside briefing depends on the site's `/llms.txt` content. Its formatter documents that it mirrors the homepage, but the route does not state the arena dependency. There is no backend check that its addresses match the active chain deployment.
 - Backend startup calls `failNonTerminalRuns`. It fails every unfinished run, so stored token hashes do not preserve live access across a restart. Resuming races after process loss remains separate work.
 - Publishing race results to the ERC-8004 reputation registry has no implementation in this backend. The existing chain code reads scores; it does not publish a race reputation record.

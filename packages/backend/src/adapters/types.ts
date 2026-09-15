@@ -40,7 +40,6 @@ export interface ExternalEntrantRecord extends EntrantBase {
   url?: string;
   joinedAt: string;
   removedAt: string | null;
-  flagsBeforeJoin: number;
 }
 
 export type EntrantRecord = HostedEntrantRecord | ExternalEntrantRecord;

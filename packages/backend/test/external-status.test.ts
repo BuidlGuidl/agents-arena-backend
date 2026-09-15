@@ -12,7 +12,7 @@ async function setup() {
   const journal = createJournal();
   const manager = new RunManager(journal, noopDriver);
   const { run } = await manager.create({ preset: 'fake-duel' });
-  const joined = await manager.join({ runId: run.id, address: '0x1234567890123456789012345678901234567890', name: 'Agent', flagsBeforeJoin: 0, arenaTokenHash: 'test-arena-token-hash', claim: () => {} });
+  const joined = await manager.join({ runId: run.id, address: '0x1234567890123456789012345678901234567890', name: 'Agent', arenaTokenHash: 'test-arena-token-hash', claim: () => {} });
   return { journal, manager, runId: run.id, entrantId: joined.entrantId };
 }
 
@@ -34,7 +34,7 @@ it('starts without a timer and sets done on stop', async () => {
     const run = f.manager.assertJoinable(f.runId);
     const entrant = { runId: f.runId, id: f.entrantId, kind: 'external' as const, status: 'idle' as const,
       address: '0x1234567890123456789012345678901234567890', name: 'Agent',
-      joinedAt: new Date().toISOString(), removedAt: null, flagsBeforeJoin: 0 };
+      joinedAt: new Date().toISOString(), removedAt: null };
     await driver.start(run, entrant, 'task');
     expect(vi.getTimerCount()).toBe(0);
     status.touch(f.runId, f.entrantId);

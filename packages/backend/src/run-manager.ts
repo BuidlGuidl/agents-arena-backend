@@ -58,6 +58,7 @@ export const LEGAL_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> 
 };
 
 export class JoinConflictError extends Error {}
+export class JoinRejectedError extends Error {}
 export class RemovedWalletError extends Error {}
 export class RunNotFoundError extends Error {}
 export class EntrantNotFoundError extends Error {}
@@ -347,7 +348,7 @@ export class RunManager {
   }
 
   async join(
-    input: Omit<EnterRequest, 'nonce' | 'signature'> & { runId: string; arenaTokenHash: string; flagsBeforeJoin: number; claim: () => void },
+    input: Omit<EnterRequest, 'nonce' | 'signature'> & { runId: string; arenaTokenHash: string; claim: () => void },
   ): Promise<{ entrantId: string; run: RunSnapshot; created: boolean }> {
     const address = getAddress(input.address);
     const entrantId = `ext-${address.slice(2, 14).toLowerCase()}`;
@@ -367,7 +368,7 @@ export class RunManager {
         status: previous?.status ?? 'idle' as const, name: input.name,
         ...declaredFields(input),
         joinedAt: previous?.kind === 'external' ? previous.joinedAt : new Date().toISOString(),
-        removedAt: null, flagsBeforeJoin: previous?.kind === 'external' ? previous.flagsBeforeJoin : input.flagsBeforeJoin,
+        removedAt: null,
       };
       if (previous === undefined) {
         this.journal.database.insert(entrants).values({
@@ -429,7 +430,6 @@ export class RunManager {
             kind: 'external' as const, name: entrant.name, ...declaredFields(entrant),
             joinedAt: entrant.joinedAt,
             ...(entrant.removedAt === null ? {} : { removedAt: entrant.removedAt }),
-            task: { ctfFlagsBeforeJoin: entrant.flagsBeforeJoin },
           }),
           address: entrant.address,
           status: entrant.status,

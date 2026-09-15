@@ -5,11 +5,13 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { EntrantUnavailableError, type EntrantDriver } from '../src/adapters/types.js';
 import { createAgentRegistry } from '../src/agents/registry.js';
 import { FakeDriver } from '../src/adapters/fake.js';
+import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
+import { ExternalStatus } from '../src/adapters/external-status.js';
 import { LOCAL_DEV_FUNDER_PRIVATE_KEY } from '../src/chain/local-dev.js';
 import { activeChainProfile } from '../src/chain/profile.js';
 import { recordSolve } from '../src/chain/storage.js';
 import { getWallet, seedTypedData } from '../src/chain/wallet.js';
-import { entrants } from '../src/db/schema.js';
+import { entrants, runs } from '../src/db/schema.js';
 import { EventJournal } from '../src/journal.js';
 import { createNarrationWatch } from '../src/narration/watch.js';
 import {
@@ -72,6 +74,96 @@ async function advance(manager: RunManager, runId: string, target: RunState): Pr
     manager.transition(runId, state);
   }
 }
+
+describe('start-time wallet checks', () => {
+  it.each([false, true])('removes a lobby minter and records the block, rejoined=%s', async (rejoin) => {
+    const journal = new EventJournal(':memory:');
+    const flagsHeld = vi.fn().mockResolvedValue(0);
+    const solveWatch = vi.fn();
+    const driver = new RegisteredEntrantDriver(journal, { status: new ExternalStatus(journal), hosted: noopDriver });
+    const finish = vi.spyOn(driver, 'finish');
+    const manager = new RunManager(journal, driver, undefined, { flagsHeld, getBlockNumber: async () => 123n, solveWatch });
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel' });
+      const input = { runId: run.id, address: LOCAL_DEV_OPERATOR_ADDRESS, name: 'Outside', arenaTokenHash: 'hash', claim: () => {} };
+      expect(await flagsHeld(input.address)).toBe(0);
+      const lane = await manager.join(input);
+      if (rejoin) await manager.join({ ...input, arenaTokenHash: 'new-hash' });
+      await advance(manager, run.id, 'ready');
+      flagsHeld.mockResolvedValue(2);
+      expect((await manager.start(run.id)).state).toBe('running');
+      const removed = manager.snapshot(run.id).entrants.find((entrant) => entrant.id === lane.entrantId)!;
+      const removedReason = 'Removed at the start: this wallet minted 2 flags in the lobby. Every lane starts from zero flags.';
+      expect(removed).toMatchObject({ status: 'done', removedAt: expect.any(String), removedReason });
+      const recovered = new RunManager(journal, driver).snapshot(run.id);
+      expect(recovered.entrants.find((entrant) => entrant.id === lane.entrantId))
+        .toMatchObject({ removedAt: expect.any(String), removedReason });
+      expect(journal.database.select().from(entrants).where(and(eq(entrants.runId, run.id), eq(entrants.id, lane.entrantId))).get()?.address).toBeNull();
+      expect(finish).toHaveBeenCalledOnce();
+      expect(solveWatch.mock.calls[0]![1].map((entrant: { id: string }) => entrant.id)).not.toContain(lane.entrantId);
+      expect(solveWatch.mock.calls[0]![0].startBlock).toBe(123);
+      expect(journal.database.select().from(runs).where(eq(runs.id, run.id)).get()?.startBlock).toBe(123);
+      expect(journal.after(run.id, 0).find((event) => event.type === 'entrant.removed')?.payload).toEqual({
+        entrantId: lane.entrantId,
+        reason: 'Removed at the start: this wallet minted 2 flags in the lobby. Every lane starts from zero flags.',
+      });
+      await expect(manager.steer(run.id, lane.entrantId, 'hello')).rejects.toBeInstanceOf(EntrantUnavailableError);
+      expect(journal.after(run.id, 0).filter((event) => event.type === 'entrant.error')).toEqual([]);
+    } finally { journal.close(); }
+  });
+
+  it('keeps a lane when its start check fails and still starts', async () => {
+    const journal = new EventJournal(':memory:');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const solveWatch = vi.fn();
+    const manager = new RunManager(journal, noopDriver, undefined, {
+      flagsHeld: async () => { throw new Error('RPC failed'); }, getBlockNumber: async () => 456n, solveWatch,
+    });
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel' });
+      const lane = await manager.join({ runId: run.id, address: LOCAL_DEV_OPERATOR_ADDRESS, name: 'Outside', arenaTokenHash: 'hash', claim: () => {} });
+      await advance(manager, run.id, 'ready');
+      expect((await manager.start(run.id)).state).toBe('running');
+      expect(solveWatch.mock.calls[0]![1]).toContainEqual(expect.objectContaining({ id: lane.entrantId, address: LOCAL_DEV_OPERATOR_ADDRESS }));
+      expect(journal.after(run.id, 0).find((event) => event.type === 'entrant.error')?.payload).toEqual({ entrantId: lane.entrantId,
+        message: "Could not verify this wallet's flags at the start. The operator may remove the lane." });
+      expect(warn).toHaveBeenCalledOnce();
+    } finally { warn.mockRestore(); journal.close(); }
+  });
+
+  it('checks a lane that joins while the start block read is in flight', async () => {
+    const journal = new EventJournal(':memory:');
+    let release!: (block: bigint) => void;
+    const getBlockNumber = vi.fn().mockImplementationOnce(() => new Promise<bigint>((resolve) => { release = resolve; })).mockResolvedValue(124n);
+    const flagsHeld = vi.fn().mockResolvedValue(2);
+    const solveWatch = vi.fn();
+    const driver = new RegisteredEntrantDriver(journal, { status: new ExternalStatus(journal), hosted: noopDriver });
+    const manager = new RunManager(journal, driver, undefined, { flagsHeld, getBlockNumber, solveWatch });
+    try {
+      const { run } = await manager.create({ preset: 'docker-duel' });
+      await advance(manager, run.id, 'ready');
+      const starting = manager.start(run.id);
+      await vi.waitFor(() => expect(getBlockNumber).toHaveBeenCalledOnce());
+      const lane = await manager.join({ runId: run.id, address: LOCAL_DEV_OPERATOR_ADDRESS, name: 'Outside', arenaTokenHash: 'hash', claim: () => {} });
+      release(123n);
+      expect((await starting).state).toBe('running');
+      expect(flagsHeld).toHaveBeenCalledWith(LOCAL_DEV_OPERATOR_ADDRESS);
+      expect(solveWatch.mock.calls[0]![1].map((entrant: { id: string }) => entrant.id)).not.toContain(lane.entrantId);
+      expect(solveWatch.mock.calls[0]![0].startBlock).toBe(124);
+    } finally { journal.close(); }
+  });
+
+  it('journals a hosted failed steer when the driver is unavailable', async () => {
+    const journal = new EventJournal(':memory:');
+    const manager = new RunManager(journal, { ...noopDriver, async steer() { throw new EntrantUnavailableError('Unavailable'); } });
+    try {
+      const { run } = await manager.create({ preset: 'fake-duel' });
+      await manager.start(run.id);
+      await expect(manager.steer(run.id, 'codex-1', 'hello')).rejects.toBeInstanceOf(EntrantUnavailableError);
+      expect(journal.after(run.id, 0).filter((event) => event.type === 'entrant.error')).toHaveLength(1);
+    } finally { journal.close(); }
+  });
+});
 
 describe('RunManager state machine', () => {
   const legalEdges = Object.entries(LEGAL_TRANSITIONS).flatMap(([from, destinations]) =>
@@ -529,6 +621,7 @@ describe('RunManager solve watch', () => {
       const { run } = await manager.create({ preset: 'docker-duel', autoStart: true });
       await manager.start(run.id);
       expect(manager.snapshot(run.id).state).toBe('running');
+      expect(journal.database.select().from(runs).where(eq(runs.id, run.id)).get()?.startBlock).toBeNull();
     } finally {
       journal.close();
     }
@@ -701,7 +794,7 @@ describe('RunManager ready barrier', () => {
         starts.push(entrant.id);
       },
     };
-    const manager = new RunManager(journal, driver);
+    const manager = new RunManager(journal, driver, undefined, { getBlockNumber: async () => 100n });
     try {
       const { run } = await manager.create({ preset: 'docker-duel' });
 
@@ -1222,7 +1315,7 @@ describe('RunManager broadcast', () => {
     }
   });
 
-  it('refuses an unavailable lane without an error event and keeps the error type', async () => {
+  it('journals an unavailable hosted lane and keeps the error type', async () => {
     const journal = new EventJournal(':memory:');
     const driver: EntrantDriver = {
       ...noopDriver,
@@ -1237,7 +1330,7 @@ describe('RunManager broadcast', () => {
         .rejects.toBeInstanceOf(EntrantUnavailableError);
 
       const errors = journal.after(run.id, 0).filter((event) => event.type === 'entrant.error');
-      expect(errors).toEqual([]);
+      expect(errors.map((event) => event.payload.message)).toEqual(['Steer not delivered: Entrant codex-1 is degraded']);
     } finally {
       journal.close();
     }

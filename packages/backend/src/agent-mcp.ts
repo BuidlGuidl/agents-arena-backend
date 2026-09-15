@@ -132,6 +132,8 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
       const isLaneTool = name !== 'request_nonce' && name !== 'enter_run';
       const identity = isLaneTool && typeof input.token === 'string' ? resolveAgentToken(input.token, arenaTokens) : undefined;
       if (isLaneTool && identity === undefined) {
+        const removed = typeof input.token === 'string' ? arenaTokens.removalMessage(input.token) : undefined;
+        if (removed !== undefined) return result({ error: removed }, true);
         return result({ error: 'This call needs a live arena token. Call request_nonce, sign the sentence with your wallet, then enter_run to get one. If your context was reset, do both again with the same wallet.' }, true);
       }
       try {

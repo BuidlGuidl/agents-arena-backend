@@ -1,7 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 
 import type { EntrantStatus } from '../contract.js';
-import { entrants } from '../db/schema.js';
+import { entrants, externalEntrants } from '../db/schema.js';
 import type { EventJournal } from '../journal.js';
 
 export class ExternalStatus {
@@ -18,7 +18,10 @@ export class ExternalStatus {
   set(runId: string, entrantId: string, status: EntrantStatus): void {
     this.journal.transaction(() => {
       const current = this.current(runId, entrantId);
-      if (current === undefined || current.kind !== 'external' || current.status === 'done') return;
+      if (current === undefined || current.kind !== 'external') return;
+      const lane = this.journal.database.select().from(externalEntrants)
+        .where(and(eq(externalEntrants.runId, runId), eq(externalEntrants.id, entrantId))).get();
+      if (lane?.removedAt != null) return;
       this.writeStatus(runId, entrantId, current.status, status);
     });
   }

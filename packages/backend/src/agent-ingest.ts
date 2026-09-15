@@ -5,7 +5,7 @@ import { AGENT_BATCH_LIMIT, AGENT_STRING_LIMIT, AgentInputError, AgentBatchTooLa
 import type { AgentTokenRecord } from './agent-auth.js';
 import type { AgentEventInput, AgentEventsResponse, EntrantStatus } from './contract.js';
 import type { ExternalStatus } from './adapters/external-status.js';
-import { challengeAddressIndex } from './ctf/challenge-tracker.js';
+import { challengeAddressIndex, currentTarget, recordTarget } from './ctf/challenge-tracker.js';
 import type { ChallengePackAccess } from './ctf/resolve.js';
 import { trackProgress } from './ctf/track-progress.js';
 import type { EventJournal } from './journal.js';
@@ -61,6 +61,7 @@ export class AgentIngest {
     let duplicates = 0;
     const index = challengeAddressIndex(this.addressesFor(runId) ?? {});
     this.journal.transaction(() => {
+      let working = currentTarget(runId, entrantId);
       let pending: EntrantStatus | undefined;
       let activity = false;
       for (const event of events) {
@@ -73,7 +74,7 @@ export class AgentIngest {
         } else {
           activity = true;
           this.journal.append(runId, entrantId, event.type, { entrantId, text: event.text });
-          trackProgress(this.journal, identity, event.text, 'message', index);
+          working = trackProgress(this.journal, identity, event.text, 'message', index, working);
         }
         accepted += 1;
         if (dedupe) {
@@ -84,6 +85,7 @@ export class AgentIngest {
       if (pending !== undefined) this.status.set(runId, entrantId, pending);
       else if (activity) this.status.touch(runId, entrantId);
       if (dedupe) this.journal.afterCommit(() => this.sequences.set(key, sequences));
+      this.journal.afterCommit(() => recordTarget(runId, entrantId, working));
     });
     return { accepted, duplicates };
   }

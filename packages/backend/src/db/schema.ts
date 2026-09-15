@@ -44,6 +44,7 @@ export const runs = sqliteTable('runs', {
   state: text('state', { enum: runStates }).notNull(),
   preset: text('preset').notNull(),
   startedAt: text('started_at'),
+  startBlock: integer('start_block'),
   deadlineAt: text('deadline_at'),
   durationMs: integer('duration_ms'),
   seededBy: text('seeded_by'),
@@ -109,6 +110,7 @@ export const externalEntrants = sqliteTable('external_entrants', {
   url: text('url'),
   joinedAt: text('joined_at').notNull(),
   removedAt: text('removed_at'),
+  removedReason: text('removed_reason'),
   arenaTokenHash: text('arena_token_hash'),
 }, (table) => [
   uniqueIndex('external_entrants_arena_token_hash').on(table.arenaTokenHash),

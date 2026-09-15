@@ -6,7 +6,7 @@ import { ExternalStatus } from '../src/adapters/external-status.js';
 import { journalHarness } from './fixtures/journal.js';
 import { RunManager } from '../src/run-manager.js';
 import { noopDriver } from './fixtures/server.js';
-import { mayMove, dropCurrentChallenge } from '../src/ctf/challenge-tracker.js';
+import { mayMove, dropCurrentChallenge, currentTarget, recordCurrentChallenge, takePendingGuess, useSolvedLookup } from '../src/ctf/challenge-tracker.js';
 import { agentLaneState, clearAgentLaneState } from '../src/agent-limits.js';
 import { AgentInbox } from '../src/inbox.js';
 import { AgentProgress } from '../src/agent-progress.js';
@@ -116,15 +116,17 @@ describe('AgentIngest module', () => {
     const { ingest, identity, journal, status } = await setup();
     const batch = { events: [
       { seq: 1, type: 'agent.message', text: 'Starting Challenge 2.' },
+      { seq: 3, type: 'agent.message', text: 'Starting Challenge 2.' },
       { seq: 2, type: 'entrant.status', status: 'working' },
     ] };
     const set = vi.spyOn(status, 'set').mockImplementationOnce(() => { throw new Error('later write failed'); });
     try {
       expect(() => ingest.events(identity, batch)).toThrow('later write failed');
+      expect(currentTarget(identity.runId, identity.entrantId)).toBeUndefined();
       expect(mayMove(identity.runId, identity.entrantId, 2, 'message')).toBe(true);
       expect(journal.after(identity.runId, 0).filter((event) => event.type === 'entrant.challenge')).toEqual([]);
       set.mockRestore();
-      expect(ingest.events(identity, batch)).toEqual({ accepted: 2, duplicates: 0 });
+      expect(ingest.events(identity, batch)).toEqual({ accepted: 3, duplicates: 0 });
       expect(mayMove(identity.runId, identity.entrantId, 2, 'message')).toBe(false);
       expect(journal.after(identity.runId, 0).filter((event) => event.type === 'entrant.challenge'))
         .toEqual([expect.objectContaining({ payload: expect.objectContaining({ challengeId: 2 }) })]);
@@ -132,6 +134,47 @@ describe('AgentIngest module', () => {
       set.mockRestore();
       dropCurrentChallenge(identity.runId, identity.entrantId);
     }
+  });
+
+  it('journals one challenge move for five matching notes in a batch', async () => {
+    const { ingest, identity, journal } = await setup();
+    ingest.events(identity, { events: Array.from({ length: 5 }, (_, seq) => ({ seq, type: 'agent.message', text: 'Starting Challenge 3.' })) });
+    expect(journal.after(identity.runId, 0).filter((event) => event.type === 'entrant.challenge')).toHaveLength(1);
+    expect(currentTarget(identity.runId, identity.entrantId)?.challengeId).toBe(3);
+  });
+
+  it('keeps the last guess pending behind a live self-report in a batch', async () => {
+    const { ingest, identity, journal } = await setup();
+    new AgentProgress(journal, new ExternalStatus(journal)).announce(identity, { challengeId: 3 });
+    ingest.events(identity, { events: [
+      { seq: 1, type: 'agent.message', text: 'Starting Challenge 3.' },
+      { seq: 2, type: 'agent.message', text: 'Starting Challenge 5.' },
+    ] });
+    expect(journal.after(identity.runId, 0).filter((event) => event.type === 'entrant.challenge')).toHaveLength(1);
+    expect(currentTarget(identity.runId, identity.entrantId)?.pendingGuess?.challengeId).toBe(5);
+    useSolvedLookup(() => new Set([3]));
+    try {
+      expect(takePendingGuess(identity.runId, identity.entrantId)?.challengeId).toBe(5);
+    } finally {
+      useSolvedLookup(() => new Set());
+    }
+  });
+
+  it('rolls back pending guesses when a batch fails after two notes', async () => {
+    const { ingest, identity, journal, status } = await setup();
+    recordCurrentChallenge(identity.runId, identity.entrantId, 1, 'self');
+    const before = currentTarget(identity.runId, identity.entrantId);
+    const set = vi.spyOn(status, 'set').mockImplementationOnce(() => { throw new Error('later write failed'); });
+    try {
+      expect(() => ingest.events(identity, { events: [
+        { seq: 1, type: 'agent.message', text: 'Starting Challenge 3.' },
+        { seq: 2, type: 'agent.message', text: 'Starting Challenge 5.' },
+        { seq: 3, type: 'entrant.status', status: 'working' },
+      ] })).toThrow('later write failed');
+      expect(currentTarget(identity.runId, identity.entrantId)).toBe(before);
+      expect(before).toEqual({ challengeId: 1, via: 'self' });
+      expect(journal.after(identity.runId, 0).filter((event) => event.type === 'agent.message')).toEqual([]);
+    } finally { set.mockRestore(); }
   });
 
   it('prunes only committed lane and run state within its journal', async () => {

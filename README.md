@@ -205,6 +205,7 @@ you are exercising the real path rather than a masked one. Without an allowlist,
 `/auth/nonce` always answers because external entrants also need a nonce to join.
 
 A wallet that already holds flags from before the run cannot enter; use a fresh wallet.
+The server checks outside wallets at join and again at the start. It removes lobby minters and shows the reason on the board. The poller ignores mints before the run's stored start block.
 `/auth/session` and `/auth/logout` still answer with `configured: false` when wallet login is off.
 
 ### Smoke tests

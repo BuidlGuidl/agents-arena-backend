@@ -47,6 +47,10 @@ it('starts without a timer and sets done on stop', async () => {
     expect(f.manager.snapshot(f.runId).entrants.find((row) => row.id === f.entrantId)?.status).toBe('done');
     expect(mayMove(f.runId, f.entrantId, 2, 'self')).toBe(true);
     status.set(f.runId, f.entrantId, 'working');
+    expect(f.manager.snapshot(f.runId).entrants.find((row) => row.id === f.entrantId)?.status).toBe('working');
+    await driver.stop(run, entrant);
+    await f.manager.remove(f.runId, f.entrantId);
+    status.set(f.runId, f.entrantId, 'working');
     expect(f.manager.snapshot(f.runId).entrants.find((row) => row.id === f.entrantId)?.status).toBe('done');
   } finally {
     vi.useRealTimers();

@@ -6,7 +6,8 @@ import { racer } from './enter-helper.js';
 import { AGENT_MCP_TOOLS } from '../src/contract.js';
 import { dropCurrentChallenge } from '../src/ctf/challenge-tracker.js';
 import { createServer, type ArenaServer } from '../src/server.js';
-import { serverHarness } from './fixtures/server.js';
+import { serverHarness, noopDriver } from './fixtures/server.js';
+import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
 
 const address = racer.address;
 const publicUrl = 'https://arena.test';
@@ -74,6 +75,34 @@ function legacyBody(body: string) {
 }
 
 describe('arena MCP', () => {
+  it('skips chain reads for a fake run at join and start', async () => {
+    const flagsHeld = vi.fn(async () => { throw new Error('Unexpected chain read'); });
+    const getBlockNumber = vi.fn(async () => { throw new Error('Unexpected block read'); });
+    const f = setup({ flagsHeld, getBlockNumber });
+    const { run } = await f.manager.create({ preset: 'fake-duel' });
+    expect((await call(f, 'enter_run', { name: 'Agent' })).isError).not.toBe(true);
+    expect((await f.manager.start(run.id)).state).toBe('running');
+    expect(flagsHeld).not.toHaveBeenCalled();
+    expect(getBlockNumber).not.toHaveBeenCalled();
+  });
+  it('explains start-time removal to post_note and HTTP token holders', async () => {
+    const flagsHeld = vi.fn().mockResolvedValue(0);
+    const f = setup({ flagsHeld, getBlockNumber: async () => 123n, driverFactory: (journal, status) =>
+      new RegisteredEntrantDriver(journal, { status, hosted: noopDriver }) });
+    const { run } = await f.manager.create({ preset: 'docker-duel' });
+    const joined = await call(f, 'enter_run', { name: 'Agent' });
+    const token = joined.structuredContent.token as string;
+    for (const state of ['awaiting_signature', 'preparing', 'awaiting_funding', 'ready'] as const) f.manager.transition(run.id, state);
+    flagsHeld.mockResolvedValue(1);
+    await f.manager.start(run.id);
+    const reason = 'Removed at the start: this wallet minted 1 flag in the lobby. Every lane starts from zero flags.';
+    const response = await call(f, 'post_note', { text: 'hello' }, token);
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent.error).toBe(`This lane was removed. ${reason}`);
+    const http = await f.app.inject({ method: 'GET', url: '/agent/task', headers: { authorization: `Bearer ${token}` } });
+    expect(http.statusCode).toBe(401);
+    expect(http.json().error).toBe(`This lane was removed. ${reason}`);
+  });
   it('keeps the post_note limit and joined event count after reentry', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
@@ -123,7 +152,7 @@ describe('arena MCP', () => {
 
   it('returns a tool error when a wallet already holds flags', async () => {
     const f = setup({ flagsHeld: async () => 2 });
-    const { run } = await f.manager.create({ preset: 'fake-duel' });
+    const { run } = await f.manager.create({ preset: 'docker-duel' });
     const response = await call(f, 'enter_run', { name: 'Agent' });
     expect(response.isError).toBe(true);
     expect(response.structuredContent.error).toBe('This wallet already holds flags from before this run. Enter with a wallet that holds none.');

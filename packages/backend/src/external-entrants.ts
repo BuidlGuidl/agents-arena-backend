@@ -15,14 +15,15 @@ export class ExternalEntrants {
       effort: entrant.effort ?? null, url: entrant.url ?? null,
       joinedAt: entrant.joinedAt,
       removedAt: entrant.removedAt, arenaTokenHash,
+      removedReason: entrant.removedReason ?? null,
     };
     this.database.insert(externalEntrants).values(values).onConflictDoUpdate({
       target: [externalEntrants.runId, externalEntrants.id], set: values,
     }).run();
   }
 
-  markRemoved(runId: string, id: string, removedAt: string): void {
-    this.database.update(externalEntrants).set({ removedAt })
+  markRemoved(runId: string, id: string, removedAt: string, removedReason?: string): void {
+    this.database.update(externalEntrants).set({ removedAt, removedReason: removedReason ?? null })
       .where(and(eq(externalEntrants.runId, runId), eq(externalEntrants.id, id))).run();
   }
 }
@@ -40,6 +41,7 @@ export function toEntrantRecord({ entrants: row, external_entrants: external }: 
     runId: row.runId, id: row.id, kind: 'external', status: row.status,
     address: external.address, name: external.name, joinedAt: external.joinedAt,
     removedAt: external.removedAt,
+    ...(external.removedReason === null ? {} : { removedReason: external.removedReason }),
     ...declaredFields(external),
   };
 }

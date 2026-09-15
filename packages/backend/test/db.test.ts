@@ -23,7 +23,7 @@ describe('openArenaDatabase', () => {
       expect(columns('entrants')).toContainEqual(expect.objectContaining({ name: 'model', notnull: 0 }));
       expect(columns('external_entrants').map((column) => column.name)).toEqual([
         'run_id', 'id', 'address', 'name', 'harness', 'model', 'effort', 'url',
-        'joined_at', 'removed_at', 'arena_token_hash',
+        'joined_at', 'removed_at', 'arena_token_hash', 'removed_reason',
       ]);
       expect(columns('inbox_messages').map((column) => column.name)).toEqual([
         'id', 'run_id', 'entrant_id', 'kind', 'text', 'created_at', 'delivered_at',
@@ -55,6 +55,26 @@ describe('openArenaDatabase', () => {
         sqlite.close();
       }
     }
+  });
+
+  it('adds a nullable removal reason to old lanes and keeps it after reopening', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'arena-db-test-'));
+    temporaryPaths.push(directory);
+    const path = join(directory, 'arena.db');
+    const old = openArenaDatabase(path);
+    old.sqlite.exec("INSERT INTO runs (id, state, preset, created_at) VALUES ('run', 'created', 'fake-duel', 'now')");
+    old.sqlite.exec("INSERT INTO external_entrants (run_id, id, address, name, joined_at) VALUES ('run', 'one', '0xAb', 'One', 'now')");
+    old.sqlite.exec('ALTER TABLE external_entrants DROP COLUMN removed_reason');
+    old.sqlite.close();
+    const migrated = openArenaDatabase(path);
+    try {
+      expect(migrated.sqlite.prepare('SELECT removed_reason FROM external_entrants').get()).toEqual({ removed_reason: null });
+      migrated.sqlite.prepare('UPDATE external_entrants SET removed_reason = ?').run('Lobby mint');
+    } finally { migrated.sqlite.close(); }
+    const reopened = openArenaDatabase(path);
+    try {
+      expect(reopened.sqlite.prepare('SELECT removed_reason FROM external_entrants').get()).toEqual({ removed_reason: 'Lobby mint' });
+    } finally { reopened.sqlite.close(); }
   });
 
   it('preserves legacy entrants and their foreign key while allowing null harness and model', async () => {

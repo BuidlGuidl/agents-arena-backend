@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-import { and, eq, isNull, notInArray } from 'drizzle-orm';
+import { and, eq, isNull, isNotNull, notInArray } from 'drizzle-orm';
 
 import { TERMINAL_RUN_STATES } from './contract.js';
 import type { ArenaDatabase } from './db/index.js';
@@ -67,6 +67,12 @@ export class ArenaTokens {
   private readonly states = new Map<string, AgentTokenRecord>();
 
   constructor(private readonly database: ArenaDatabase) {}
+
+  removalMessage(token: string): string | undefined {
+    const lane = this.database.select().from(externalEntrants)
+      .where(and(eq(externalEntrants.arenaTokenHash, arenaTokenHash(token)), isNotNull(externalEntrants.removedAt))).get();
+    return lane?.removedReason == null ? undefined : `This lane was removed. ${lane.removedReason}`;
+  }
 
   resolve(token: string): AgentTokenRecord | undefined {
     if (token.match(AGENT_TOKEN_PATTERN)?.[0] !== token) return undefined;

@@ -1,12 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
 import { and, asc, count, desc, eq, inArray, isNull, max, ne, notInArray, sql } from 'drizzle-orm';
-import { getAddress, recoverTypedDataAddress, type Hex } from 'viem';
+import { getAddress, recoverTypedDataAddress, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
 import { EntrantOperationError, EntrantUnavailableError } from './adapters/types.js';
-import { ExternalDriver } from './adapters/external.js';
-import { ExternalStatus } from './adapters/external-status.js';
 import { clearAgentLaneState } from './agent-limits.js';
 import { ExternalEntrants, declaredFields, toEntrantRecord } from './external-entrants.js';
 import { TERMINAL_RUN_STATES } from './contract.js';
@@ -166,6 +164,8 @@ export type NarrationWatch = (
 ) => void;
 
 export interface RunManagerOptions {
+  flagsHeld?: (address: Address) => Promise<number>;
+  getBlockNumber?: () => Promise<bigint>;
   prepareTimeoutMs?: number;
   operatorAddresses?: readonly string[];
   solveWatch?: SolveWatch;
@@ -238,7 +238,7 @@ export class RunManager {
     private readonly journal: EventJournal,
     private readonly driver: EntrantDriver,
     private readonly fundingGate: FundingGate = passThroughFundingGate,
-    options: RunManagerOptions = {},
+    private readonly options: RunManagerOptions = {},
   ) {
     this.external = new ExternalEntrants(journal.database);
     this.prepareTimeoutMs = options.prepareTimeoutMs ?? DEFAULT_PREPARE_TIMEOUT_MS;
@@ -396,19 +396,23 @@ export class RunManager {
   }
 
   async remove(runId: string, entrantId: string): Promise<void> {
-    this.requireRun(runId);
+    const run = this.requireRun(runId);
     const entrant = this.requireEntrant(runId, entrantId);
     if (entrant.kind === 'hosted') throw new EntrantOperationError('Hosted entrants cannot be removed; stop the run');
     if (entrant.removedAt !== null) throw new JoinConflictError('Entrant was already removed');
-    this.journal.transaction(() => {
-      new ExternalDriver(this.journal, new ExternalStatus(this.journal)).finish(runId, entrantId);
-      this.external.markRemoved(runId, entrantId, new Date().toISOString());
-      // A set address means the solve poller must still watch this wallet.
-      this.journal.database.update(entrants).set({ address: null })
-        .where(and(eq(entrants.runId, runId), eq(entrants.id, entrantId))).run();
-      this.journal.append(runId, entrantId, 'entrant.removed', { entrantId });
-      this.journal.afterCommit(() => clearAgentLaneState(this.journal, runId, entrantId));
-    });
+    this.journal.transaction(() => this.removeLane(run, entrant));
+  }
+
+  private removeLane(run: RunRecord, entrant: EntrantRecord, reason?: string): void {
+    const runId = run.id;
+    const entrantId = entrant.id;
+    this.driver.finish?.(run, entrant);
+    this.external.markRemoved(runId, entrantId, new Date().toISOString(), reason);
+    // A set address means the solve poller must still watch this wallet.
+    this.journal.database.update(entrants).set({ address: null })
+      .where(and(eq(entrants.runId, runId), eq(entrants.id, entrantId))).run();
+    this.journal.append(runId, entrantId, 'entrant.removed', { entrantId, ...(reason === undefined ? {} : { reason }) });
+    this.journal.afterCommit(() => clearAgentLaneState(this.journal, runId, entrantId));
   }
 
   runState(runId: string): RunState {
@@ -438,6 +442,7 @@ export class RunManager {
             kind: 'external' as const, name: entrant.name, ...declaredFields(entrant),
             joinedAt: entrant.joinedAt,
             ...(entrant.removedAt === null ? {} : { removedAt: entrant.removedAt }),
+            ...(entrant.removedReason === undefined ? {} : { removedReason: entrant.removedReason }),
           }),
           address: entrant.address,
           status: entrant.status,
@@ -880,8 +885,42 @@ export class RunManager {
         throw new InvalidTransitionError(`Cannot start run ${runId} from ${run.state}`);
       }
 
-      run = this.transition(runId, 'running');
-      runEntrants = this.entrants(runId);
+      const checks: EntrantRecord[] = [];
+      const holdings: PromiseSettledResult<number>[] = [];
+      let block: bigint | null = null;
+      if (presetSubstrate(run.preset) !== 'fake') {
+        const unchecked = () => this.options.flagsHeld === undefined ? [] : this.entrants(runId).filter((entrant) =>
+          entrant.kind === 'external' && entrant.removedAt === null && entrant.address !== null
+          && !checks.some((checked) => checked.id === entrant.id));
+        let pending = unchecked();
+        do {
+          holdings.push(...await Promise.allSettled(pending.map(async (entrant) => this.options.flagsHeld!(getAddress(entrant.address!)))));
+          checks.push(...pending);
+          block = this.options.getBlockNumber === undefined ? null : await this.options.getBlockNumber();
+          if (controller.signal.aborted) throw abortReason(controller.signal);
+          // Joins can complete during either chain read. Include them before the transition.
+          pending = unchecked();
+        } while (pending.length > 0);
+      }
+      if (block !== null && block > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Start block exceeds the safe integer range');
+      if (controller.signal.aborted) throw abortReason(controller.signal);
+      this.journal.transaction(() => {
+        checks.forEach((checked, index) => {
+          const entrant = this.requireEntrant(runId, checked.id);
+          if (entrant.kind !== 'external' || entrant.removedAt !== null) return;
+          const held = holdings[index]!;
+          if (held.status === 'rejected') {
+            const message = "Could not verify this wallet's flags at the start. The operator may remove the lane.";
+            this.journal.append(runId, entrant.id, 'entrant.error', { entrantId: entrant.id, message });
+            console.warn(message, { runId, entrantId: entrant.id, error: held.reason });
+          } else if (held.value > 0) {
+            this.removeLane(run, entrant, `Removed at the start: this wallet minted ${held.value} ${held.value === 1 ? 'flag' : 'flags'} in the lobby. Every lane starts from zero flags.`);
+          }
+        });
+        this.journal.database.update(runs).set({ startBlock: block === null ? null : Number(block) }).where(eq(runs.id, runId)).run();
+        run = this.transition(runId, 'running');
+      });
+      runEntrants = this.entrants(runId).filter((entrant) => entrant.kind !== 'external' || entrant.removedAt === null);
       // Before the entrants start, so the first mint of the race is already covered.
       this.startSolveWatch(run, runEntrants);
       this.startNarrationWatch(run, runEntrants);
@@ -1053,7 +1092,7 @@ export class RunManager {
     try {
       return await this.driver.steer(run, entrant, text, label === 'Broadcast' ? 'broadcast' : 'steer');
     } catch (error) {
-      if (error instanceof EntrantUnavailableError) throw error;
+      if (entrant.kind === 'external' && error instanceof EntrantUnavailableError) throw error;
       this.journal.append(run.id, entrant.id, 'entrant.error', {
         entrantId: entrant.id,
         message: `${label} not delivered: ${errorMessage(error)}`,

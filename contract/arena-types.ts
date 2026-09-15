@@ -104,9 +104,11 @@ export interface ExternalEntrantSummary extends EntrantSummaryBase {
   effort?: string;
   url?: string;
   joinedAt: string;
-  // Set when the operator closes the lane. Its address stops polling for solves.
+  // Set when the operator or arena closes the lane. Its address stops polling for solves.
   // The lane stays on the board, greyed out. Its arena token is dead after removal.
   removedAt?: string;
+  // Present when the arena removed the lane itself, for example at the start for a wallet that gained flags in the lobby. Absent on operator removals and on live lanes.
+  removedReason?: string;
 }
 
 export type EntrantSummary = HostedEntrantSummary | ExternalEntrantSummary;
@@ -184,6 +186,7 @@ export type ArenaEvent =
   })
   // The operator closed an external lane. Its address stops polling for solves.
   // The lane stays visible, greyed out. Its arena token is dead after removal.
+  // The reason explains automatic removal at the start. Manual removal omits it.
   | (ArenaEventBase & { type: 'entrant.removed'; payload: { entrantId: string; reason?: string } })
   | (ArenaEventBase & { type: 'entrant.error'; payload: { entrantId: string; message: string } })
   | (ArenaEventBase & { type: 'run.error'; payload: { message: string } })

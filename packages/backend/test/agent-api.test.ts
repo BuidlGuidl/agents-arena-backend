@@ -235,7 +235,7 @@ describe('external status', () => {
     expect(f.events()).toEqual(before);
   });
 
-  it.each(['blocked', 'done'] as const)('preserves %s through messages and progress and keeps done final', async (status) => {
+  it.each(['blocked', 'done'] as const)('preserves %s through activity and accepts a new explicit status', async (status) => {
     const f = await setup();
     await f.post([{ seq: 1, type: 'entrant.status', status }]);
     await f.post([message(2)]);
@@ -246,9 +246,9 @@ describe('external status', () => {
     await vi.advanceTimersByTimeAsync(86400000);
     expect(f.lane().status).toBe(status);
     await f.post([{ seq: 3, type: 'entrant.status', status: 'idle' }]);
-    expect(f.lane().status).toBe(status === 'done' ? 'done' : 'idle');
+    expect(f.lane().status).toBe('idle');
     await f.post([message(4)]);
-    expect(f.lane().status).toBe(status === 'done' ? 'done' : 'working');
+    expect(f.lane().status).toBe('working');
   });
 
   it('touches only accepted progress changes and messages', async () => {

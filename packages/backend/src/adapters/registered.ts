@@ -59,6 +59,10 @@ export class RegisteredEntrantDriver implements EntrantDriver {
     await this.driver(run, entrant).stop(run, entrant);
   }
 
+  finish(run: RunRecord, entrant: EntrantRecord): void {
+    if (entrant.kind === 'external') this.external.finish(run, entrant);
+  }
+
   private driver(run: RunRecord, entrant: EntrantRecord): EntrantDriver {
     if (entrant.kind === 'external') return this.external;
     if (this.options.hosted !== undefined) return this.options.hosted;

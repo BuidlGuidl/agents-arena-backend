@@ -59,9 +59,9 @@ function remove(target: ArenaServer, runId: string, entrantId: string) {
   return target.app.inject({ method: 'POST', url: `/runs/${runId}/entrants/${entrantId}/remove`, headers });
 }
 
-async function setup(options: Partial<ServerOptions> = {}) {
+async function setup(options: Partial<ServerOptions> = {}, preset = 'fake-duel') {
   const target = server(options);
-  const { run } = await target.manager.create({ preset: 'fake-duel' });
+  const { run } = await target.manager.create({ preset });
   return { target, runId: run.id };
 }
 
@@ -121,7 +121,7 @@ describe('external entrant join', () => {
 
   it('creates a lane, journals its declared fields, and stores only an arena token hash', async () => {
     const flagsHeld = vi.fn(async () => 0);
-    const { target, runId } = await setup({ flagsHeld });
+    const { target, runId } = await setup({ flagsHeld }, 'docker-duel');
     const payload = await signed(target, runId, { harness: 'my-cli', model: 'my-model', effort: 'whatever', url: 'https://agent.test' });
     const response = await join(target, payload);
     expect(response.statusCode).toBe(201);
@@ -133,6 +133,7 @@ describe('external entrant join', () => {
       harness: payload.harness, model: payload.model, effort: payload.effort, url: payload.url,
       joinedAt: expect.any(String) });
     expect(lane).not.toHaveProperty('removedAt');
+    expect(lane).not.toHaveProperty('removedReason');
     expect(body.run.entrants.filter((entrant) => entrant.kind === 'hosted')).toHaveLength(2);
     expect(flagsHeld).toHaveBeenCalledWith(account.address);
     expect(target.journal.after(runId, 0).filter((event) => event.type === 'entrant.joined').map((event) => event.payload)).toEqual([{
@@ -153,7 +154,7 @@ describe('external entrant join', () => {
 
   it('replaces declared fields while retaining the first join time and solves', async () => {
     const flagsHeld = vi.fn(async () => 0);
-    const { target, runId } = await setup({ flagsHeld });
+    const { target, runId } = await setup({ flagsHeld }, 'docker-duel');
     const first = (await join(target, await signed(target, runId, { harness: 'first' }))).json<EnterResponse>();
     expect((await progress(target, tokens.get(target)!)).statusCode).toBe(200);
     recordSolve(target.journal.database, target.journal, {
@@ -204,7 +205,7 @@ describe('external entrant join', () => {
   });
 
   it('rejects entry and warns if the chain read fails', async () => {
-    const { target, runId } = await setup({ flagsHeld: async () => { throw new Error('unavailable'); } });
+    const { target, runId } = await setup({ flagsHeld: async () => { throw new Error('unavailable'); } }, 'docker-duel');
     const warning = vi.spyOn(target.app.log, 'warn');
     const response = await join(target, await signed(target, runId));
     expect(response.statusCode).toBe(409);
@@ -216,8 +217,8 @@ describe('external entrant join', () => {
   it('refuses a join if the run stops during its chain read', async () => {
     let resolve!: (count: number) => void;
     const read = vi.fn(() => new Promise<number>((done) => { resolve = done; }));
-    const { target, runId } = await setup({ flagsHeld: read });
-    await target.manager.start(runId);
+    const { target, runId } = await setup({ flagsHeld: read }, 'docker-duel');
+    target.manager.transition(runId, 'awaiting_signature');
     const pending = join(target, await signed(target, runId));
     const response = pending.then((value) => value);
     await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
@@ -322,6 +323,8 @@ describe('external lane lifecycle', () => {
     expect((await progress(target, tokens.get(target)!)).statusCode).toBe(401);
     expect(target.manager.snapshot(runId).entrants.find((entrant) => entrant.id === body.entrantId))
       .toMatchObject({ address: account.address, status: 'done', removedAt: expect.any(String) });
+    expect(target.manager.snapshot(runId).entrants.find((entrant) => entrant.id === body.entrantId))
+      .not.toHaveProperty('removedReason');
     expect(target.journal.database.select().from(entrants).where(and(eq(entrants.runId, runId), isNotNull(entrants.address))).all()).toEqual([]);
     const events = target.journal.after(runId, 0).filter((event) => event.source === body.entrantId);
     expect(events.map((event) => event.type)).toEqual(['entrant.joined', 'entrant.status', 'entrant.removed']);
@@ -347,7 +350,7 @@ describe('external lane lifecycle', () => {
     const start = vi.fn(async () => {});
     const funding = vi.fn(async () => {});
     const watch = vi.fn(() => {});
-    const target = server({ driverFactory: (journal, status) => new RegisteredEntrantDriver(journal, { status, schedule: () => {}, hosted: { ...noopDriver, prepare, start } }), fundingGateFactory: () => funding, solveWatchFactory: () => watch, flagsHeld: async () => 0 });
+    const target = server({ getBlockNumber: async () => 100n, driverFactory: (journal, status) => new RegisteredEntrantDriver(journal, { status, schedule: () => {}, hosted: { ...noopDriver, prepare, start } }), fundingGateFactory: () => funding, solveWatchFactory: () => watch, flagsHeld: async () => 0 });
     const { run } = await target.manager.create({ preset: 'docker-duel', roster: [{ id: 'host', harness: 'codex', model: 'gpt-5.5', effort: 'high' }] });
     const starting = target.manager.start(run.id);
     await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());

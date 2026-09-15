@@ -53,6 +53,7 @@ export interface SolvePollerOptions {
   journal: EventJournal;
   pollMs?: number;
   fromBlock?: bigint;
+  startBlock?: bigint;
   database?: ArenaDatabase;
   client?: PublicClient;
 }
@@ -84,6 +85,7 @@ export class SolvePoller {
   private searchFrom: bigint;
   private aggregated: Promise<boolean> | null = null;
   private readonly reported = new Set<string>();
+  private readonly preHeld = new Set<string>();
 
   constructor(private readonly options: SolvePollerOptions) {
     this.database = options.database ?? options.journal.database;
@@ -94,7 +96,7 @@ export class SolvePoller {
       transport: http(options.profile.rpcUrl, { batch: { batchSize: MAX_RPC_BATCH } }),
     });
     this.pollMs = Math.max(0, options.pollMs ?? DEFAULT_POLL_MS);
-    this.searchFrom = options.fromBlock ?? 0n;
+    this.searchFrom = options.startBlock ?? options.fromBlock ?? 0n;
     ensureChainTables(this.database);
   }
 
@@ -122,9 +124,19 @@ export class SolvePoller {
       return 0;
     }
 
-    const captures = await Promise.all(
-      solved.map((pair) => this.recoverCapture(pair, confirmedBlock)),
-    );
+    const captures = await Promise.all(solved.map(async (pair) => {
+      const capture = await this.recoverCapture(pair, confirmedBlock);
+      const startBlock = this.options.startBlock;
+      // A bounded log search cannot find an old mint. Read the state before the
+      // floor to distinguish a pre-held flag from a missing race log.
+      if (startBlock !== undefined && ((capture !== null && capture.blockNumber < startBlock)
+        || (capture === null && startBlock > 0n && await this.hasMinted(pair, startBlock - 1n)))) {
+        this.preHeld.add(pairKey(pair.entrantId, pair.challengeId));
+        console.debug('Ignoring a flag minted before the run start block', { runId: this.options.runId, ...pair });
+        return null;
+      }
+      return capture;
+    }));
     const recovered = captures.filter((capture): capture is Capture => capture !== null);
 
     // The run ended while this tick was reading. score.flag after the run's own
@@ -150,14 +162,15 @@ export class SolvePoller {
     // Only past the writes, and only when every solved pair produced a log. Advancing
     // earlier would move the window past a block whose solve is still unrecorded, and
     // no later search would ever look at that block again.
-    if (recovered.length === solved.length && written === recovered.length) {
+    const eligible = solved.filter((pair) => !this.preHeld.has(pairKey(pair.entrantId, pair.challengeId)));
+    if (recovered.length === eligible.length && written === recovered.length) {
       this.searchFrom = confirmedBlock + 1n;
       this.clearReport('unrecovered');
     } else {
       // Holding searchFrom keeps retrying this pair every tick, and the retry only helps
       // if the log is inside the span. When it is not, the loop is permanent and silent,
       // so say so once rather than let the board hide a solve that already happened.
-      const stuck = solved.filter((pair) => !recovered.some((capture) =>
+      const stuck = eligible.filter((pair) => !recovered.some((capture) =>
         capture.entrantId === pair.entrantId && capture.challengeId === pair.challengeId));
       this.reportOnce(
         'unrecovered',
@@ -217,6 +230,7 @@ export class SolvePoller {
       const address = row.address;
       return CHALLENGE_IDS
         .filter((challengeId) => !scored.has(pairKey(address, challengeId)))
+        .filter((challengeId) => !this.preHeld.has(pairKey(row.entrantId, challengeId)))
         .map((challengeId) => ({
           entrantId: row.entrantId,
           address: getAddress(address),
@@ -407,7 +421,8 @@ export function createSolveWatch(journal: EventJournal, profileName?: string): S
     // them, so getting here means the journal write itself threw. There is nowhere left
     // to record that, and nothing awaits this loop, so the choice is swallow it or let an
     // unhandled rejection take the server down mid-race.
-    new SolvePoller({ profile, runId: run.id, journal }).watch(signal).catch(() => {});
+    const startBlock = run.startBlock == null ? {} : { fromBlock: BigInt(run.startBlock), startBlock: BigInt(run.startBlock) };
+    new SolvePoller({ profile, runId: run.id, journal, ...startBlock }).watch(signal).catch(() => {});
   };
 }
 

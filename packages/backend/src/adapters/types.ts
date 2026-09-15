@@ -11,6 +11,7 @@ export interface RunRecord {
   state: RunState;
   preset: string;
   startedAt: string | null;
+  startBlock?: number | null;
   deadlineAt: string | null;
   durationMs: number | null;
   seededBy: string | null;
@@ -40,6 +41,7 @@ export interface ExternalEntrantRecord extends EntrantBase {
   url?: string;
   joinedAt: string;
   removedAt: string | null;
+  removedReason?: string;
 }
 
 export type EntrantRecord = HostedEntrantRecord | ExternalEntrantRecord;
@@ -59,6 +61,8 @@ export class EntrantUnavailableError extends Error {}
 export class EntrantOperationError extends Error {}
 
 export interface EntrantDriver {
+  /** Mark the lane done inside the caller's transaction; external lanes only. */
+  finish?(run: RunRecord, entrant: EntrantRecord): void;
   prepare(run: RunRecord, entrant: EntrantRecord): Promise<void>;
   start(run: RunRecord, entrant: EntrantRecord, openingPrompt: string): Promise<void>;
   steer(run: RunRecord, entrant: EntrantRecord, text: string, origin?: 'steer' | 'broadcast'): Promise<SteerDelivery>;

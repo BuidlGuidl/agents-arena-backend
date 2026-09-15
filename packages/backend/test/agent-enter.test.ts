@@ -112,7 +112,7 @@ describe('signed entry', () => {
     const f = createServer({ dbPath: ':memory:', operatorToken: 'operator', schedule: () => {},
       flagsHeld: async () => { if (++reads === 2) both(); await gate; return 0; } });
     servers.push(f);
-    await f.manager.create({ preset: 'fake-duel' });
+    await f.manager.create({ preset: 'docker-duel' });
     const payload = await signedEntry(f);
     const send = () => f.app.inject({ method: 'POST', url: '/agent/enter', payload });
     const pending = Promise.all([send(), send()]);
@@ -134,7 +134,7 @@ describe('signed entry', () => {
   ])('rejects first entry without a lane: $message', async ({ flagsHeld, message }) => {
     const f = createServer({ dbPath: ':memory:', operatorToken: 'operator', schedule: () => {}, flagsHeld });
     servers.push(f);
-    const { run } = await f.manager.create({ preset: 'fake-duel' });
+    const { run } = await f.manager.create({ preset: 'docker-duel' });
     const response = await enter(f);
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ error: message });
@@ -147,7 +147,7 @@ describe('signed entry', () => {
     const f = createServer({ dbPath: ':memory:', operatorToken: 'operator', schedule: () => {},
       flagsHeld: async () => { reads++; return reads === 1 ? 0 : 4; } });
     servers.push(f);
-    await f.manager.create({ preset: 'fake-duel' });
+    await f.manager.create({ preset: 'docker-duel' });
     const first = await enter(f);
     expect(first.statusCode).toBe(201);
     expect(reads).toBe(1);

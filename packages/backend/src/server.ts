@@ -14,6 +14,7 @@ import { ExternalStatus } from './adapters/external-status.js';
 import { createChallengePackResolver, type ChallengePackAccess } from './ctf/resolve.js';
 import { declaredFields } from './external-entrants.js';
 import { flagsHeld } from './chain/flags-held.js';
+import { currentBlockNumber } from './chain/block-number.js';
 import { activeChainProfile } from './chain/profile.js';
 import { buildTaskText } from './ctf/prompt.js';
 import {
@@ -146,6 +147,7 @@ const historyQuerySchema = z.object({
 }).strict();
 
 export interface ServerOptions {
+  getBlockNumber?: () => Promise<bigint>;
   flagsHeld?: (address: Address) => Promise<number>;
   publicUrl?: string;
   siteUrl?: string;
@@ -208,6 +210,8 @@ export function createServer(options: ServerOptions): ArenaServer {
     journal, { status: externalStatus, schedule: options.schedule, pack },
   );
   const runManagerOptions: RunManagerOptions = {
+    flagsHeld: options.flagsHeld ?? flagsHeld,
+    getBlockNumber: options.getBlockNumber ?? currentBlockNumber,
     promptBuilder: (entrant) => buildTaskText(entrant, activeChainProfile, { publicUrl, siteUrl }),
     operatorAddresses: options.siwe?.operatorAddresses ?? [],
     ...(options.solveWatchFactory === undefined
@@ -318,9 +322,7 @@ export function createServer(options: ServerOptions): ArenaServer {
     if (!manager.hasLane(run.id, address)) {
       let held: number;
       try {
-        held = options.flagsHeld !== undefined
-          ? await options.flagsHeld(address)
-          : presetSubstrate(run.preset) === 'fake' ? 0 : await flagsHeld(address);
+        held = presetSubstrate(run.preset) === 'fake' ? 0 : await (options.flagsHeld ?? flagsHeld)(address);
       } catch {
         app.log.warn('Could not read flags held at entry');
         throw new JoinRejectedError("Could not read this wallet's flags. Try again in a moment.");
@@ -525,7 +527,8 @@ export function createServer(options: ServerOptions): ArenaServer {
   function agentIdentity(request: FastifyRequest) {
     const token = bearerToken(request.headers.authorization);
     const identity = token === undefined ? undefined : resolveAgentToken(token, arenaTokens);
-    if (identity === undefined) throw new JoinAuthenticationError('Arena token required');
+    if (identity === undefined) throw new JoinAuthenticationError(
+      (token === undefined ? undefined : arenaTokens.removalMessage(token)) ?? 'Arena token required');
     return identity;
   }
 
@@ -549,7 +552,7 @@ export function createServer(options: ServerOptions): ArenaServer {
       return reply
         .status(401)
         .header('WWW-Authenticate', 'Bearer realm="agents-arena-agent"')
-        .send({ error: 'Arena token required' });
+        .send({ error: (token === undefined ? undefined : arenaTokens.removalMessage(token)) ?? 'Arena token required' });
     }
     return progress.announce(identity, request.body);
   });

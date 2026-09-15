@@ -6,6 +6,8 @@ import { createOpenRouterModelSource } from './agents/openrouter.js';
 import { createFundingGate, runLocalDevFaucet } from './chain/funding-gate.js';
 import { activeChainProfile } from './chain/profile.js';
 import { createSolveWatch } from './chain/solve-poller.js';
+import { flagsHeld } from './chain/flags-held.js';
+import { currentBlockNumber } from './chain/block-number.js';
 import {
   InvalidNarrationConfigError,
   MissingPublicUrlError,
@@ -57,6 +59,8 @@ const { app, manager } = ((): ReturnType<typeof createServer> => {
     const narration = resolveNarrationConfig();
     const publicUrl = resolvePublicUrl(activeChainProfile.name, port, process.env.ARENA_PUBLIC_URL);
     return createServer({
+      flagsHeld,
+      getBlockNumber: currentBlockNumber,
       operatorToken,
       publicUrl,
       siteUrl: resolveSiteUrl(publicUrl, corsOrigins, process.env.ARENA_SITE_URL),

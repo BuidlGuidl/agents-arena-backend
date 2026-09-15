@@ -92,6 +92,9 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
     CREATE INDEX IF NOT EXISTS inbox_messages_run_id_entrant_id_delivered_at ON inbox_messages (run_id, entrant_id, delivered_at);
   `);
   const externalColumns = sqlite.prepare('PRAGMA table_info(external_entrants)').all() as Array<{ name: string }>;
+  if (!externalColumns.some((column) => column.name === 'removed_reason')) {
+    sqlite.exec('ALTER TABLE external_entrants ADD COLUMN removed_reason TEXT');
+  }
   if (externalColumns.some((column) => column.name === 'flags_before_join')) {
     sqlite.exec('ALTER TABLE external_entrants DROP COLUMN flags_before_join');
   }
@@ -102,6 +105,9 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
   const runColumns = sqlite.prepare('PRAGMA table_info(runs)').all() as Array<{ name: string; notnull: number }>;
   if (!runColumns.some((column) => column.name === 'duration_ms')) {
     sqlite.exec('ALTER TABLE runs ADD COLUMN duration_ms INTEGER');
+  }
+  if (!runColumns.some((column) => column.name === 'start_block')) {
+    sqlite.exec('ALTER TABLE runs ADD COLUMN start_block INTEGER');
   }
   if (!runColumns.some((column) => column.name === 'seeded_by')) {
     sqlite.exec('ALTER TABLE runs ADD COLUMN seeded_by TEXT');

@@ -7,7 +7,7 @@ export interface ChallengeGuess {
 
 export type ChallengeVia = 'self' | 'command' | 'message';
 
-interface Target {
+export interface Target {
   challengeId: number;
   via: ChallengeVia;
   pendingGuess?: ChallengeGuess & { via: ChallengeVia };
@@ -78,6 +78,15 @@ export function matchChallengeInProse(
 
 const targetByEntrant = new Map<string, Target>();
 
+export function currentTarget(runId: string, entrantId: string): Target | undefined {
+  return targetByEntrant.get(entrantKey(runId, entrantId));
+}
+
+export function recordTarget(runId: string, entrantId: string, target: Target | undefined): void {
+  if (target === undefined) targetByEntrant.delete(entrantKey(runId, entrantId));
+  else targetByEntrant.set(entrantKey(runId, entrantId), target);
+}
+
 let solvedLookup = (_runId: string, _entrantId: string): ReadonlySet<number> => EMPTY;
 
 function entrantKey(runId: string, entrantId: string): string {
@@ -103,11 +112,22 @@ export function mayMove(
   challengeId: number,
   via: ChallengeVia,
 ): boolean {
-  const target = targetByEntrant.get(entrantKey(runId, entrantId));
+  const target = currentTarget(runId, entrantId);
+  const solved = target !== undefined && via !== 'self' && target.challengeId !== challengeId
+    ? solvedChallenges(runId, entrantId) : EMPTY;
+  return mayMoveTarget(target, challengeId, via, solved);
+}
+
+export function mayMoveTarget(
+  target: Target | undefined,
+  challengeId: number,
+  via: ChallengeVia,
+  solved: ReadonlySet<number>,
+): boolean {
   if (target?.challengeId === challengeId && (via !== 'self' || target.via === 'self')) return false;
   if (via === 'self') return true;
   return target === undefined
-    || solvedChallenges(runId, entrantId).has(target.challengeId)
+    || solved.has(target.challengeId)
     || target.via !== 'self';
 }
 
@@ -117,10 +137,18 @@ export function savePendingGuess(
   guess: ChallengeGuess,
   via: ChallengeVia,
 ): void {
-  const target = targetByEntrant.get(entrantKey(runId, entrantId));
+  recordTarget(runId, entrantId, savePendingGuessTarget(currentTarget(runId, entrantId), guess, via));
+}
+
+export function savePendingGuessTarget(
+  target: Target | undefined,
+  guess: ChallengeGuess,
+  via: ChallengeVia,
+): Target | undefined {
   // A guess naming the current target is a no-op, not a refusal: the solve tx
   // for Challenge 11 must not overwrite the pending "starting 12".
-  if (target !== undefined && target.challengeId !== guess.challengeId) target.pendingGuess = { ...guess, via };
+  return target !== undefined && target.challengeId !== guess.challengeId
+    ? { ...target, pendingGuess: { ...guess, via } } : target;
 }
 
 export function takePendingGuess(

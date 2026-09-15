@@ -37,10 +37,13 @@ export class ExternalDriver implements EntrantDriver {
 
   async stop(run: RunRecord, entrant: EntrantRecord): Promise<void> {
     assertExternal(entrant);
-    this.finish(run.id, entrant.id);
+    this.finish(run, entrant);
   }
 
-  finish(runId: string, entrantId: string): void {
+  finish(run: RunRecord, entrant: EntrantRecord): void {
+    assertExternal(entrant);
+    const runId = run.id;
+    const entrantId = entrant.id;
     this.journal.transaction(() => {
       this.status.set(runId, entrantId, 'done');
       this.journal.afterCommit(() => dropCurrentChallenge(runId, entrantId));

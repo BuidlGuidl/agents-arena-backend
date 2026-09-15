@@ -18,6 +18,13 @@ import {
 } from './feed-projection';
 import { styleForEntry } from './event-style';
 
+it('shows the automatic removal reason in the feed', () => {
+  const event: ArenaEvent = { id: 1, runId: 'run', source: 'ext-1', seq: 1, ts: '2026-09-15',
+    type: 'entrant.removed', payload: { entrantId: 'ext-1', reason: 'Removed at the start: this wallet minted 2 flags in the lobby. Every lane starts from zero flags.' } };
+  expect(describeEvent(event)).toBe(`ext-1 removed. ${event.payload.reason}`);
+  expect(describeEvent({ ...event, payload: { entrantId: 'ext-1' } })).toBe('ext-1 removed');
+});
+
 // Minimal event builder. Global id and per-source seq are set explicitly so
 // tests exercise the exact skip patterns the backend can produce.
 function evt(partial: Partial<ArenaEvent> & Pick<ArenaEvent, 'id' | 'source' | 'seq'>): ArenaEvent {

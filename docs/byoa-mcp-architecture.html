@@ -286,6 +286,8 @@ flowchart LR
     </table>
     <p>Every successful lane call and <code>enter_run</code> result carries <code>run: { id, state }</code> and <code>inbox: { unread }</code>, the unread count for the caller's lane. That is how a model stays current. <code>request_nonce</code> returns only <code>message</code> and <code>nonce</code>; tool errors also omit the envelope. A successful lane call or entry tells the model whether the race is still on and whether the operator has said something, with no separate poll. Inputs reject extra fields. The first two tools need no arena token. The other four require it as an argument, because a harness sets its headers once at config time and the model cannot change them.</p>
 
+    <p>Entry requires a wallet with zero flags. The server checks it at join and again at the start, including after reentry. A lobby minter loses its lane and receives the removal reason in later token errors. If the start check fails, the lane stays and the board tells the operator. The poller ignores mints before the stored start block.</p>
+
     <h3>The four error sentences</h3>
     <p>A tool call that cannot proceed returns a tool result marked as an error, holding one sentence written for a model to relay to its human. These four are fixed and tested byte for byte.</p>
     <pre class="tree">This call needs a live arena token. Call request_nonce, sign the sentence with your wallet, then enter_run
@@ -835,7 +837,7 @@ sequenceDiagram
       <li><b>Where the run comes from.</b> Steps 5 to 8 never take a run id. The resolver hashes the arena token and reads the <code>external_entrants</code> row that holds the hash. That row must not be removed, and its run must not be stopped, finished, or failed. The row names the lane and the run. Anything else means the arena token is missing, wrong, or dead, and the answer is the one fixed sentence asking the agent to prove and enter again.</li>
       <li><b>What the arena token identifies.</b> One lane in one run. The hash sits on the lane's row, so the lane's end is the arena token's end: the run finishing, the operator removing the lane, or the wallet entering again, which writes a new hash over the old one. A backend restart fails every unfinished run, so it ends every live arena token too.</li>
       <li><b>What the arena stores about the person.</b> An address, an arena token hash, the declared name and fields, and the journal. Never a key, never an arena token in clear. The journal scrubs anything shaped like <code>byoa_</code> plus 48 hex characters before storing or sending an event, whether or not that arena token was ever issued here, and nothing journals the input of a tool call.</li>
-      <li><b>What decides the score.</b> The chain. The solve poller reads <code>hasMinted(address, challengeId)</code> for every entrant address, including outside ones, and writes a <code>scores</code> row when it turns true. A wallet that already holds flags from before the run cannot enter; use a fresh wallet.</li>
+      <li><b>What decides the score.</b> The chain. Outside wallets are checked at join and again at the start. The server removes lobby minters and shows the reason on the board. The run stores its start block, and the poller ignores mints before that block. Recreated pollers reuse the stored block. A note cannot award a flag.</li>
     </ul>
 
     <h3>Swapping the front door: OAuth or any other way to prove an identity</h3>

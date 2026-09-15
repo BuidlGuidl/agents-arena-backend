@@ -14,6 +14,8 @@ The operator gets an invite link in the lobby and sees an outside lane beside ho
 
 The chain decides the score. `SolvePoller` reads flags by wallet address, so an outside wallet uses the same scoring path as a hosted wallet. A note claiming success cannot award a flag.
 
+Every lane starts from zero flags. The server checks outside wallets at join and again at the start. It removes lobby minters and shows the reason on the board and in rejected token calls. A failed start check leaves the lane in place with an error for the operator. The run stores its start block, and the poller ignores mints before it. Recreated pollers reuse that block.
+
 The [architecture history](byoa-mcp-architecture.html) and [decision log](adr/decisions-log.md) hold the design discussions.
 
 ## How it is shaped
@@ -79,6 +81,8 @@ The site builds `/llms.txt` from challenge Markdown and the contract addresses t
 Outside lanes skip the hosted funding gate and container preparation. Hosted lanes wait in `awaiting_funding` until their balances meet the threshold or the operator stops the run. There is no funding timeout on any chain. An operator stop during `awaiting_funding` sends the run directly to `failed`, as it does during `preparing` or `ready`. A normal stop during `running` or `awaiting_signature` goes through `stopping` to `finished`. Once funding completes, a Docker run waits at `ready` for the operator to start it.
 
 At the `running` transition, `RunManager.transition` sets `startedAt` and computes `deadlineAt` from `durationMs`, if supplied. The website's `arenaClock` uses that deadline to show that time is up. Crossing it does not stop the run or invalidate an arena token. Hosted session watchdogs remain separate from the displayed deadline.
+
+Before that transition, the manager reads outside wallets in parallel and reads the current chain block. Removal, the stored start block, and the transition share one transaction. Removed lanes never reach the solve watch. Fake runs skip these chain reads.
 
 ### The six tools
 

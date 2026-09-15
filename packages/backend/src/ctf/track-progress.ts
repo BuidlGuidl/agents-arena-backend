@@ -1,7 +1,7 @@
 import type { EventJournal } from '../journal.js';
 import {
-  matchChallenge, matchChallengeInProse, mayMove, savePendingGuess, recordCurrentChallenge,
-  solvedChallenges,
+  matchChallenge, matchChallengeInProse, mayMoveTarget, savePendingGuessTarget,
+  solvedChallenges, type Target,
 } from './challenge-tracker.js';
 
 const matchers = { command: matchChallenge, message: matchChallengeInProse };
@@ -12,15 +12,15 @@ export function trackProgress(
   detail: string,
   via: 'command' | 'message',
   addressIndex: ReadonlyMap<string, number>,
-): void {
+  target: Target | undefined,
+): Target | undefined {
   const guess = matchers[via](detail, addressIndex, solvedChallenges(runId, entrantId));
-  if (guess === undefined) return;
-  if (!mayMove(runId, entrantId, guess.challengeId, via)) {
-    savePendingGuess(runId, entrantId, guess, via);
-    return;
+  if (guess === undefined) return target;
+  if (!mayMoveTarget(target, guess.challengeId, via, solvedChallenges(runId, entrantId))) {
+    return savePendingGuessTarget(target, guess, via);
   }
   journal.append(runId, entrantId, 'entrant.challenge', {
     entrantId, challengeId: guess.challengeId, via, evidence: guess.evidence,
   });
-  journal.afterCommit(() => recordCurrentChallenge(runId, entrantId, guess.challengeId, via));
+  return { challengeId: guess.challengeId, via };
 }

@@ -14,6 +14,8 @@ import { revokeAgentToken } from '../agent-auth.js';
 import { activeChainProfile } from '../chain/profile.js';
 import {
   challengeAddressIndex,
+  currentTarget,
+  recordTarget,
   dropCurrentChallenge,
 } from '../ctf/challenge-tracker.js';
 import { trackProgress } from '../ctf/track-progress.js';
@@ -616,7 +618,8 @@ export abstract class HarnessEntrantDriver implements EntrantDriver {
     state.addressIndex ??= challengeAddressIndex(this.challengeAddresses?.(state.run.id) ?? {});
     const runId = state.run.id;
     const entrantId = state.entrant.id;
-    trackProgress(this.journal, { runId, entrantId }, detail, via, state.addressIndex);
+    const target = trackProgress(this.journal, { runId, entrantId }, detail, via, state.addressIndex, currentTarget(runId, entrantId));
+    this.journal.afterCommit(() => recordTarget(runId, entrantId, target));
   }
 
   private appendError(state: EntrantRuntimeState, message: string): void {

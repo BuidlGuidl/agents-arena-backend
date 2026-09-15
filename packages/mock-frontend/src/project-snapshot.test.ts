@@ -58,6 +58,16 @@ describe('projectSnapshot', () => {
     expect(projectSnapshot(snapshot, event)?.entrants[0]?.status).toBe('working');
   });
 
+  it('marks an outside lane removed while preserving its displayed wallet', () => {
+    const current: RunSnapshot = { ...snapshot, entrants: [{ ...snapshot.entrants[0]!, kind: 'external',
+      id: 'ext-1', name: 'Outside', joinedAt: '2026-09-15', address: '0x1234' }] };
+    const event: ArenaEvent = { id: 10, runId: current.id, source: 'ext-1', seq: 1, ts: '2026-09-15T12:00:00Z',
+      type: 'entrant.removed', payload: { entrantId: 'ext-1', reason: 'Lobby mint' } };
+    expect(projectSnapshot(current, event)?.entrants[0]).toMatchObject({ removedAt: event.ts, removedReason: 'Lobby mint', status: 'done', address: '0x1234' });
+    expect(projectSnapshot(current, { ...event, payload: { entrantId: 'ext-1' } })?.entrants[0])
+      .not.toHaveProperty('removedReason');
+  });
+
   it('ignores replayed events already covered by the snapshot', () => {
     const replayed: ArenaEvent = {
       id: 1,

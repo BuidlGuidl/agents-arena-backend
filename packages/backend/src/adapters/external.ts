@@ -1,4 +1,5 @@
 import type { ExternalStatus } from './external-status.js';
+import { dropCurrentChallenge } from '../ctf/challenge-tracker.js';
 import { enqueueMessage } from '../inbox.js';
 import type { EventJournal } from '../journal.js';
 import {
@@ -39,9 +40,10 @@ export class ExternalDriver implements EntrantDriver {
     this.finish(run.id, entrant.id);
   }
 
-  private finish(runId: string, entrantId: string): void {
+  finish(runId: string, entrantId: string): void {
     this.journal.transaction(() => {
       this.status.set(runId, entrantId, 'done');
+      this.journal.afterCommit(() => dropCurrentChallenge(runId, entrantId));
     });
   }
 }

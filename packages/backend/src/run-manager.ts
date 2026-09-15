@@ -4,7 +4,10 @@ import { and, asc, count, desc, eq, inArray, isNull, max, ne, notInArray, sql } 
 import { getAddress, recoverTypedDataAddress, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
-import { EntrantOperationError } from './adapters/types.js';
+import { EntrantOperationError, EntrantUnavailableError } from './adapters/types.js';
+import { ExternalDriver } from './adapters/external.js';
+import { ExternalStatus } from './adapters/external-status.js';
+import { clearAgentLaneState } from './agent-limits.js';
 import { ExternalEntrants, declaredFields, toEntrantRecord } from './external-entrants.js';
 import { TERMINAL_RUN_STATES } from './contract.js';
 import { DEFAULT_PUBLIC_URL } from './config.js';
@@ -376,7 +379,7 @@ export class RunManager {
         }).run();
       }
       this.external.register(entrant, input.arenaTokenHash);
-      this.journal.append(run.id, entrantId, 'entrant.joined', {
+      if (previous === undefined) this.journal.append(run.id, entrantId, 'entrant.joined', {
         entrantId, kind: 'external', address, name: input.name, ...declaredFields(input),
       });
       input.claim();
@@ -393,18 +396,23 @@ export class RunManager {
   }
 
   async remove(runId: string, entrantId: string): Promise<void> {
-    const run = this.requireRun(runId);
+    this.requireRun(runId);
     const entrant = this.requireEntrant(runId, entrantId);
     if (entrant.kind === 'hosted') throw new EntrantOperationError('Hosted entrants cannot be removed; stop the run');
     if (entrant.removedAt !== null) throw new JoinConflictError('Entrant was already removed');
-    await this.driver.stop(run, entrant);
     this.journal.transaction(() => {
+      new ExternalDriver(this.journal, new ExternalStatus(this.journal)).finish(runId, entrantId);
       this.external.markRemoved(runId, entrantId, new Date().toISOString());
       // A set address means the solve poller must still watch this wallet.
       this.journal.database.update(entrants).set({ address: null })
         .where(and(eq(entrants.runId, runId), eq(entrants.id, entrantId))).run();
       this.journal.append(runId, entrantId, 'entrant.removed', { entrantId });
+      this.journal.afterCommit(() => clearAgentLaneState(this.journal, runId, entrantId));
     });
+  }
+
+  runState(runId: string): RunState {
+    return this.requireRun(runId).state;
   }
 
   // One transaction so solves, usage totals, and lastEventId describe the same
@@ -500,6 +508,9 @@ export class RunManager {
       .run();
     const payload = reason === undefined ? { state: nextState } : { state: nextState, reason };
     this.journal.append(runId, 'run', 'run.state', payload);
+    if (TERMINAL_RUN_STATES.includes(nextState)) {
+      this.journal.afterCommit(() => clearAgentLaneState(this.journal, runId));
+    }
     return this.requireRun(runId);
   }
 
@@ -968,6 +979,7 @@ export class RunManager {
     // Existence before state, as steer does: a name that was never on the roster
     // is a 404 whatever the run is doing, and the docs promise that.
     const entrant = this.requireEntrant(runId, entrantId);
+    if (entrant.kind === 'external') throw new EntrantOperationError('External entrants cannot be restarted');
     if (run.state !== 'running') {
       throw new InvalidTransitionError(
         `Cannot restart entrant ${entrantId} in run ${runId} in state ${run.state}`,
@@ -1041,6 +1053,7 @@ export class RunManager {
     try {
       return await this.driver.steer(run, entrant, text, label === 'Broadcast' ? 'broadcast' : 'steer');
     } catch (error) {
+      if (error instanceof EntrantUnavailableError) throw error;
       this.journal.append(run.id, entrant.id, 'entrant.error', {
         entrantId: entrant.id,
         message: `${label} not delivered: ${errorMessage(error)}`,
@@ -1087,6 +1100,7 @@ export class RunManager {
     ).finally(() => {
       dropRunKeys(runId);
       dropCredentialSecrets(runId);
+      clearAgentLaneState(this.journal, runId);
     });
     this.teardownPromises.set(runId, teardown);
     return teardown;

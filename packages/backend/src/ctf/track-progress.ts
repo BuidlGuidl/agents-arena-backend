@@ -22,5 +22,5 @@ export function trackProgress(
   journal.append(runId, entrantId, 'entrant.challenge', {
     entrantId, challengeId: guess.challengeId, via, evidence: guess.evidence,
   });
-  recordCurrentChallenge(runId, entrantId, guess.challengeId, via);
+  journal.afterCommit(() => recordCurrentChallenge(runId, entrantId, guess.challengeId, via));
 }

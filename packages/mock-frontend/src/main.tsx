@@ -798,7 +798,7 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
             </span>
           ) : wallet.wei !== null ? (
             <span className="wallet-fund" data-testid={`lane-fund-${entrant.id}`}>{formatWei(wallet.wei)} eth</span>
-          ) : wallet.awaitingFunds ? (
+          ) : entrant.kind === 'hosted' && wallet.awaitingFunds ? (
             <span className="wallet-fund awaiting" data-testid={`lane-fund-${entrant.id}`}>awaiting funds</span>
           ) : null}
         </div>
@@ -862,7 +862,7 @@ function EntrantLane({ runId, entrant, feed, runState, startedAt, laneColor }: {
           className="btn restart-btn"
           data-testid={`lane-restart-${entrant.id}`}
           title="drop this agent's session and re-feed its opening prompt"
-          disabled={runState !== 'running' || restart.isPending}
+          disabled={entrant.kind === 'external' || runState !== 'running' || restart.isPending}
           onClick={() => restart.mutate()}
         >
           {restart.isPending ? 'restarting…' : 'restart'}

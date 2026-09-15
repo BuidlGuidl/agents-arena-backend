@@ -51,6 +51,21 @@ describe('signed entry', () => {
     expect(response.json()).toHaveProperty('error');
   });
 
+  it.each(['harness', 'model', 'effort', 'url'])('rejects an empty declared %s', async (field) => {
+    const f = await setup();
+    for (const value of ['', '   ']) {
+      expect((await enter(f, { [field]: value })).statusCode).toBe(400);
+    }
+  });
+
+  it('trims declared fields before storing them', async () => {
+    const f = await setup();
+    const response = await enter(f, { harness: '  codex  ', model: '  model  ', effort: ' high ', url: ' https://example.com ' });
+    expect(response.statusCode).toBe(201);
+    expect(f.journal.database.select().from(externalEntrants).get())
+      .toMatchObject({ harness: 'codex', model: 'model', effort: 'high', url: 'https://example.com' });
+  });
+
   it('rejects unknown and used nonces and the wrong signer', async () => {
     const f = await setup();
     for (const fields of [{ nonce: 'unknown' }, { address: '0x1234567890123456789012345678901234567890' }]) {

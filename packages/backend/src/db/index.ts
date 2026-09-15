@@ -89,6 +89,7 @@ export function openArenaDatabase(path = process.env.ARENA_DB ?? './arena.db'): 
       entrant_id TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
       created_at TEXT NOT NULL, delivered_at TEXT
     );
+    CREATE INDEX IF NOT EXISTS inbox_messages_run_id_entrant_id_delivered_at ON inbox_messages (run_id, entrant_id, delivered_at);
   `);
   const externalColumns = sqlite.prepare('PRAGMA table_info(external_entrants)').all() as Array<{ name: string }>;
   if (externalColumns.some((column) => column.name === 'flags_before_join')) {

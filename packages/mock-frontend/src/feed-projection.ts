@@ -166,12 +166,12 @@ export function deriveWaitingRoom(
   entries: FeedEntry[],
   runState: RunState | undefined,
 ): WaitingRoomEntry[] {
-  return entrants.map((entrant) => {
+  return entrants.filter((entrant) => entrant.kind !== 'external').map((entrant) => {
     const events = entriesForSource(entries, entrant.id).map((entry) => entry.event);
     const wallet = deriveLaneWallet(events, entrant.address, runState);
     return {
       entrantId: entrant.id,
-      harness: entrant.kind === 'hosted' ? entrant.harness : entrant.harness ?? entrant.name,
+      harness: entrant.harness,
       address: wallet.address,
       wei: wallet.wei,
       funded: wallet.funded,

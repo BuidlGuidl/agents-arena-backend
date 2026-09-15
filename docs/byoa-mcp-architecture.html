@@ -509,7 +509,7 @@ sequenceDiagram
     M->>M: sign that sentence with the racing wallet
     M->>S: enter_run {name, address, nonce, signature} (or POST /agent/enter)
     S->>S: rebuild the sentence, recover signer, compare to address without case
-    S->>DB: transaction: create or rejoin the lane, store SHA-256 of the byoa_ arena token, append entrant.joined
+    S->>DB: transaction: create or rejoin the lane, store SHA-256 of the byoa_ arena token, append entrant.joined on first entry
     S->>S: claim nonce in the in-memory spent set, last inside the transaction
     Note over S,DB: commit after claim; a duplicate claim rolls back its lane and journal writes
     S-->>M: 201 created or 200 rejoined: {entrantId, run, token}
@@ -543,7 +543,7 @@ sequenceDiagram
     F->>J: append agent.message; trackProgress can append entrant.challenge
     F->>J: append entrant.status only on a change: explicit status wins, else idle becomes working
     F-->>K: accepted inputs: 1 for message, 2 with explicit status, regardless of event count
-    K->>K: read run snapshot and unread inbox count
+    K->>K: read run state and unread inbox count; reuse entry state for enter_run
     K-->>H: result: one text block = structuredContent = {accepted, run:{id,state}, inbox:{unread}}
     H-->>M: the JSON, as the tool's answer
     J-->>J: live feed: new event on lane ext-…
@@ -552,8 +552,8 @@ sequenceDiagram
       <figcaption>Tool call. Code: agent-mcp.ts, agent-auth.ts, agent-ingest.ts</figcaption>
     </figure>
 
-    <h3>View C · the resolver, and why one record per arena token matters</h3>
-    <p>Rate limits and the duplicate-sequence memory live on the identity record in memory. If HTTP and MCP each built their own record for the same arena token, an agent could double its rate by alternating doors. So the store keeps exactly one record object per arena token hash. A fresh arena token gets a fresh record, so entering again resets the limits and the sequence memory.</p>
+    <h3>View C · the resolver and lane limits</h3>
+    <p>Rate limits and duplicate sequences use the run and entrant IDs as their key. HTTP and MCP share this state. Entry rotates the token without resetting these limits. Removal or a terminal run state clears the lane's state.</p>
     <pre class="tree">resolveAgentToken(token, arenaTokens)
   hosted in-memory map hit?            <span class="c">→ the container's lane record, unchanged from before</span>
   else arenaTokens.resolve(token)
@@ -561,7 +561,7 @@ sequenceDiagram
     hash it, look up external_entrants.arena_token_hash
     no row, lane removed, run over?    <span class="c">→ undefined: forget any cached record</span>
     record = cache[hash] ?? { runId, entrantId, address }
-    return record                      <span class="c">same object every call: WeakMap limits and dedupe sets stay shared</span>
+    return record                      <span class="c">limits and dedupe use runId:entrantId across token changes</span>
 
   an arena token names its lane, so there is no lane-less identity and no 409 for one</pre>
 

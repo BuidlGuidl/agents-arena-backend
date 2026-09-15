@@ -19,7 +19,6 @@ export interface AgentTokenRecord {
   runId: string;
   entrantId: string;
   address?: string;
-  // Last journalled challenge announcement; request limits use this record.
   lastAnnouncedAtMs?: number;
 }
 
@@ -63,7 +62,7 @@ export function agentTokenSecrets(runId: string): readonly string[] {
   return secrets;
 }
 
-// Each server preserves record identity because request limits key on the record object.
+// Each server caches resolved token records.
 export class ArenaTokens {
   private readonly states = new Map<string, AgentTokenRecord>();
 

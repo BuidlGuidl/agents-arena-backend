@@ -74,6 +74,53 @@ function legacyBody(body: string) {
 }
 
 describe('arena MCP', () => {
+  it('keeps the post_note limit and joined event count after reentry', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const f = await joined();
+      for (let i = 0; i < 30; i++) {
+        expect((await call(f, 'post_note', { text: 'hello' }, f.token)).isError).not.toBe(true);
+      }
+      expect((await call(f, 'post_note', { text: 'over limit' }, f.token)).isError).toBe(true);
+      const rejoined = await call(f, 'enter_run', { name: 'Agent' });
+      expect(rejoined.structuredContent.token).not.toBe(f.token);
+      const refused = await call(f, 'post_note', { text: 'still over limit' }, rejoined.structuredContent.token);
+      expect(refused.isError).toBe(true);
+      expect(refused.structuredContent.error).toContain('Too fast');
+      expect(f.journal.after(f.runId, 0).filter((event) => event.type === 'entrant.joined')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns run state for post_note without taking a snapshot', async () => {
+    const f = await joined();
+    const snapshot = vi.spyOn(f.manager, 'snapshot');
+    const response = await call(f, 'post_note', { text: 'hello' }, f.token);
+    expect(response.structuredContent.run).toEqual({ id: f.runId, state: 'created' });
+    expect(snapshot).not.toHaveBeenCalled();
+  });
+
+  it('uses the entry snapshot for the enter_run trailer', async () => {
+    const f = setup();
+    const { run } = await f.manager.create({ preset: 'fake-duel' });
+    const snapshot = vi.spyOn(f.manager, 'snapshot');
+    const state = vi.spyOn(f.manager, 'runState');
+    const response = await call(f, 'enter_run', { name: 'Agent' });
+    expect(response.structuredContent.run).toEqual({ id: run.id, state: 'created' });
+    expect(snapshot).toHaveBeenCalledTimes(1);
+    expect(state).not.toHaveBeenCalled();
+  });
+
+  it('rejects a working note after removal and keeps done status', async () => {
+    const f = await joined();
+    await f.manager.remove(f.runId, f.entrantId);
+    const response = await call(f, 'post_note', { text: 'hello', status: 'working' }, f.token);
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent.error).toBe(tokenText);
+    expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe('done');
+  });
+
   it('returns a tool error when a wallet already holds flags', async () => {
     const f = setup({ flagsHeld: async () => 2 });
     const { run } = await f.manager.create({ preset: 'fake-duel' });
@@ -198,7 +245,7 @@ describe('arena MCP', () => {
     expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe('blocked');
     expect((await call(f, 'post_note', { text: 'Another attempt' }, f.token)).structuredContent.accepted).toBe(1);
     expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe('blocked');
-    for (const status of ['idle', 'done', 'working', 'blocked']) {
+    for (const status of ['idle', 'working', 'blocked', 'done']) {
       expect((await call(f, 'post_note', { text: 'Status update', status }, f.token)).structuredContent.accepted).toBe(2);
       expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe(status);
     }

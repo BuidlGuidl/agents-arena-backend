@@ -5,6 +5,7 @@ import { ExternalStatus } from '../src/adapters/external-status.js';
 import { journalHarness } from './fixtures/journal.js';
 import { RunManager } from '../src/run-manager.js';
 import { noopDriver } from './fixtures/server.js';
+import { mayMove, recordCurrentChallenge } from '../src/ctf/challenge-tracker.js';
 
 const createJournal = journalHarness();
 
@@ -41,7 +42,11 @@ it('starts without a timer and sets done on stop', async () => {
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(365 * 24 * 60 * 60 * 1000);
     expect(f.manager.snapshot(f.runId).entrants.find((row) => row.id === f.entrantId)?.status).toBe('working');
+    recordCurrentChallenge(f.runId, f.entrantId, 2, 'self');
     await driver.stop(run, entrant);
+    expect(f.manager.snapshot(f.runId).entrants.find((row) => row.id === f.entrantId)?.status).toBe('done');
+    expect(mayMove(f.runId, f.entrantId, 2, 'self')).toBe(true);
+    status.set(f.runId, f.entrantId, 'working');
     expect(f.manager.snapshot(f.runId).entrants.find((row) => row.id === f.entrantId)?.status).toBe('done');
   } finally {
     vi.useRealTimers();

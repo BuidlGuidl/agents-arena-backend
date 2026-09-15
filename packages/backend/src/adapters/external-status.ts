@@ -18,7 +18,7 @@ export class ExternalStatus {
   set(runId: string, entrantId: string, status: EntrantStatus): void {
     this.journal.transaction(() => {
       const current = this.current(runId, entrantId);
-      if (current === undefined || current.kind !== 'external') return;
+      if (current === undefined || current.kind !== 'external' || current.status === 'done') return;
       this.writeStatus(runId, entrantId, current.status, status);
     });
   }

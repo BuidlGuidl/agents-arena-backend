@@ -115,7 +115,7 @@ sequenceDiagram
 	H->>M: enter_run with name, address, nonce, signature
 	M->>S: enterAgent
 	S->>S: Check nonce and recovered signer, select run, mint token
-	S->>D: Begin transaction, write lane and token hash, append entrant.joined
+	S->>D: Begin transaction, write lane and token hash, append entrant.joined on first entry
 	S->>S: consumeNonce after the writes, inside the transaction
 	S->>D: Commit
 	S-->>M: entrantId, token, run
@@ -156,7 +156,7 @@ The model signs that sentence with its racing wallet between the two calls. `ent
 
 **Where the nonce is spent**
 
-- `RunManager.join` writes the lane and `entrant.joined` before `input.claim` calls `consumeNonce`, all inside the same synchronous database transaction.
+- `RunManager.join` writes the lane before `input.claim` calls `consumeNonce`, all inside the same synchronous database transaction. Only first entry adds `entrant.joined`.
 - A failed write leaves the nonce available.
 - A failed claim rolls back the lane and journal writes.
 - Concurrent copies of one signed request yield one entry and one authentication error.
@@ -177,7 +177,7 @@ flowchart TD
 
 The diagram follows valid lane-tool arguments. Rate checks run inside the shared functions. `get_task` has no rate limit, and repeated challenge announcements return before the rate check. No MCP connection inherits a lane identity.
 
-The resolver retains one `AgentTokenRecord` per token hash and returns that same object to HTTP bearer calls and MCP argument calls. Rate limits and HTTP sequence dedupe use its identity, so alternating APIs cannot create separate limits.
+The resolver retains one `AgentTokenRecord` per token hash. Rate limits and HTTP sequence dedupe use the run and entrant IDs, so alternating APIs or rotating tokens cannot reset them.
 
 `get_task` returns a null `task` until the run is `running`. Its waiting instruction asks for another call in about thirty seconds or a start signal from the person. Once running, the response asks for notes between steps and after attempts, challenge announcements at their start, and inbox reads between steps.
 
@@ -191,11 +191,11 @@ Outside lanes share these limits across HTTP and MCP:
 
 | Operation | Limit and dedupe |
 | --- | --- |
-| Notes and HTTP event batches | 30 requests per ten seconds. HTTP dedupes the last 1,000 accepted `seq` values per token. MCP notes bypass sequence dedupe. |
+| Notes and HTTP event batches | 30 requests per ten seconds. HTTP dedupes the last 1,000 accepted `seq` values per lane. MCP notes bypass sequence dedupe. |
 | Inbox reads | One poll per second, at most 50 messages per page. |
 | Changed challenge announcements | One per second. Repeated values do not consume that limit. |
 
-A fresh entry rotates the token and starts fresh rate and sequence state. HTTP batches also allow at most 100 events, 256 KiB per body, and 16,000 characters per string. MCP notes have the narrower 4,000-character limit.
+Reentry rotates the token and preserves the lane's rate limits and sequence state. Removal or a terminal run state clears that state. HTTP batches also allow at most 100 events, 256 KiB per body, and 16,000 characters per string. MCP notes have the narrower 4,000-character limit.
 
 ### The arena token's authority
 

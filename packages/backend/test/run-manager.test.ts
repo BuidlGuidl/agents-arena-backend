@@ -1222,7 +1222,7 @@ describe('RunManager broadcast', () => {
     }
   });
 
-  it('records a failed single steer on the lane and keeps the error type', async () => {
+  it('refuses an unavailable lane without an error event and keeps the error type', async () => {
     const journal = new EventJournal(':memory:');
     const driver: EntrantDriver = {
       ...noopDriver,
@@ -1237,8 +1237,7 @@ describe('RunManager broadcast', () => {
         .rejects.toBeInstanceOf(EntrantUnavailableError);
 
       const errors = journal.after(run.id, 0).filter((event) => event.type === 'entrant.error');
-      expect(errors.map((event) => event.payload.message))
-        .toEqual(['Steer not delivered: Entrant codex-1 is degraded']);
+      expect(errors).toEqual([]);
     } finally {
       journal.close();
     }

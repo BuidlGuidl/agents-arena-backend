@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { AGENT_BATCH_LIMIT, AGENT_STRING_LIMIT, AgentInputError, AgentBatchTooLargeError, AgentRequestLimit, checkAgentStrings } from './agent-limits.js';
+import { AGENT_BATCH_LIMIT, AGENT_STRING_LIMIT, AgentInputError, AgentBatchTooLargeError, AgentRequestLimit, agentLaneState, checkAgentStrings } from './agent-limits.js';
 
 import type { AgentTokenRecord } from './agent-auth.js';
 import type { AgentEventInput, AgentEventsResponse, EntrantStatus } from './contract.js';
@@ -20,8 +20,7 @@ const requestSchema = z.object({ events: z.array(eventSchema).min(1).max(AGENT_B
 
 export class AgentIngest {
   private readonly requests: AgentRequestLimit;
-  // Rejoins preserve record identity and dedupe state; rotation starts a fresh window.
-  private readonly sequences = new WeakMap<AgentTokenRecord, Set<number>>();
+  private readonly sequences: Map<string, Set<number>>;
 
   constructor(
     private readonly journal: EventJournal,
@@ -29,7 +28,8 @@ export class AgentIngest {
     private readonly addressesFor: ChallengePackAccess['addressesFor'],
     now = Date.now,
   ) {
-    this.requests = new AgentRequestLimit(30, 10_000, now);
+    this.requests = new AgentRequestLimit(30, 10_000, now, journal);
+    this.sequences = agentLaneState(journal);
   }
 
   events(identity: AgentTokenRecord, body: unknown): AgentEventsResponse {
@@ -55,7 +55,8 @@ export class AgentIngest {
   private append(identity: AgentTokenRecord, events: AgentEventInput[], dedupe: boolean): AgentEventsResponse {
     const { runId, entrantId } = identity;
     // Set insertion order is the accepted sequence order, including out-of-order client numbers.
-    const sequences = new Set(this.sequences.get(identity));
+    const key = `${runId}:${entrantId}`;
+    const sequences = new Set(this.sequences.get(key));
     let accepted = 0;
     let duplicates = 0;
     const index = challengeAddressIndex(this.addressesFor(runId) ?? {});
@@ -82,7 +83,7 @@ export class AgentIngest {
       }
       if (pending !== undefined) this.status.set(runId, entrantId, pending);
       else if (activity) this.status.touch(runId, entrantId);
-      if (dedupe) this.journal.afterCommit(() => this.sequences.set(identity, sequences));
+      if (dedupe) this.journal.afterCommit(() => this.sequences.set(key, sequences));
     });
     return { accepted, duplicates };
   }

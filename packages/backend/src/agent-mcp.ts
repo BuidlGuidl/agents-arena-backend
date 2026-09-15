@@ -150,9 +150,11 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
         }
         let output: Record<string, unknown> = {};
         let lane;
+        let joinedState;
         if (name === 'enter_run') {
           const joined = await options.enter(args as unknown as EnterRequest);
           lane = { runId: joined.run.id, entrantId: joined.entrantId };
+          joinedState = joined.run.state;
           output = { entrantId: joined.entrantId, token: joined.token, message: 'You are in. Call get_task for the briefing.' };
         } else {
           if (identity === undefined) throw new ProtocolError(-32603, 'Internal server error');
@@ -175,8 +177,8 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
             case 'read_inbox': output = { ...inbox.read(lane, { after: String(args.after ?? 0) }) }; break;
           }
         }
-        const run = manager.snapshot(lane.runId);
-        return result({ ...output, run: { id: run.id, state: run.state }, inbox: { unread: inbox.unread(lane) } });
+        const state = joinedState ?? manager.runState(lane.runId);
+        return result({ ...output, run: { id: lane.runId, state }, inbox: { unread: inbox.unread(lane) } });
       } catch (error) {
         if (error instanceof AgentRateLimitError) {
           return result({ error: `Too fast. Try again in ${error.retryAfter} seconds.` }, true);

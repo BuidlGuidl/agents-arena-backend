@@ -7,19 +7,18 @@ import { join as joinPath } from 'node:path';
 
 import type { LightMyRequestResponse } from 'fastify';
 import type { PublicClient } from 'viem';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq, isNotNull, sql } from 'drizzle-orm';
 import { privateKeyToAccount } from 'viem/accounts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ArenaTokens, resolveAgentToken } from '../src/agent-auth.js';
 import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
-import { ExternalDriver } from '../src/adapters/external.js';
 import { noopDriver, serverHarness } from './fixtures/server.js';
 import { activeChainProfile } from '../src/chain/profile.js';
 import { recordSolve } from '../src/chain/storage.js';
 import { SolvePoller } from '../src/chain/solve-poller.js';
 import { dropRunKeys, getWallet } from '../src/chain/wallet.js';
-import { dropCurrentChallenge } from '../src/ctf/challenge-tracker.js';
+import { dropCurrentChallenge, mayMove, recordCurrentChallenge } from '../src/ctf/challenge-tracker.js';
 import { type EnterRequest, type EnterResponse } from '../src/contract.js';
 import { entrants, externalEntrants, inboxMessages } from '../src/db/schema.js';
 import { createServer, type ArenaServer, type ServerOptions } from '../src/server.js';
@@ -96,18 +95,28 @@ describe('external entrant join', () => {
     expect((await progress(target, tokens.get(target)!)).statusCode).toBe(401);
   });
 
-  it('removes through the injected driver stop seam', async () => {
-    const stop = vi.fn<ExternalDriver['stop']>();
-    const { target, runId } = await setup({ driverFactory: (journal) => {
-      const driver = new ExternalDriver(journal, new ExternalStatus(journal));
-      stop.mockImplementation((run, entrant) => driver.stop(run, entrant));
-      return { ...noopDriver, stop };
-    } });
+  it('rolls back all removal writes and tracker cleanup when the last write fails', async () => {
+    const { target, runId } = await setup();
     const body = (await join(target, await signed(target, runId))).json<EnterResponse>();
+    recordCurrentChallenge(runId, body.entrantId, 2, 'self');
+    const before = target.journal.after(runId, 0);
+    target.journal.database.run(sql`CREATE TRIGGER fail_removal BEFORE INSERT ON events WHEN NEW.type = 'entrant.removed' BEGIN SELECT RAISE(FAIL, 'removal failed'); END`);
+    expect((await remove(target, runId, body.entrantId)).statusCode).toBe(500);
+    expect(target.journal.database.select().from(entrants).where(eq(entrants.id, body.entrantId)).get())
+      .toMatchObject({ status: 'idle', address: account.address });
+    expect(target.journal.database.select().from(externalEntrants).where(eq(externalEntrants.id, body.entrantId)).get())
+      .toMatchObject({ removedAt: null });
+    expect(target.journal.after(runId, 0)).toEqual(before);
+    expect(mayMove(runId, body.entrantId, 2, 'self')).toBe(false);
+    expect(new ArenaTokens(target.journal.database).resolve(body.token)).toBeDefined();
+    target.journal.database.run(sql`DROP TRIGGER fail_removal`);
     expect((await remove(target, runId, body.entrantId)).statusCode).toBe(202);
-    expect(stop).toHaveBeenCalledWith(expect.objectContaining({ id: runId }), expect.objectContaining({ id: body.entrantId }));
     expect(target.manager.snapshot(runId).entrants.find((entrant) => entrant.id === body.entrantId))
       .toMatchObject({ status: 'done', removedAt: expect.any(String) });
+    expect(target.journal.database.select().from(entrants).where(eq(entrants.id, body.entrantId)).get()?.address).toBeNull();
+    expect(mayMove(runId, body.entrantId, 2, 'self')).toBe(true);
+    new ExternalStatus(target.journal).set(runId, body.entrantId, 'working');
+    expect(target.manager.snapshot(runId).entrants.find((entrant) => entrant.id === body.entrantId)?.status).toBe('done');
   });
 
   it('creates a lane, journals its declared fields, and stores only an arena token hash', async () => {
@@ -163,9 +172,9 @@ describe('external entrant join', () => {
     if (original?.kind !== 'external' || lane?.kind !== 'external') throw new Error('Missing external lane');
     expect(lane.joinedAt).toBe(original.joinedAt);
     expect((await progress(target, tokens.get(target)!)).statusCode).toBe(200);
-    expect((await progress(target, tokens.get(target)!, 2)).statusCode).toBe(200);
+    expect((await progress(target, tokens.get(target)!, 2)).statusCode).toBe(429);
     expect((await progress(target, tokens.get(target)!, 3)).statusCode).toBe(429);
-    expect(target.journal.after(runId, 0).filter((event) => event.type === 'entrant.joined')).toHaveLength(2);
+    expect(target.journal.after(runId, 0).filter((event) => event.type === 'entrant.joined')).toHaveLength(1);
   });
 
   it.each([
@@ -300,6 +309,9 @@ describe('external lane lifecycle', () => {
     expect(target.journal.after(runId, 0).find((event) => event.type === 'director.broadcast')?.payload)
       .toMatchObject({ targetEntrantIds: expect.arrayContaining([body.entrantId]) });
     expect((await target.app.inject({ method: 'POST', url: `/runs/${runId}/entrants/${body.entrantId}/restart`, headers })).statusCode).toBe(400);
+    await target.manager.remove(runId, body.entrantId);
+    expect((await target.app.inject({ method: 'POST', url: `/runs/${runId}/entrants/${body.entrantId}/steer`, headers, payload: { text: 'Try again' } })).statusCode).toBe(409);
+    expect(target.journal.after(runId, 0).filter((event) => event.source === body.entrantId && event.type === 'entrant.error')).toEqual([]);
     await target.manager.stop(runId);
   });
 

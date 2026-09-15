@@ -28,6 +28,10 @@ describe('openArenaDatabase', () => {
       expect(columns('inbox_messages').map((column) => column.name)).toEqual([
         'id', 'run_id', 'entrant_id', 'kind', 'text', 'created_at', 'delivered_at',
       ]);
+      expect(sqlite.prepare('PRAGMA index_list(inbox_messages)').all())
+        .toContainEqual(expect.objectContaining({ name: 'inbox_messages_run_id_entrant_id_delivered_at' }));
+      expect(sqlite.prepare('PRAGMA index_info(inbox_messages_run_id_entrant_id_delivered_at)').all())
+        .toEqual(['run_id', 'entrant_id', 'delivered_at'].map((name) => expect.objectContaining({ name })));
     } finally {
       sqlite.close();
     }

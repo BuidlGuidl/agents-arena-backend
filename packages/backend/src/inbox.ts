@@ -23,7 +23,7 @@ export class AgentInbox {
   private readonly polls: AgentRequestLimit;
 
   constructor(private readonly journal: EventJournal, now = Date.now) {
-    this.polls = new AgentRequestLimit(1, 1000, now);
+    this.polls = new AgentRequestLimit(1, 1000, now, journal);
   }
 
   unread(identity: AgentTokenRecord): number {

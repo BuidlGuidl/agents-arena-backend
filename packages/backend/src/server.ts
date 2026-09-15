@@ -95,10 +95,10 @@ const enterSchema = z.object({
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
   runId: z.string().min(1).optional(),
   name: z.string().min(1).max(40),
-  harness: z.string().max(80).optional(),
-  model: z.string().max(80).optional(),
-  effort: z.string().max(80).optional(),
-  url: z.string().max(200).url().refine((value) => /^https?:/i.test(value), {
+  harness: z.string().trim().min(1).max(80).optional(),
+  model: z.string().trim().min(1).max(80).optional(),
+  effort: z.string().trim().min(1).max(80).optional(),
+  url: z.string().trim().min(1).max(200).url().refine((value) => /^https?:/i.test(value), {
     message: 'url must use http or https',
   }).optional(),
 }).strict();

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type { AgentTokenRecord } from './agent-auth.js';
-import { AgentInputError, AgentRateLimitError } from './agent-limits.js';
+import { AgentInputError, AgentRateLimitError, agentLaneState } from './agent-limits.js';
 import type { ExternalStatus } from './adapters/external-status.js';
 import { mayMove, recordCurrentChallenge } from './ctf/challenge-tracker.js';
 import { CHALLENGE_COUNT } from './ctf/pack.js';
@@ -15,7 +15,11 @@ const agentProgressSchema = z.object({
 const AGENT_ANNOUNCE_INTERVAL_MS = 1_000;
 
 export class AgentProgress {
-  constructor(private readonly journal: EventJournal, private readonly status: ExternalStatus) {}
+  private readonly lastAnnouncedAtMs: Map<string, number>;
+
+  constructor(private readonly journal: EventJournal, private readonly status: ExternalStatus) {
+    this.lastAnnouncedAtMs = agentLaneState(journal);
+  }
 
   announce(identity: AgentTokenRecord, value: unknown): { ok: boolean; changed: boolean } {
     const body = agentProgressSchema.safeParse(value);
@@ -28,9 +32,11 @@ export class AgentProgress {
       return { ok: true, changed: false };
     }
     const now = Date.now();
+    const key = `${identity.runId}:${identity.entrantId}`;
+    const lastAnnouncedAtMs = this.lastAnnouncedAtMs.get(key);
     if (
-      identity.lastAnnouncedAtMs !== undefined
-      && now - identity.lastAnnouncedAtMs < AGENT_ANNOUNCE_INTERVAL_MS
+      lastAnnouncedAtMs !== undefined
+      && now - lastAnnouncedAtMs < AGENT_ANNOUNCE_INTERVAL_MS
     ) {
       throw new AgentRateLimitError(1);
     }
@@ -42,8 +48,8 @@ export class AgentProgress {
       });
       this.status.touch(identity.runId, identity.entrantId);
       this.journal.afterCommit(() => recordCurrentChallenge(identity.runId, identity.entrantId, challengeId, 'self'));
+      this.journal.afterCommit(() => this.lastAnnouncedAtMs.set(key, now));
     });
-    identity.lastAnnouncedAtMs = now;
     return { ok: true, changed: true };
   }
 }

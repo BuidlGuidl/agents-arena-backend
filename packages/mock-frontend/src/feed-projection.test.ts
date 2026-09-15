@@ -556,6 +556,14 @@ describe('deriveWaitingRoom', () => {
     };
   }
 
+  it('excludes external entrants from the funding roster', () => {
+    const external: EntrantSummary = {
+      ...entrant('external', '0x123'), kind: 'external', name: 'Agent', joinedAt: 'now',
+    };
+    expect(deriveWaitingRoom([entrant('hosted', null), external], [], 'awaiting_funding')
+      .map((entry) => entry.entrantId)).toEqual(['hosted']);
+  });
+
   it('marks every entrant pending before the seed signature derives an address', () => {
     const roster = deriveWaitingRoom(
       [entrant('codex-1', null), entrant('opencode-1', null)],

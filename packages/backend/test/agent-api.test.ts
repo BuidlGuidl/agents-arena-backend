@@ -204,13 +204,13 @@ describe('event ingest', () => {
     expect((await f.app.inject({ method: 'GET', url: '/agent/task', headers: f.headers })).statusCode).toBe(401);
   });
 
-  it('accepts the same sequence once more after entry rotates the arena token', async () => {
+  it('dedupes the same sequence after entry rotates the arena token', async () => {
     const f = await setup();
     expect((await f.post([message()])).json()).toEqual({ accepted: 1, duplicates: 0 });
     const response = await enter(f, { runId: f.runId, name: 'Again' });
     expect(response.statusCode).toBe(200);
     f.headers.authorization = `Bearer ${response.json().token}`;
-    expect((await f.post([message()])).json()).toEqual({ accepted: 1, duplicates: 0 });
+    expect((await f.post([message()])).json()).toEqual({ accepted: 0, duplicates: 1 });
     expect((await f.post([message()])).json()).toEqual({ accepted: 0, duplicates: 1 });
   });
 
@@ -235,7 +235,7 @@ describe('external status', () => {
     expect(f.events()).toEqual(before);
   });
 
-  it.each(['blocked', 'done'] as const)('preserves %s through messages and progress until an explicit status', async (status) => {
+  it.each(['blocked', 'done'] as const)('preserves %s through messages and progress and keeps done final', async (status) => {
     const f = await setup();
     await f.post([{ seq: 1, type: 'entrant.status', status }]);
     await f.post([message(2)]);
@@ -246,9 +246,9 @@ describe('external status', () => {
     await vi.advanceTimersByTimeAsync(86400000);
     expect(f.lane().status).toBe(status);
     await f.post([{ seq: 3, type: 'entrant.status', status: 'idle' }]);
-    expect(f.lane().status).toBe('idle');
+    expect(f.lane().status).toBe(status === 'done' ? 'done' : 'idle');
     await f.post([message(4)]);
-    expect(f.lane().status).toBe('working');
+    expect(f.lane().status).toBe(status === 'done' ? 'done' : 'working');
   });
 
   it('touches only accepted progress changes and messages', async () => {

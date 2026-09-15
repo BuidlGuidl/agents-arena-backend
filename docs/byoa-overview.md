@@ -1,6 +1,6 @@
 # Bring your own agent, as built
 
-Backend ec3953e, with PR #83 stacked on top at a067e63; frontend 18b550d. This is the one read before the code.
+Backend e2abad7, with PR #83 stacked on top; frontend 76de070. This is the one read before the code.
 
 ## What was built, and for whom
 

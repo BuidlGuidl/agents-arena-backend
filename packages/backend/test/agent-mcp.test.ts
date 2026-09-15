@@ -185,6 +185,40 @@ describe('arena MCP', () => {
         ['get_task', 'set_current_challenge', 'post_note', 'read_inbox'].includes(tool.name));
     }
     expect(expected.result.tools[0].annotations.readOnlyHint).toBe(true);
+    expect(expected.result.tools[2].annotations.readOnlyHint).toBe(true);
+    const [prove, enter, task, challenge, note, inbox] = expected.result.tools;
+    expect(enter.inputSchema.required).toEqual(['address', 'nonce', 'signature', 'name']);
+    expect(enter.inputSchema.properties.name).toEqual({ type: 'string', minLength: 1, maxLength: 40, description: 'Your name on the board.' });
+    for (const [key, description] of Object.entries({
+      harness: 'The coding agent you run in, if you know it. Shown on the board as declared by you.',
+      model: 'The model you run on, if you know it. Shown on the board as declared by you.',
+      effort: 'Your reasoning effort, if you know it. Shown on the board as declared by you.',
+    })) {
+      expect(enter.inputSchema.properties[key]).toEqual({ type: 'string', minLength: 1, maxLength: 80, description });
+    }
+    expect(enter.inputSchema.properties.url).toMatchObject({ type: 'string', format: 'uri', maxLength: 200, description: 'Your HTTP or HTTPS link, shown on the board as declared by you.' });
+    const urlPattern = new RegExp(enter.inputSchema.properties.url.pattern);
+    expect(urlPattern.test('HTTPS://arena.test')).toBe(true);
+    expect(urlPattern.test('file:///tmp/x')).toBe(false);
+    expect(challenge.inputSchema.properties.challengeId).toEqual({ type: 'integer', minimum: 1, maximum: 12, description: 'The challenge id, 1 to 12.' });
+    expect(note.inputSchema.properties.text).toEqual({ type: 'string', minLength: 1, maxLength: 4000, description: 'What you are doing or how the last attempt went.' });
+    expect(inbox.inputSchema.properties.after).toEqual({
+      type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0, description: 'The cursor from your last read_inbox result.',
+    });
+    expect(inbox.inputSchema.required).toEqual(['token']);
+    expect(prove.inputSchema.required).toEqual(['address']);
+    expect(prove.inputSchema.properties.address).toEqual({ type: 'string', pattern: '^0x[0-9a-fA-F]{40}$', description: 'The wallet address you race as.' });
+    expect(enter.inputSchema.properties.address).toEqual({ ...prove.inputSchema.properties.address, description: 'The wallet address you race as, the same one that signed.' });
+    expect(enter.inputSchema.properties.nonce).toEqual({ type: 'string', description: 'The nonce from request_nonce.' });
+    expect(enter.inputSchema.properties.signature).toEqual({ type: 'string', pattern: '^0x[0-9a-fA-F]{130}$', description: 'The sentence from request_nonce, signed by that wallet.' });
+    expect(enter.inputSchema.properties.runId).toEqual({ type: 'string', description: 'Only needed when more than one run is open.' });
+    expect(task.inputSchema.required).toEqual(['token']);
+    expect(challenge.inputSchema.required).toEqual(['token', 'challengeId']);
+    expect(note.inputSchema.required).toEqual(['token', 'text']);
+    expect(note.inputSchema.properties.status).toEqual({ type: 'string', enum: ['working', 'idle', 'blocked', 'done'], description: 'working, idle, blocked, or done.' });
+    for (const tool of [task, challenge, note, inbox]) {
+      expect(tool.inputSchema.properties.token).toEqual({ type: 'string', description: 'Your arena token from enter_run.' });
+    }
   });
 
   it.each(['missing', 'wrong', 'removed', 'stopped', 'rotated'])('returns the fixed sentence for each lane tool with a %s arena token', async (kind) => {
@@ -343,9 +377,9 @@ describe('arena MCP', () => {
     expect(response.structuredContent.error).toBe(`Already racing in run ${f.runId}. Finish or leave that race first.`);
   });
 
-  it('checks lane membership before challenge bounds', async () => {
+  it.each([0, 13, Number.MAX_SAFE_INTEGER + 1])('checks lane membership before challenge bounds for %s', async (challengeId) => {
     const f = setup();
-    const response = await call(f, 'set_current_challenge', { challengeId: 13 }, f.token);
+    const response = await call(f, 'set_current_challenge', { challengeId }, f.token);
     expect(response.isError).toBe(true);
     expect(response.structuredContent.error).toBe(tokenText);
   });
@@ -377,6 +411,7 @@ describe('arena MCP', () => {
     ['post_note', { text: 'note', status: 'unknown' }],
     ['read_inbox', { after: -1 }],
     ['read_inbox', { after: 1.5 }],
+    ['read_inbox', { after: Number.MAX_SAFE_INTEGER + 1 }],
   ])('rejects invalid %s arguments at runtime', async (name, args) => {
     const f = await joined();
     const before = f.journal.after(f.runId, 0);
@@ -385,11 +420,11 @@ describe('arena MCP', () => {
     expect(f.journal.after(f.runId, 0)).toEqual(before);
   });
 
-  it('returns the fixed unknown-challenge text', async () => {
+  it.each([0, 13, Number.MAX_SAFE_INTEGER + 1])('returns the fixed unknown-challenge text for %s', async (challengeId) => {
     const f = await joined();
-    const response = await call(f, 'set_current_challenge', { challengeId: 13 }, f.token);
+    const response = await call(f, 'set_current_challenge', { challengeId }, f.token);
     expect(response.isError).toBe(true);
-    expect(response.structuredContent.error).toBe('Challenge 13 is not in this race. Call get_task for the valid ids.');
+    expect(response.structuredContent.error).toBe(`Challenge ${challengeId} is not in this race. Call get_task for the valid ids.`);
   });
 
   it('keeps unexpected failures as server errors without leaking details', async () => {

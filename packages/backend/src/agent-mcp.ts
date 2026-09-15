@@ -1,84 +1,65 @@
 import { originValidation } from '@modelcontextprotocol/fastify';
 import { toNodeHandler } from '@modelcontextprotocol/node';
-import { createMcpHandler, fromJsonSchema, ProtocolError, Server, type CallToolResult, type Tool } from '@modelcontextprotocol/server';
+import { createMcpHandler, ProtocolError, Server, type CallToolResult, type Tool } from '@modelcontextprotocol/server';
 import type { FastifyInstance, onRequestAsyncHookHandler } from 'fastify';
+import { z } from 'zod';
 
 import { resolveAgentToken, type ArenaTokens } from './agent-auth.js';
 import type { AgentIngest } from './agent-ingest.js';
+import { challengeIdSchema, inputSchemas, tokenSchema } from './agent-input.js';
 import { AgentRateLimitError } from './agent-limits.js';
 import type { AgentProgress } from './agent-progress.js';
 import type { SiweLogin } from './siwe.js';
 import { AGENT_MCP_TOOLS, enterMessage, type EntrantStatus, type EnterRequest, type EnterResponse } from './contract.js';
-import { CHALLENGE_COUNT } from './ctf/pack.js';
 import type { AgentInbox } from './inbox.js';
 import { JoinConflictError, JoinRejectedError, RemovedWalletError, RunNotFoundError, type RunManager } from './run-manager.js';
 import { JoinAuthenticationError } from './signed-message.js';
 
-const shortText = { type: 'string', minLength: 1, maxLength: 80 } as const;
+function inputSchema(schema: z.ZodObject): Tool['inputSchema'] {
+  const { $schema, ...jsonSchema } = z.toJSONSchema(schema, { io: 'input' });
+  // The SDK caps its recursive JSON type; Zod's JSON Schema type has no depth cap.
+  return { ...jsonSchema, type: 'object' } as Tool['inputSchema'];
+}
 type NamedTools<Names extends readonly string[]> = { [Index in keyof Names]: Tool & { name: Names[Index] } };
-const tokenProperty = { type: 'string', description: 'Your arena token from enter_run.' } as const;
 const tools = [
   {
     name: 'request_nonce',
     description: 'Call first to race in Agents Arena. Returns the sentence to sign with your wallet and the nonce inside it; the nonce is single use and lasts ten minutes.',
-    inputSchema: { type: 'object', additionalProperties: false, required: ['address'], properties: { address: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$', description: 'The wallet address you race as.' } } },
+    inputSchema: inputSchema(inputSchemas.request_nonce),
     annotations: { readOnlyHint: true },
   },
   {
     name: 'enter_run',
     description: 'Enter the race. Call after request_nonce with the nonce and the signed sentence. Returns your arena token; pass it to every other tool.',
-    inputSchema: {
-      type: 'object', additionalProperties: false, required: ['name', 'address', 'nonce', 'signature'],
-      properties: {
-        address: { type: 'string', pattern: '^0x[0-9a-fA-F]{40}$', description: 'The wallet address you race as, the same one that signed.' }, nonce: { type: 'string', description: 'The nonce from request_nonce.' }, signature: { type: 'string', pattern: '^0x[0-9a-fA-F]{130}$', description: 'The sentence from request_nonce, signed by that wallet.' },
-        runId: { type: 'string', description: 'Only needed when more than one run is open.' }, name: { type: 'string', minLength: 1, maxLength: 40, description: 'Your name on the board.' },
-        harness: { ...shortText, description: 'The coding agent you run in, if you know it. Shown on the board as declared by you.' },
-        model: { ...shortText, description: 'The model you run on, if you know it. Shown on the board as declared by you.' },
-        effort: { ...shortText, description: 'Your reasoning effort, if you know it. Shown on the board as declared by you.' },
-        url: { type: 'string', format: 'uri', pattern: '^[hH][tT][tT][pP][sS]?://', maxLength: 200, description: 'Your HTTP or HTTPS link, shown on the board as declared by you.' },
-      },
-    },
+    inputSchema: inputSchema(inputSchemas.enter_run),
   },
   {
     name: 'get_task',
     description: 'Call after entering to read the briefing and check whether the race has started.',
-    inputSchema: { type: 'object', additionalProperties: false, required: ['token'], properties: { token: tokenProperty } },
+    inputSchema: inputSchema(inputSchemas.get_task),
     annotations: { readOnlyHint: true },
   },
   {
     name: 'set_current_challenge',
     description: 'Call when you start a challenge, with its id from 1 to 12. The board shows which challenge your lane is on.',
-    inputSchema: {
-      type: 'object', additionalProperties: false, required: ['token', 'challengeId'],
-      properties: { token: tokenProperty, challengeId: { type: 'integer', minimum: 1, maximum: CHALLENGE_COUNT, description: 'The challenge id, 1 to 12.' } },
-    },
+    inputSchema: inputSchema(inputSchemas.set_current_challenge),
   },
   {
     name: 'post_note',
     description: 'Call between steps to say what you are doing, and after each attempt to say how it went. Optionally set your status.',
-    inputSchema: {
-      type: 'object', additionalProperties: false, required: ['token', 'text'],
-      properties: {
-        token: tokenProperty, text: { type: 'string', minLength: 1, maxLength: 4000, description: 'What you are doing or how the last attempt went.' },
-        status: { type: 'string', enum: ['working', 'idle', 'blocked', 'done'], description: 'working, idle, blocked, or done.' },
-      },
-    },
+    inputSchema: inputSchema(inputSchemas.post_note),
   },
   {
     name: 'read_inbox',
     description: 'Call between steps, or when inbox.unread is positive, to read messages from the race operator. Pass the cursor from your last result, or omit it to start from the beginning.',
-    inputSchema: {
-      type: 'object', additionalProperties: false,
-      required: ['token'], properties: { token: tokenProperty, after: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0, description: 'The cursor from your last read_inbox result.' } },
-    },
+    inputSchema: inputSchema(inputSchemas.read_inbox),
   },
 ] satisfies NamedTools<typeof AGENT_MCP_TOOLS>;
-const validators = new Map(tools.map((tool) => {
-  // Validate the argument shape first; challenge bounds get an actionable tool result after the lane check.
-  const schema = tool.name === 'set_current_challenge'
-    ? { ...tool.inputSchema, properties: { token: tokenProperty, challengeId: { type: 'integer' } } }
-    : tool.inputSchema;
-  return [String(tool.name), fromJsonSchema<Record<string, unknown>>(schema)];
+// Check only the integer shape here. Range errors follow the token check below.
+// z.int() rejects unsafe integers before that check.
+const validators = new Map<string, z.ZodType<Record<string, unknown>>>(Object.entries({
+  ...inputSchemas,
+  set_current_challenge: z.strictObject({ token: tokenSchema, challengeId: z.number().refine(Number.isInteger) }),
 }));
 const reporting = 'Call post_note between steps to say what you are doing and how you are approaching the challenge, ' +
   'and after each attempt, success or failure. Call set_current_challenge when you start a challenge. ' +
@@ -137,11 +118,11 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
         return result({ error: 'This call needs a live arena token. Call request_nonce, sign the sentence with your wallet, then enter_run to get one. If your context was reset, do both again with the same wallet.' }, true);
       }
       try {
-        const parsed = await validator['~standard'].validate(input);
-        if (parsed.issues !== undefined) {
-          throw new ProtocolError(-32602, `Invalid arguments for ${name}: ${parsed.issues[0]?.message}`);
+        const parsed = validator.safeParse(input);
+        if (!parsed.success) {
+          throw new ProtocolError(-32602, `Invalid arguments for ${name}: ${parsed.error.issues[0]?.message}`);
         }
-        const { token: _token, ...args } = parsed.value;
+        const { token: _token, ...args } = parsed.data;
         if (name === 'request_nonce') {
           const address = args.address as string;
           const nonce = login.issueNonce();
@@ -161,7 +142,7 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
         } else {
           if (identity === undefined) throw new ProtocolError(-32603, 'Internal server error');
           lane = identity;
-          if (name === 'set_current_challenge' && (Number(args.challengeId) < 1 || Number(args.challengeId) > CHALLENGE_COUNT)) {
+          if (name === 'set_current_challenge' && !challengeIdSchema.safeParse(args.challengeId).success) {
             return result({ error: `Challenge ${args.challengeId} is not in this race. Call get_task for the valid ids.` }, true);
           }
           switch (name) {
@@ -176,7 +157,7 @@ export function mountAgentMcp(app: FastifyInstance, options: AgentMcpOptions): v
               output = { accepted: posted.accepted };
               break;
             }
-            case 'read_inbox': output = { ...inbox.read(lane, { after: String(args.after ?? 0) }) }; break;
+            case 'read_inbox': output = { ...inbox.read(lane, { after: String(args.after) }) }; break;
           }
         }
         const state = joinedState ?? manager.runState(lane.runId);

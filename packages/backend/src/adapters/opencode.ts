@@ -12,7 +12,7 @@ import {
 } from './harness-driver.js';
 import { registerCredentialSecrets } from './credential-secrets.js';
 import { OpenCodeEventParser } from './opencode-parser.js';
-import type { EntrantRecord, RunRecord } from './types.js';
+import type { HostedEntrantRecord, RunRecord } from './types.js';
 
 export interface OpenCodeDriverOptions extends HarnessDriverOptions {
   apiKey?: string;
@@ -36,13 +36,13 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
     return 'opencode';
   }
 
-  protected assertHarness(entrant: EntrantRecord): void {
+  protected assertHarness(entrant: HostedEntrantRecord): void {
     if (entrant.harness !== 'opencode') {
       throw new Error(`OpenCodeDriver cannot run harness ${entrant.harness}`);
     }
   }
 
-  protected async createContainer(run: RunRecord, entrant: EntrantRecord): Promise<EntrantContainer> {
+  protected async createContainer(run: RunRecord, entrant: HostedEntrantRecord): Promise<EntrantContainer> {
     const wallet = getWallet(run.id, entrant.id);
     const apiKey = this.apiKey ?? await readOpenRouterKey(this.authPath);
     if (apiKey === undefined || apiKey.length === 0) {
@@ -97,15 +97,15 @@ export class OpenCodeDriver extends HarnessEntrantDriver {
     return ['opencode', '--version'];
   }
 
-  protected startArgv(entrant: EntrantRecord, prompt: string): string[] {
+  protected startArgv(entrant: HostedEntrantRecord, prompt: string): string[] {
     return ['opencode', 'run', '--format', 'json', '--auto', '--thinking', '-m', entrant.model, prompt];
   }
 
-  protected resumeArgv(_entrant: EntrantRecord, sessionId: string, text: string): string[] {
+  protected resumeArgv(_entrant: HostedEntrantRecord, sessionId: string, text: string): string[] {
     return ['opencode', 'run', '--format', 'json', '--auto', '--thinking', '-s', sessionId, text];
   }
 
-  protected createParser(entrant: EntrantRecord): OpenCodeEventParser {
+  protected createParser(entrant: HostedEntrantRecord): OpenCodeEventParser {
     return new OpenCodeEventParser(entrant.id, this.logger);
   }
 

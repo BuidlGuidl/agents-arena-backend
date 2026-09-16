@@ -1,11 +1,18 @@
 import { randomUUID } from 'node:crypto';
 
-import { and, asc, count, desc, eq, inArray, max, ne, notInArray, sql } from 'drizzle-orm';
-import { getAddress, recoverTypedDataAddress, type Hex } from 'viem';
+import { and, asc, count, desc, eq, inArray, isNull, max, ne, notInArray, sql } from 'drizzle-orm';
+import { getAddress, recoverTypedDataAddress, type Address, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
+import { EntrantOperationError, EntrantUnavailableError } from './adapters/types.js';
+import { clearAgentLaneState } from './agent-limits.js';
+import { ExternalEntrants, declaredFields, toEntrantRecord } from './external-entrants.js';
+import { TERMINAL_RUN_STATES } from './contract.js';
+import { DEFAULT_PUBLIC_URL } from './config.js';
 import type {
   CreateRunRequest,
+  AgentTaskResponse,
+  EnterRequest,
   EntrantSolve,
   EntrantSummary,
   RosterEntry,
@@ -16,7 +23,7 @@ import type {
   SweepResult,
   SweepResponse,
 } from './contract.js';
-import { entrants, events, runs, scores } from './db/schema.js';
+import { entrants, externalEntrants, events, runs, scores } from './db/schema.js';
 import { ensureChainTables } from './chain/storage.js';
 import { activeChainProfile } from './chain/profile.js';
 import {
@@ -32,11 +39,11 @@ import {
   seedTypedData,
   type WalletRecord,
 } from './chain/wallet.js';
-import { buildOpeningPrompt, type OpeningPromptBuilder } from './ctf/prompt.js';
+import { buildTaskText, type OpeningPromptBuilder } from './ctf/prompt.js';
 import { roundUsd } from './pricing.js';
 import type { EventJournal } from './journal.js';
 import { dropCredentialSecrets } from './adapters/credential-secrets.js';
-import type { EntrantDriver, EntrantRecord, RunRecord } from './adapters/types.js';
+import type { EntrantDriver, EntrantRecord, HostedEntrantRecord, RunRecord } from './adapters/types.js';
 import { normalizeOperatorAddresses } from './siwe.js';
 
 export const LEGAL_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> = {
@@ -51,6 +58,9 @@ export const LEGAL_TRANSITIONS: Readonly<Record<RunState, readonly RunState[]>> 
   failed: [],
 };
 
+export class JoinConflictError extends Error {}
+export class JoinRejectedError extends Error {}
+export class RemovedWalletError extends Error {}
 export class RunNotFoundError extends Error {}
 export class EntrantNotFoundError extends Error {}
 export class InvalidTransitionError extends Error {}
@@ -154,8 +164,9 @@ export type NarrationWatch = (
 ) => void;
 
 export interface RunManagerOptions {
+  flagsHeld?: (address: Address) => Promise<number>;
+  getBlockNumber?: () => Promise<bigint>;
   prepareTimeoutMs?: number;
-  fundingTimeoutMs?: number;
   operatorAddresses?: readonly string[];
   solveWatch?: SolveWatch;
   narrationWatch?: NarrationWatch;
@@ -203,9 +214,10 @@ export const passThroughNarrationWatch: NarrationWatch = () => {};
 // The prompt names the chain's RPC and says where the challenge briefing lives,
 // so it follows the same profile the funding gate resolves (ADR-0009).
 export const profilePromptBuilder: OpeningPromptBuilder = (entrant) =>
-  buildOpeningPrompt(entrant, activeChainProfile);
+  buildTaskText(entrant, activeChainProfile, { publicUrl: DEFAULT_PUBLIC_URL });
 
 export class RunManager {
+  private readonly external: ExternalEntrants;
   private readonly inFlightStarts = new Map<string, Promise<RunSnapshot>>();
   private readonly inFlightSweeps = new Set<string>();
   private readonly startControllers = new Map<string, AbortController>();
@@ -216,7 +228,6 @@ export class RunManager {
   private readonly narrationWatchControllers = new Map<string, AbortController>();
   private readonly narrationStopTimers = new Map<string, NodeJS.Timeout>();
   private readonly prepareTimeoutMs: number;
-  private readonly fundingTimeoutMs: number | undefined;
   private readonly operatorAddresses: ReadonlySet<string>;
   private readonly solveWatch: SolveWatch;
   private readonly narrationWatch: NarrationWatch;
@@ -227,10 +238,10 @@ export class RunManager {
     private readonly journal: EventJournal,
     private readonly driver: EntrantDriver,
     private readonly fundingGate: FundingGate = passThroughFundingGate,
-    options: RunManagerOptions = {},
+    private readonly options: RunManagerOptions = {},
   ) {
+    this.external = new ExternalEntrants(journal.database);
     this.prepareTimeoutMs = options.prepareTimeoutMs ?? DEFAULT_PREPARE_TIMEOUT_MS;
-    this.fundingTimeoutMs = options.fundingTimeoutMs ?? activeChainProfile.fundingTimeoutMs;
     this.operatorAddresses = new Set(normalizeOperatorAddresses(options.operatorAddresses ?? []));
     this.solveWatch = options.solveWatch ?? passThroughSolveWatch;
     this.narrationWatch = options.narrationWatch ?? passThroughNarrationWatch;
@@ -278,6 +289,7 @@ export class RunManager {
         createdAt: now,
       }).run();
       transaction.insert(entrants).values((input.roster ?? preset.entrants).map((entrant) => ({
+          kind: 'hosted' as const,
           runId: id,
           id: entrant.id,
           harness: entrant.harness,
@@ -293,6 +305,118 @@ export class RunManager {
       await this.startForRequest(id);
     }
     return { run: this.snapshot(id), created: true };
+  }
+
+  agentTask(runId: string, entrantId: string): AgentTaskResponse {
+    const run = this.requireRun(runId);
+    const entrant = this.requireEntrant(runId, entrantId);
+    return {
+      runId, entrantId, state: run.state, startedAt: run.startedAt, deadlineAt: run.deadlineAt,
+      task: run.state === 'running' ? this.promptBuilder(entrant) : null,
+    };
+  }
+
+  private liveLane(address: string): { runId: string; entrantId: string } | undefined {
+    return this.journal.database.select({ runId: externalEntrants.runId, entrantId: externalEntrants.id })
+      .from(externalEntrants).innerJoin(runs, eq(runs.id, externalEntrants.runId))
+      .where(and(eq(externalEntrants.address, address), isNull(externalEntrants.removedAt),
+        notInArray(runs.state, TERMINAL_RUN_STATES)))
+      .orderBy(desc(externalEntrants.joinedAt)).get();
+  }
+
+  hasLane(runId: string, address: string): boolean {
+    return this.journal.database.select({ id: externalEntrants.id }).from(externalEntrants)
+      .where(and(eq(externalEntrants.runId, runId), eq(externalEntrants.address, getAddress(address)))).get() !== undefined;
+  }
+
+  selectJoinRun(runId?: string, address?: string): RunRecord {
+    if (runId !== undefined) return this.assertJoinable(runId);
+    const lane = address === undefined ? undefined : this.liveLane(getAddress(address));
+    if (lane !== undefined) return this.assertJoinable(lane.runId);
+    const open = this.journal.database.select().from(runs)
+      .where(notInArray(runs.state, TERMINAL_RUN_STATES)).all();
+    if (open.length === 0) throw new RunNotFoundError('No open run');
+    // With several open runs and no live lane, joining needs an explicit run id.
+    // The lobby invite carries ?run=<id> into the setup page's join sentence.
+    if (open.length > 1) throw new JoinConflictError(`More than one open run: ${open.map((run) => run.id).join(', ')}`);
+    return this.assertJoinable(open[0]!.id);
+  }
+
+  assertJoinable(runId: string): RunRecord {
+    const run = this.requireRun(runId);
+    if (TERMINAL_RUN_STATES.includes(run.state)) {
+      throw new JoinConflictError('The run has stopped');
+    }
+    return run;
+  }
+
+  async join(
+    input: Omit<EnterRequest, 'nonce' | 'signature'> & { runId: string; arenaTokenHash: string; claim: () => void },
+  ): Promise<{ entrantId: string; run: RunSnapshot; created: boolean }> {
+    const address = getAddress(input.address);
+    const entrantId = `ext-${address.slice(2, 14).toLowerCase()}`;
+    const result = this.journal.transaction(() => {
+      const run = this.assertJoinable(input.runId);
+      const live = this.liveLane(address);
+      if (live !== undefined && live.runId !== run.id) throw new JoinConflictError(`Already racing in run ${live.runId}`);
+      const previous = this.entrants(run.id).find((entrant) => entrant.id === entrantId);
+      if (previous?.kind === 'hosted' || (previous !== undefined && previous.address !== address)) {
+        throw new JoinConflictError('Entrant id is already in use');
+      }
+      if (previous?.kind === 'external' && previous.removedAt !== null) {
+        throw new RemovedWalletError('This wallet was removed from the run');
+      }
+      const entrant = {
+        runId: run.id, id: entrantId, kind: 'external' as const, address,
+        status: previous?.status ?? 'idle' as const, name: input.name,
+        ...declaredFields(input),
+        joinedAt: previous?.kind === 'external' ? previous.joinedAt : new Date().toISOString(),
+        removedAt: null,
+      };
+      if (previous === undefined) {
+        this.journal.database.insert(entrants).values({
+          runId: run.id, id: entrantId, kind: 'external', address, harness: null, model: null, status: 'idle',
+        }).run();
+      }
+      this.external.register(entrant, input.arenaTokenHash);
+      if (previous === undefined) this.journal.append(run.id, entrantId, 'entrant.joined', {
+        entrantId, kind: 'external', address, name: input.name, ...declaredFields(input),
+      });
+      input.claim();
+      return { run, entrant, created: previous === undefined };
+    });
+    if (result.created && result.run.state === 'running') {
+      await this.driver.start(result.run, result.entrant, this.promptBuilder(result.entrant));
+      const controller = this.narrationWatchControllers.get(input.runId);
+      if (controller !== undefined && !controller.signal.aborted) {
+        this.narrationWatch(result.run, [result.entrant], controller.signal);
+      }
+    }
+    return { entrantId, run: this.snapshot(input.runId), created: result.created };
+  }
+
+  async remove(runId: string, entrantId: string): Promise<void> {
+    const run = this.requireRun(runId);
+    const entrant = this.requireEntrant(runId, entrantId);
+    if (entrant.kind === 'hosted') throw new EntrantOperationError('Hosted entrants cannot be removed; stop the run');
+    if (entrant.removedAt !== null) throw new JoinConflictError('Entrant was already removed');
+    this.journal.transaction(() => this.removeLane(run, entrant));
+  }
+
+  private removeLane(run: RunRecord, entrant: EntrantRecord, reason?: string): void {
+    const runId = run.id;
+    const entrantId = entrant.id;
+    this.driver.finish?.(run, entrant);
+    this.external.markRemoved(runId, entrantId, new Date().toISOString(), reason);
+    // A set address means the solve poller must still watch this wallet.
+    this.journal.database.update(entrants).set({ address: null })
+      .where(and(eq(entrants.runId, runId), eq(entrants.id, entrantId))).run();
+    this.journal.append(runId, entrantId, 'entrant.removed', { entrantId, ...(reason === undefined ? {} : { reason }) });
+    this.journal.afterCommit(() => clearAgentLaneState(this.journal, runId, entrantId));
+  }
+
+  runState(runId: string): RunState {
+    return this.requireRun(runId).state;
   }
 
   // One transaction so solves, usage totals, and lastEventId describe the same
@@ -311,9 +435,15 @@ export class RunManager {
         const narration = narrationByEntrant.get(entrant.id);
         return {
           id: entrant.id,
-          harness: entrant.harness,
-          model: entrant.model,
-          ...(entrant.effort === null ? {} : { effort: entrant.effort }),
+          ...(entrant.kind === 'hosted' ? {
+            kind: 'hosted' as const, harness: entrant.harness, model: entrant.model,
+            ...(entrant.effort === null ? {} : { effort: entrant.effort }),
+          } : {
+            kind: 'external' as const, name: entrant.name, ...declaredFields(entrant),
+            joinedAt: entrant.joinedAt,
+            ...(entrant.removedAt === null ? {} : { removedAt: entrant.removedAt }),
+            ...(entrant.removedReason === undefined ? {} : { removedReason: entrant.removedReason }),
+          }),
           address: entrant.address,
           status: entrant.status,
           flags: solves.length,
@@ -383,6 +513,9 @@ export class RunManager {
       .run();
     const payload = reason === undefined ? { state: nextState } : { state: nextState, reason };
     this.journal.append(runId, 'run', 'run.state', payload);
+    if (TERMINAL_RUN_STATES.includes(nextState)) {
+      this.journal.afterCommit(() => clearAgentLaneState(this.journal, runId));
+    }
     return this.requireRun(runId);
   }
 
@@ -410,8 +543,8 @@ export class RunManager {
     if (this.inFlightStarts.has(runId)) {
       throw new SweepConflictError(`Cannot sweep run ${runId} while a start is in flight`);
     }
-    const runEntrants = this.entrants(runId).filter(
-      (entrant): entrant is EntrantRecord & { address: string } => entrant.address !== null,
+    const runEntrants = this.hostedEntrants(runId).filter(
+      (entrant): entrant is HostedEntrantRecord & { address: string } => entrant.address !== null,
     );
     if (run.seededBy === null || runEntrants.length === 0) {
       throw new SweepConflictError('Run has no seeded wallets to sweep');
@@ -616,7 +749,7 @@ export class RunManager {
       throw new SeedStateConflictError('Run is not awaiting a seed signature');
     }
 
-    const runEntrants = this.entrants(runId);
+    const runEntrants = this.hostedEntrants(runId);
     let addresses: ReadonlyMap<string, string>;
     try {
       addresses = deriveEntrantKeys(
@@ -738,12 +871,8 @@ export class RunManager {
           throw prepareFailure.reason;
         }
         run = this.transition(runId, 'awaiting_funding');
-        await withPhaseTimeout(
-          this.fundingGate(run, runEntrants, controller.signal),
-          this.fundingTimeoutMs,
-          'funding',
-          controller,
-        );
+        if (controller.signal.aborted) throw abortReason(controller.signal);
+        await this.fundingGate(run, this.hostedEntrants(runId), controller.signal);
         run = this.transition(runId, 'ready');
         // The director starts the race, not the last wallet to be topped up.
         // Funding is theirs to drive by hand, so the run parks here and a second
@@ -756,7 +885,42 @@ export class RunManager {
         throw new InvalidTransitionError(`Cannot start run ${runId} from ${run.state}`);
       }
 
-      run = this.transition(runId, 'running');
+      const checks: EntrantRecord[] = [];
+      const holdings: PromiseSettledResult<number>[] = [];
+      let block: bigint | null = null;
+      if (presetSubstrate(run.preset) !== 'fake') {
+        const unchecked = () => this.options.flagsHeld === undefined ? [] : this.entrants(runId).filter((entrant) =>
+          entrant.kind === 'external' && entrant.removedAt === null && entrant.address !== null
+          && !checks.some((checked) => checked.id === entrant.id));
+        let pending = unchecked();
+        do {
+          holdings.push(...await Promise.allSettled(pending.map(async (entrant) => this.options.flagsHeld!(getAddress(entrant.address!)))));
+          checks.push(...pending);
+          block = this.options.getBlockNumber === undefined ? null : await this.options.getBlockNumber();
+          if (controller.signal.aborted) throw abortReason(controller.signal);
+          // Joins can complete during either chain read. Include them before the transition.
+          pending = unchecked();
+        } while (pending.length > 0);
+      }
+      if (block !== null && block > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Start block exceeds the safe integer range');
+      if (controller.signal.aborted) throw abortReason(controller.signal);
+      this.journal.transaction(() => {
+        checks.forEach((checked, index) => {
+          const entrant = this.requireEntrant(runId, checked.id);
+          if (entrant.kind !== 'external' || entrant.removedAt !== null) return;
+          const held = holdings[index]!;
+          if (held.status === 'rejected') {
+            const message = "Could not verify this wallet's flags at the start. The operator may remove the lane.";
+            this.journal.append(runId, entrant.id, 'entrant.error', { entrantId: entrant.id, message });
+            console.warn(message, { runId, entrantId: entrant.id, error: held.reason });
+          } else if (held.value > 0) {
+            this.removeLane(run, entrant, `Removed at the start: this wallet minted ${held.value} ${held.value === 1 ? 'flag' : 'flags'} in the lobby. Every lane starts from zero flags.`);
+          }
+        });
+        this.journal.database.update(runs).set({ startBlock: block === null ? null : Number(block) }).where(eq(runs.id, runId)).run();
+        run = this.transition(runId, 'running');
+      });
+      runEntrants = this.entrants(runId).filter((entrant) => entrant.kind !== 'external' || entrant.removedAt === null);
       // Before the entrants start, so the first mint of the race is already covered.
       this.startSolveWatch(run, runEntrants);
       this.startNarrationWatch(run, runEntrants);
@@ -775,7 +939,7 @@ export class RunManager {
       if (!this.operatorStops.has(runId) && current.state !== 'failed' && current.state !== 'finished') {
         current = this.transition(runId, 'failed', errorMessage(error));
       }
-      await this.teardownEntrants(runId, current, runEntrants);
+      await this.teardownEntrants(runId, current, this.entrants(runId));
       throw error;
     }
   }
@@ -854,6 +1018,7 @@ export class RunManager {
     // Existence before state, as steer does: a name that was never on the roster
     // is a 404 whatever the run is doing, and the docs promise that.
     const entrant = this.requireEntrant(runId, entrantId);
+    if (entrant.kind === 'external') throw new EntrantOperationError('External entrants cannot be restarted');
     if (run.state !== 'running') {
       throw new InvalidTransitionError(
         `Cannot restart entrant ${entrantId} in run ${runId} in state ${run.state}`,
@@ -925,8 +1090,9 @@ export class RunManager {
     label: 'Steer' | 'Broadcast',
   ): Promise<SteerDelivery> {
     try {
-      return await this.driver.steer(run, entrant, text);
+      return await this.driver.steer(run, entrant, text, label === 'Broadcast' ? 'broadcast' : 'steer');
     } catch (error) {
+      if (entrant.kind === 'external' && error instanceof EntrantUnavailableError) throw error;
       this.journal.append(run.id, entrant.id, 'entrant.error', {
         entrantId: entrant.id,
         message: `${label} not delivered: ${errorMessage(error)}`,
@@ -973,6 +1139,7 @@ export class RunManager {
     ).finally(() => {
       dropRunKeys(runId);
       dropCredentialSecrets(runId);
+      clearAgentLaneState(this.journal, runId);
     });
     this.teardownPromises.set(runId, teardown);
     return teardown;
@@ -1051,12 +1218,13 @@ export class RunManager {
     const entrant = this.journal.database
       .select()
       .from(entrants)
+      .leftJoin(externalEntrants, and(eq(externalEntrants.runId, entrants.runId), eq(externalEntrants.id, entrants.id)))
       .where(and(eq(entrants.runId, runId), eq(entrants.id, entrantId)))
       .get();
     if (entrant === undefined) {
       throw new EntrantNotFoundError(`Entrant ${entrantId} does not exist in run ${runId}`);
     }
-    return entrant;
+    return toEntrantRecord(entrant);
   }
 
   private requireRun(runId: string): RunRecord {
@@ -1156,20 +1324,25 @@ export class RunManager {
     }]));
   }
 
+  private hostedEntrants(runId: string): HostedEntrantRecord[] {
+    return this.entrants(runId).filter((entrant) => entrant.kind === 'hosted');
+  }
+
   private entrants(runId: string): EntrantRecord[] {
     return this.journal.database
       .select()
       .from(entrants)
+      .leftJoin(externalEntrants, and(eq(externalEntrants.runId, entrants.runId), eq(externalEntrants.id, entrants.id)))
       .where(eq(entrants.runId, runId))
       .orderBy(asc(entrants.id))
-      .all();
+      .all().map(toEntrantRecord);
   }
 }
 
 function withPhaseTimeout<T>(
   action: Promise<T>,
-  timeoutMs: number | undefined,
-  phase: 'prepare' | 'funding',
+  timeoutMs: number,
+  phase: 'prepare',
   controller: AbortController,
 ): Promise<T> {
   const { signal } = controller;
@@ -1177,14 +1350,12 @@ function withPhaseTimeout<T>(
 
   return new Promise<T>((resolve, reject) => {
     let settled = false;
-    const timer = timeoutMs === undefined
-      ? undefined
-      : setTimeout(() => {
-        controller.abort(new Error(`${phase} phase timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-    timer?.unref();
+    const timer = setTimeout(() => {
+      controller.abort(new Error(`${phase} phase timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref();
     const cleanup = (): void => {
-      if (timer !== undefined) clearTimeout(timer);
+      clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
     };
     const resolveOnce = (value: T): void => {

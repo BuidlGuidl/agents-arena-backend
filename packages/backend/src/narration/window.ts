@@ -249,6 +249,8 @@ function describeEvent(event: ArenaEvent): string {
   switch (event.type) {
     case 'run.state':
       return `run → ${event.payload.state}${event.payload.reason ? ` (${detail(event.payload.reason)})` : ''}`;
+    case 'entrant.joined': return `entrant joined: ${detail(event.payload.name)}`;
+    case 'entrant.removed': return 'entrant removed by the operator';
     case 'entrant.status': return `status → ${event.payload.status}`;
     case 'agent.message': return `says: ${detail(event.payload.text)}`;
     case 'agent.reasoning': return `thinks: ${detail(event.payload.text)}`;

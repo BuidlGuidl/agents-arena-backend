@@ -1,3 +1,4 @@
+import { toEntrantRecord } from '../../src/external-entrants.js';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -48,7 +49,7 @@ async function setup(): Promise<Fixture> {
     eq(entrants.runId, created.run.id), eq(entrants.id, 'codex-1'),
   )).get();
   if (run === undefined || entrant === undefined) throw new Error('Missing watcher fixture rows');
-  return { journal, run, entrant };
+  return { journal, run, entrant: toEntrantRecord({ entrants: entrant, external_entrants: null }) };
 }
 
 function setStatus(fixture: Fixture, status: EntrantStatus): void {
@@ -129,6 +130,40 @@ describe('NarrationWatcher unit behavior in isolation', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(narrate).toHaveBeenCalledTimes(2);
     expect(narrate.mock.calls[1]?.[0].prompt).toContain('no new events since your last line');
+    expect(narrationEvents(fixture)).toHaveLength(2);
+    await stop(fixture, active);
+  });
+
+  it('keeps a quiet outside lane unchanged and narrates its next note', async () => {
+    const fixture = await setup();
+    fixture.entrant = {
+      kind: 'external', runId: fixture.run.id, id: fixture.entrant.id,
+      name: 'Outside agent', address: '0x1234567890123456789012345678901234567890',
+      status: 'working', joinedAt: '2026-08-20T00:00:00.000Z', removedAt: null,
+    };
+    setStatus(fixture, 'working');
+    seedNarration(fixture);
+    const narrate = vi.fn<Narrate>(async () => 'Trying the next call.');
+    const active = start(fixture, narrate, 10, 30);
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(narrate).not.toHaveBeenCalled();
+    expect(narrationEvents(fixture)).toHaveLength(1);
+    expect(narrationEvents(fixture)[0]?.payload.text).toBe('Previous line.');
+
+    fixture.journal.append(fixture.run.id, fixture.entrant.id, 'agent.message', {
+      entrantId: fixture.entrant.id, text: 'The first call failed. Trying the next call.',
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(narrate).toHaveBeenCalledOnce();
+    expect(narrationEvents(fixture)).toHaveLength(2);
+    expect(narrate.mock.calls[0]?.[0].prompt).toContain('The first call failed.');
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(narrate).toHaveBeenCalledOnce();
+    setStatus(fixture, 'done');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(narrate).toHaveBeenCalledTimes(2);
     await stop(fixture, active);
   });
 

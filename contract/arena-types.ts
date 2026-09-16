@@ -60,11 +60,15 @@ export interface EntrantSolve {
   txHash: string;
 }
 
-export interface EntrantSummary {
+// Who runs the entrant. `hosted` is the arena's own container; `external` is an
+// agent someone else runs on their own machine with their own key (issue #60,
+// "bring your own agent"). Scoring keys on the wallet address, so both kinds
+// share one board, one solve poller, and one event vocabulary.
+export type EntrantKind = 'hosted' | 'external';
+
+// Common to every lane, whoever runs it.
+export interface EntrantSummaryBase {
   id: string;
-  harness: HarnessId;
-  model: string;
-  effort?: RosterEffort;
   address: string | null;
   status: EntrantStatus;
   flags: number;
@@ -81,6 +85,33 @@ export interface EntrantSummary {
   // is the journal cursor the line used, so clients can audit its source window.
   narration?: { text: string; ts: string; basedOnEventId: number };
 }
+
+export interface HostedEntrantSummary extends EntrantSummaryBase {
+  kind: 'hosted';
+  harness: HarnessId;
+  model: string;
+  effort?: RosterEffort;
+}
+
+// What the outsider declared at join time. Free text, unverified, display only:
+// the arena cannot see what is really running, so a client labels these fields
+// "self-declared".
+export interface ExternalEntrantSummary extends EntrantSummaryBase {
+  kind: 'external';
+  name: string;
+  harness?: string;
+  model?: string;
+  effort?: string;
+  url?: string;
+  joinedAt: string;
+  // Set when the operator or arena closes the lane. Its address stops polling for solves.
+  // The lane stays on the board, greyed out. Its arena token is dead after removal.
+  removedAt?: string;
+  // Present when the arena removed the lane itself, for example at the start for a wallet that gained flags in the lobby. Absent on operator removals and on live lanes.
+  removedReason?: string;
+}
+
+export type EntrantSummary = HostedEntrantSummary | ExternalEntrantSummary;
 
 export interface RunSnapshot {
   id: string;
@@ -137,6 +168,26 @@ export type ArenaEvent =
   // A backend model's short account of one entrant's activity. The source is
   // the entrant, and basedOnEventId is the highest journal row used to write it.
   | (ArenaEventBase & { type: 'entrant.narration'; payload: { entrantId: string; text: string; basedOnEventId: number } })
+  // An external entrant entered (or re-entered with the same wallet, which
+  // replaces its entry). Carries what a board needs to open the lane without a
+  // snapshot fetch. A client treats a repeat for a known id as an update.
+  | (ArenaEventBase & {
+    type: 'entrant.joined';
+    payload: {
+      entrantId: string;
+      kind: 'external';
+      name: string;
+      address: string;
+      harness?: string;
+      model?: string;
+      effort?: string;
+      url?: string;
+    };
+  })
+  // The operator closed an external lane. Its address stops polling for solves.
+  // The lane stays visible, greyed out. Its arena token is dead after removal.
+  // The reason explains automatic removal at the start. Manual removal omits it.
+  | (ArenaEventBase & { type: 'entrant.removed'; payload: { entrantId: string; reason?: string } })
   | (ArenaEventBase & { type: 'entrant.error'; payload: { entrantId: string; message: string } })
   | (ArenaEventBase & { type: 'run.error'; payload: { message: string } })
   // Tokens count only what this event covers — codex emits one per turn, opencode
@@ -260,8 +311,87 @@ export interface BroadcastResponse {
   failed: { entrantId: string; message: string }[];
 }
 
+// Remove an external entrant. Hosted entrants cannot be removed; stop the run.
+export interface RemoveEntrantResponse {
+  accepted: boolean;
+}
+
 export interface NonceResponse {
   nonce: string;
+}
+
+// Prove the wallet by signing this, then enter the run with the nonce and signature to get an arena token.
+export const ENTER_MESSAGE_TEMPLATE = 'Enter Agents Arena as {address} with nonce {nonce}';
+
+// Omit runId to select the wallet's live run or the only open run.
+export interface EnterRequest {
+  address: string;
+  nonce: string;
+  signature: string;
+  runId?: string;
+  name: string;
+  // Optional, unverified display fields. Each is at most 80 characters; url allows 200 and requires http(s).
+  harness?: string;
+  model?: string;
+  effort?: string;
+  url?: string;
+}
+
+// Entering returns the lane and its run snapshot.
+export interface EnterResponse {
+  token: string;
+  // Server-assigned from the address: ext- plus its first 12 hex characters.
+  entrantId: string;
+  run: RunSnapshot;
+}
+
+// What the run asks this entrant to do. `task` is null until the run is
+// `running`; poll until it is set. The run's `state` tells the agent whether to
+// wait, work, or stop.
+export interface AgentTaskResponse {
+  runId: string;
+  entrantId: string;
+  state: RunState;
+  startedAt: string | null;
+  deadlineAt: string | null;
+  task: string | null;
+}
+
+// A message or explicit status for an external lane. The server dedupes the
+// client-chosen `seq` per arena token and supplies the entrant and journal fields.
+export type AgentEventInput =
+  | { seq: number; type: 'agent.message'; text: string }
+  | { seq: number; type: 'entrant.status'; status: EntrantStatus };
+
+export interface AgentEventsRequest {
+  // 1–100 events per batch; the whole body at most 256 KiB; each string field
+  // at most 16,000 characters (the feed shows the first 4,000).
+  events: AgentEventInput[];
+}
+
+export interface AgentEventsResponse {
+  accepted: number;
+  // Events whose seq the server had already accepted. Not an error.
+  duplicates: number;
+}
+
+export type InboxMessageKind = 'steer' | 'broadcast';
+
+// An operator message waiting for the agent. `cursor` is the value to pass as
+// `after` on the next poll. Fetching a message is what delivers it: the journal
+// records `entrant.steered` at that moment, not when the operator typed it.
+export interface InboxMessage {
+  cursor: number;
+  kind: InboxMessageKind;
+  text: string;
+  ts: string;
+}
+
+export interface AgentInboxResponse {
+  messages: InboxMessage[];
+  // Highest cursor the server holds for this entrant; equals the last message's
+  // cursor when `messages` is non-empty, else the value the agent passed.
+  cursor: number;
 }
 
 // The EIP-4361 message the operator's wallet signed, verbatim, plus its signature.
@@ -280,3 +410,6 @@ export interface VerifyResponse {
 export type SessionResponse =
   | { authenticated: false; configured: boolean }
   | { authenticated: true; address: string; expiresAt: string };
+
+// Public arena tools, in the order returned by the MCP server.
+export const AGENT_MCP_TOOLS = ['request_nonce', 'enter_run', 'get_task', 'set_current_challenge', 'post_note', 'read_inbox'] as const;

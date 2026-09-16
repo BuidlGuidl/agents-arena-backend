@@ -5,6 +5,10 @@ import {
   DEFAULT_NARRATION_MIN_MS,
   DEFAULT_NARRATION_MODEL,
   resolveListenHost,
+  resolvePublicUrl,
+  resolveSiteUrl,
+  InvalidSiteUrlError,
+  MissingPublicUrlError,
   resolveNarrationConfig,
 } from '../src/config.js';
 
@@ -79,5 +83,38 @@ describe('resolveNarrationConfig', () => {
       OPENROUTER_API_KEY: 'key',
       ARENA_NARRATION_MIN_MS: value,
     })).toThrow('at least 1');
+  });
+});
+
+
+describe('resolvePublicUrl', () => {
+  it.each([undefined, '', '   '])('defaults to the local port for %j', (value) => {
+    expect(resolvePublicUrl('local', 4321, value)).toBe('http://localhost:4321');
+  });
+
+  it.each([undefined, '', '   ', 'arena.test', 'ftp://arena.test', 'http://'])
+    ('rejects missing or invalid deployment URLs: %j', (value) => {
+      expect(() => resolvePublicUrl('base', 4177, value)).toThrow(MissingPublicUrlError);
+      expect(() => resolvePublicUrl('baseSepolia', 4177, value)).toThrow('ARENA_PUBLIC_URL');
+    });
+
+  it.each(['local', 'base', 'baseSepolia'])('accepts HTTP and HTTPS for %s', (profile) => {
+    expect(resolvePublicUrl(profile, 4177, ' https://arena.test/ ')).toBe('https://arena.test');
+    expect(resolvePublicUrl(profile, 4177, 'http://arena.test:8080')).toBe('http://arena.test:8080');
+  });
+});
+
+describe('resolveSiteUrl', () => {
+  it('uses the explicit URL, else the first CORS origin, else the public URL', () => {
+    const publicUrl = 'https://arena.test/';
+    const corsOrigins = ['https://site.test/', 'https://other.test'];
+    expect(resolveSiteUrl(publicUrl, corsOrigins, ' https://explicit.test/ ')).toBe('https://explicit.test');
+    expect(resolveSiteUrl(publicUrl, corsOrigins)).toBe('https://site.test');
+    expect(resolveSiteUrl(publicUrl, corsOrigins, ' ')).toBe('https://site.test');
+    expect(resolveSiteUrl(publicUrl)).toBe('https://arena.test');
+    expect(resolveSiteUrl(publicUrl, [], 'http://localhost:3001/')).toBe('http://localhost:3001');
+    for (const value of ['ftp://site.test', 'not a URL']) {
+      expect(() => resolveSiteUrl(publicUrl, corsOrigins, value)).toThrow(InvalidSiteUrlError);
+    }
   });
 });

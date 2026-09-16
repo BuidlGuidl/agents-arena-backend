@@ -166,7 +166,7 @@ export function deriveWaitingRoom(
   entries: FeedEntry[],
   runState: RunState | undefined,
 ): WaitingRoomEntry[] {
-  return entrants.map((entrant) => {
+  return entrants.filter((entrant) => entrant.kind !== 'external').map((entrant) => {
     const events = entriesForSource(entries, entrant.id).map((entry) => entry.event);
     const wallet = deriveLaneWallet(events, entrant.address, runState);
     return {
@@ -184,6 +184,8 @@ export function deriveWaitingRoom(
 // know renders through the raw fallback so the feed never blanks out.
 export function describeEvent(event: ArenaEvent): string {
   switch (event.type) {
+    case 'entrant.removed':
+      return `${event.payload.entrantId} removed${event.payload.reason ? `. ${event.payload.reason}` : ''}`;
     case 'run.state':
       return `run → ${event.payload.state}${event.payload.reason ? ` (${event.payload.reason})` : ''}`;
     case 'entrant.status':

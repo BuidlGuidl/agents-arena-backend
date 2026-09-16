@@ -17,6 +17,16 @@ export function projectSnapshot(current: RunSnapshot | undefined, event: ArenaEv
         : entrant),
     };
   }
+  if (event.type === 'entrant.removed') {
+    return {
+      ...current,
+      lastEventId: event.id,
+      entrants: current.entrants.map((entrant) => entrant.id === event.payload.entrantId && entrant.kind === 'external'
+        ? { ...entrant, removedAt: event.ts, status: 'done', currentChallengeId: null,
+          ...(event.payload.reason === undefined ? {} : { removedReason: event.payload.reason }) }
+        : entrant),
+    };
+  }
   if (event.type === 'score.flag') {
     return {
       ...current,

@@ -1,0 +1,510 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { agentMcpOriginGuard } from '../src/agent-mcp.js';
+import { privateKeyToAccount } from 'viem/accounts';
+import { racer } from './enter-helper.js';
+import { AGENT_MCP_TOOLS } from '../src/contract.js';
+import { dropCurrentChallenge } from '../src/ctf/challenge-tracker.js';
+import { createServer, type ArenaServer } from '../src/server.js';
+import { serverHarness, noopDriver } from './fixtures/server.js';
+import { RegisteredEntrantDriver } from '../src/adapters/registered.js';
+
+const address = racer.address;
+const publicUrl = 'https://arena.test';
+const siteUrl = 'https://site.test';
+const tokenText = 'This call needs a live arena token. Call request_nonce, sign the sentence with your wallet, then enter_run to get one. If your context was reset, do both again with the same wallet.';
+const serverInstructions = 'These tools are for racing in Agents Arena, a capture-the-flag race between coding agents scored on-chain. ' +
+  'Use them only when the person running you asks you to enter or race. Do not call them during unrelated work. Entering takes two calls: request_nonce, then enter_run with the signed sentence. Every other tool needs the arena token that enter_run returns.';
+const servers = serverHarness((server) => {
+  for (const run of server.manager.list(200)) {
+    for (const entrant of server.manager.snapshot(run.id).entrants) dropCurrentChallenge(run.id, entrant.id);
+  }
+});
+afterEach(() => { vi.restoreAllMocks(); });
+
+function setup(options: Partial<Parameters<typeof createServer>[0]> = {}) {
+  const server = createServer({ dbPath: ':memory:', operatorToken: 'operator', publicUrl, siteUrl,
+    corsOrigins: [publicUrl], schedule: () => {}, flagsHeld: async () => 0, ...options });
+  servers.push(server);
+  return { ...server, token: 'invalid' };
+}
+
+function modern(server: ArenaServer, method: string, params: Record<string, unknown> = {}, token?: string,
+  headers: Record<string, string> = {}) {
+  if (method === 'tools/call' && token !== undefined && params.name !== 'enter_run' && params.name !== 'request_nonce') {
+    params = { ...params, arguments: { ...params.arguments as object, token: token } };
+  }
+  return server.app.inject({ method: 'POST', url: '/mcp', headers: {
+    accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2026-07-28', 'mcp-method': method,
+    ...(typeof params.name === 'string' ? { 'mcp-name': params.name } : {}),
+    ...(token === undefined ? {} : { authorization: `Bearer ${token}` }), ...headers,
+  }, payload: { jsonrpc: '2.0', id: 1, method, params: { ...params, _meta: {
+    'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': {},
+  } } } });
+}
+
+async function call(server: ArenaServer, name: string, args = {}, token?: string) {
+  if (name === 'enter_run') args = { ...await proof(server), ...args };
+  const response = await modern(server, 'tools/call', { name, arguments: args }, token);
+  expect(response.statusCode).toBe(200);
+  const body = response.json();
+  expect(body.error).toBeUndefined();
+  const result = body.result;
+  expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(result.structuredContent) }]);
+  return result;
+}
+
+async function proof(server: ArenaServer, account = racer) {
+  const result = await call(server, 'request_nonce', { address: account.address });
+  const { message, nonce } = result.structuredContent;
+  expect(result.structuredContent).toEqual({ message: `Enter Agents Arena as ${account.address} with nonce ${nonce}`, nonce: expect.any(String) });
+  return { address: account.address, nonce, signature: await account.signMessage({ message }) };
+}
+
+async function joined() {
+  const f = setup();
+  const { run } = await f.manager.create({ preset: 'fake-duel' });
+  const joined = await call(f, 'enter_run', { name: 'Agent', harness: 'codex', model: 'model' }, f.token);
+  expect(joined.structuredContent).toEqual({ entrantId: expect.any(String), token: expect.stringMatching(/^byoa_[0-9a-f]{48}$/),
+    message: 'You are in. Call get_task for the briefing.', run: { id: run.id, state: 'created' }, inbox: { unread: 0 } });
+  return { ...f, token: joined.structuredContent.token as string, runId: run.id, entrantId: joined.structuredContent.entrantId as string };
+}
+
+function legacyBody(body: string) {
+  return JSON.parse(body.split('\n').find((line) => line.startsWith('data: '))!.slice(6));
+}
+
+describe('arena MCP', () => {
+  it('skips chain reads for a fake run at join and start', async () => {
+    const flagsHeld = vi.fn(async () => { throw new Error('Unexpected chain read'); });
+    const getBlockNumber = vi.fn(async () => { throw new Error('Unexpected block read'); });
+    const f = setup({ flagsHeld, getBlockNumber });
+    const { run } = await f.manager.create({ preset: 'fake-duel' });
+    expect((await call(f, 'enter_run', { name: 'Agent' })).isError).not.toBe(true);
+    expect((await f.manager.start(run.id)).state).toBe('running');
+    expect(flagsHeld).not.toHaveBeenCalled();
+    expect(getBlockNumber).not.toHaveBeenCalled();
+  });
+  it('explains start-time removal to post_note and HTTP token holders', async () => {
+    const flagsHeld = vi.fn().mockResolvedValue(0);
+    const f = setup({ flagsHeld, getBlockNumber: async () => 123n, driverFactory: (journal, status) =>
+      new RegisteredEntrantDriver(journal, { status, hosted: noopDriver }) });
+    const { run } = await f.manager.create({ preset: 'docker-duel' });
+    const joined = await call(f, 'enter_run', { name: 'Agent' });
+    const token = joined.structuredContent.token as string;
+    for (const state of ['awaiting_signature', 'preparing', 'awaiting_funding', 'ready'] as const) f.manager.transition(run.id, state);
+    flagsHeld.mockResolvedValue(1);
+    await f.manager.start(run.id);
+    const reason = 'Removed at the start: this wallet minted 1 flag in the lobby. Every lane starts from zero flags.';
+    const response = await call(f, 'post_note', { text: 'hello' }, token);
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent.error).toBe(`This lane was removed. ${reason}`);
+    const http = await f.app.inject({ method: 'GET', url: '/agent/task', headers: { authorization: `Bearer ${token}` } });
+    expect(http.statusCode).toBe(401);
+    expect(http.json().error).toBe(`This lane was removed. ${reason}`);
+  });
+  it('keeps the post_note limit and joined event count after reentry', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const f = await joined();
+      for (let i = 0; i < 30; i++) {
+        expect((await call(f, 'post_note', { text: 'hello' }, f.token)).isError).not.toBe(true);
+      }
+      expect((await call(f, 'post_note', { text: 'over limit' }, f.token)).isError).toBe(true);
+      const rejoined = await call(f, 'enter_run', { name: 'Agent' });
+      expect(rejoined.structuredContent.token).not.toBe(f.token);
+      const refused = await call(f, 'post_note', { text: 'still over limit' }, rejoined.structuredContent.token);
+      expect(refused.isError).toBe(true);
+      expect(refused.structuredContent.error).toContain('Too fast');
+      expect(f.journal.after(f.runId, 0).filter((event) => event.type === 'entrant.joined')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns run state for post_note without taking a snapshot', async () => {
+    const f = await joined();
+    const snapshot = vi.spyOn(f.manager, 'snapshot');
+    const response = await call(f, 'post_note', { text: 'hello' }, f.token);
+    expect(response.structuredContent.run).toEqual({ id: f.runId, state: 'created' });
+    expect(snapshot).not.toHaveBeenCalled();
+  });
+
+  it('uses the entry snapshot for the enter_run trailer', async () => {
+    const f = setup();
+    const { run } = await f.manager.create({ preset: 'fake-duel' });
+    const snapshot = vi.spyOn(f.manager, 'snapshot');
+    const state = vi.spyOn(f.manager, 'runState');
+    const response = await call(f, 'enter_run', { name: 'Agent' });
+    expect(response.structuredContent.run).toEqual({ id: run.id, state: 'created' });
+    expect(snapshot).toHaveBeenCalledTimes(1);
+    expect(state).not.toHaveBeenCalled();
+  });
+
+  it('rejects a working note after removal and keeps done status', async () => {
+    const f = await joined();
+    await f.manager.remove(f.runId, f.entrantId);
+    const response = await call(f, 'post_note', { text: 'hello', status: 'working' }, f.token);
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent.error).toBe(tokenText);
+    expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe('done');
+  });
+
+  it('returns a tool error when a wallet already holds flags', async () => {
+    const f = setup({ flagsHeld: async () => 2 });
+    const { run } = await f.manager.create({ preset: 'docker-duel' });
+    const response = await call(f, 'enter_run', { name: 'Agent' });
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent.error).toBe('This wallet already holds flags from before this run. Enter with a wallet that holds none.');
+    expect(f.manager.hasLane(run.id, address)).toBe(false);
+  });
+
+  it('allows no Origin and rejects an Origin when no CORS origins are configured', async () => {
+    const f = setup({ corsOrigins: [] });
+    expect((await modern(f, 'tools/list')).statusCode).toBe(200);
+    expect((await modern(f, 'tools/list', {}, undefined, { origin: 'https://example.com' })).statusCode).toBe(403);
+  });
+
+  it('lists the same six tools publicly with absent, wrong, dead, and valid arena tokens', async () => {
+    const f = await joined();
+    const first = await modern(f, 'tools/list');
+    expect(first.statusCode).toBe(200);
+    const expected = first.json();
+    expect(expected.result.cacheScope).toBe('public');
+    expect(expected.result.tools.map((tool: { name: string }) => tool.name)).toEqual(['request_nonce', 'enter_run', 'get_task', 'set_current_challenge', 'post_note', 'read_inbox']);
+    for (const token of ['dead', f.token]) expect((await modern(f, 'tools/list', {}, token)).json()).toEqual(expected);
+    await f.manager.remove(f.runId, f.entrantId);
+    expect((await modern(f, 'tools/list', {}, f.token)).json()).toEqual(expected);
+    for (const tool of expected.result.tools) {
+      expect(tool.description.includes('Agents Arena')).toBe(tool.name === 'request_nonce');
+      for (const property of Object.values(tool.inputSchema.properties) as Array<{ description?: string }>) {
+        expect(property.description).toEqual(expect.stringMatching(/\S/));
+      }
+      expect(tool.inputSchema.additionalProperties).toBe(false);
+      expect(tool.inputSchema.required.includes('token')).toBe(
+        ['get_task', 'set_current_challenge', 'post_note', 'read_inbox'].includes(tool.name));
+    }
+    expect(expected.result.tools[0].annotations.readOnlyHint).toBe(true);
+    expect(expected.result.tools[2].annotations.readOnlyHint).toBe(true);
+    const [prove, enter, task, challenge, note, inbox] = expected.result.tools;
+    expect(enter.inputSchema.required).toEqual(['address', 'nonce', 'signature', 'name']);
+    expect(enter.inputSchema.properties.name).toEqual({ type: 'string', minLength: 1, maxLength: 40, description: 'Your name on the board.' });
+    for (const [key, description] of Object.entries({
+      harness: 'The coding agent you run in, if you know it. Shown on the board as declared by you.',
+      model: 'The model you run on, if you know it. Shown on the board as declared by you.',
+      effort: 'Your reasoning effort, if you know it. Shown on the board as declared by you.',
+    })) {
+      expect(enter.inputSchema.properties[key]).toEqual({ type: 'string', minLength: 1, maxLength: 80, description });
+    }
+    expect(enter.inputSchema.properties.url).toMatchObject({ type: 'string', format: 'uri', maxLength: 200, description: 'Your HTTP or HTTPS link, shown on the board as declared by you.' });
+    const urlPattern = new RegExp(enter.inputSchema.properties.url.pattern);
+    expect(urlPattern.test('HTTPS://arena.test')).toBe(true);
+    expect(urlPattern.test('file:///tmp/x')).toBe(false);
+    expect(challenge.inputSchema.properties.challengeId).toEqual({ type: 'integer', minimum: 1, maximum: 12, description: 'The challenge id, 1 to 12.' });
+    expect(note.inputSchema.properties.text).toEqual({ type: 'string', minLength: 1, maxLength: 4000, description: 'What you are doing or how the last attempt went.' });
+    expect(inbox.inputSchema.properties.after).toEqual({
+      type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0, description: 'The cursor from your last read_inbox result.',
+    });
+    expect(inbox.inputSchema.required).toEqual(['token']);
+    expect(prove.inputSchema.required).toEqual(['address']);
+    expect(prove.inputSchema.properties.address).toEqual({ type: 'string', pattern: '^0x[0-9a-fA-F]{40}$', description: 'The wallet address you race as.' });
+    expect(enter.inputSchema.properties.address).toEqual({ ...prove.inputSchema.properties.address, description: 'The wallet address you race as, the same one that signed.' });
+    expect(enter.inputSchema.properties.nonce).toEqual({ type: 'string', description: 'The nonce from request_nonce.' });
+    expect(enter.inputSchema.properties.signature).toEqual({ type: 'string', pattern: '^0x[0-9a-fA-F]{130}$', description: 'The sentence from request_nonce, signed by that wallet.' });
+    expect(enter.inputSchema.properties.runId).toEqual({ type: 'string', description: 'Only needed when more than one run is open.' });
+    expect(task.inputSchema.required).toEqual(['token']);
+    expect(challenge.inputSchema.required).toEqual(['token', 'challengeId']);
+    expect(note.inputSchema.required).toEqual(['token', 'text']);
+    expect(note.inputSchema.properties.status).toEqual({ type: 'string', enum: ['working', 'idle', 'blocked', 'done'], description: 'working, idle, blocked, or done.' });
+    for (const tool of [task, challenge, note, inbox]) {
+      expect(tool.inputSchema.properties.token).toEqual({ type: 'string', description: 'Your arena token from enter_run.' });
+    }
+  });
+
+  it.each(['missing', 'wrong', 'removed', 'stopped', 'rotated'])('returns the fixed sentence for each lane tool with a %s arena token', async (kind) => {
+    const f = await joined();
+    if (kind === 'removed') await f.manager.remove(f.runId, f.entrantId);
+    if (kind === 'stopped') { await f.manager.start(f.runId); await f.manager.stop(f.runId); }
+    if (kind === 'rotated') await call(f, 'enter_run', { name: 'Again' });
+    const token = kind === 'missing' ? undefined : kind === 'wrong' ? 'wrong' : f.token;
+    for (const name of AGENT_MCP_TOOLS.slice(2)) {
+      const result = await call(f, name, {}, token);
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toEqual({ error: tokenText });
+    }
+  });
+
+  it('rejects a malformed entry address as invalid params', async () => {
+    const f = setup();
+    const response = await modern(f, 'tools/call', { name: 'enter_run', arguments: {
+      name: 'Agent', ...await proof(f), address: 'bad',
+    } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().error).toMatchObject({ code: -32602, message: expect.stringContaining('Invalid arguments for enter_run:') });
+  });
+
+  it('rejects a wrong signer and a used nonce with the fixed entry sentence', async () => {
+    const f = await joined();
+    const args = { name: 'Again', ...await proof(f) };
+    const error = 'The signature does not match the address, or the nonce is unknown, expired, or already used. Call request_nonce again and sign the new sentence with the wallet you race as.';
+    const wrong = await modern(f, 'tools/call', { name: 'enter_run', arguments: {
+      ...args, address: '0x1234567890123456789012345678901234567890',
+    } });
+    expect(wrong.statusCode).toBe(200);
+    expect(wrong.json().result).toMatchObject({ isError: true, structuredContent: { error } });
+    expect(wrong.json().result.structuredContent).toEqual({ error });
+    const good = await modern(f, 'tools/call', { name: 'enter_run', arguments: args });
+    expect(good.statusCode).toBe(200);
+    expect(good.json().result.isError).toBeUndefined();
+    expect(good.json().result.structuredContent).toMatchObject({ entrantId: f.entrantId, token: expect.stringMatching(/^byoa_[0-9a-f]{48}$/) });
+    const replay = await modern(f, 'tools/call', { name: 'enter_run', arguments: args });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json().result).toMatchObject({ isError: true, structuredContent: { error } });
+    expect(replay.json().result.structuredContent).toEqual({ error });
+  });
+
+  it.each([{ name: 'Agent' }, { name: 'Agent', harness: 'codex' }])('joins with optional display fields omitted: %j', async (args) => {
+    const f = setup();
+    const { run } = await f.manager.create({ preset: 'fake-duel' });
+    const result = await call(f, 'enter_run', args, f.token);
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent.run.id).toBe(run.id);
+    expect(f.manager.snapshot(run.id).entrants.find((entrant) => entrant.id === result.structuredContent.entrantId))
+      .toMatchObject({ name: 'Agent' });
+  });
+
+  it('serves server instructions through modern discovery', async () => {
+    const response = await modern(setup(), 'server/discover');
+    expect(response.statusCode).toBe(200);
+    expect(response.json().result.instructions).toBe(serverInstructions);
+    expect(response.json().result.supportedVersions).toContain('2026-07-28');
+  });
+
+  it('joins without a run id and serves all tools with run state and unread counts', async () => {
+    const f = await joined();
+    const task = await call(f, 'get_task', {}, f.token);
+    expect(task.structuredContent).toMatchObject({ task: null, run: { id: f.runId, state: 'created' }, inbox: { unread: 0 } });
+    expect(task.structuredContent.instructions).toBe('The race has not started. Ask the person running you to say "go" when it starts, ' +
+      'or call get_task again in about thirty seconds. Do not start work until task is set.');
+    await f.manager.start(f.runId);
+    const briefing = await call(f, 'get_task', {}, f.token);
+    expect(briefing.structuredContent.run.state).toBe('running');
+    expect(briefing.structuredContent.task).toContain(
+      '- Report as you go through the arena tools, sending the arena token from enter_run on every call: call set_current_challenge before you start each challenge, ' +
+      'post_note after every attempt and at least every few minutes while you work, and read_inbox between steps. ' +
+      `If you do not have the tools, use the agent API at ${publicUrl}, documented at ${siteUrl}/arena/join.`,
+    );
+    expect(briefing.structuredContent.instructions).toBe('Call post_note between steps to say what you are doing and how you are approaching the challenge, ' +
+      'and after each attempt, success or failure. Call set_current_challenge when you start a challenge. ' +
+      'Call read_inbox between steps; inbox.unread tells you when there is something.');
+    const steer = await f.app.inject({ method: 'POST', url: `/runs/${f.runId}/entrants/${f.entrantId}/steer`,
+      headers: { authorization: 'Bearer operator' }, payload: { text: 'Try another approach' } });
+    expect(steer.statusCode).toBe(202);
+    expect((await call(f, 'get_task', {}, f.token)).structuredContent.inbox.unread).toBe(1);
+    const progress = await call(f, 'set_current_challenge', { challengeId: 3 }, f.token);
+    expect(progress.structuredContent).toEqual({ ok: true, changed: true, run: { id: f.runId, state: 'running' }, inbox: { unread: 1 } });
+    const note = await call(f, 'post_note', { text: 'The attempt failed', status: 'blocked' }, f.token);
+    expect(note.structuredContent).toEqual({ accepted: 2, run: { id: f.runId, state: 'running' }, inbox: { unread: 1 } });
+    expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe('blocked');
+    expect((await call(f, 'post_note', { text: 'Another attempt' }, f.token)).structuredContent.accepted).toBe(1);
+    expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe('blocked');
+    for (const status of ['idle', 'working', 'blocked', 'done']) {
+      expect((await call(f, 'post_note', { text: 'Status update', status }, f.token)).structuredContent.accepted).toBe(2);
+      expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)?.status).toBe(status);
+    }
+
+    const inbox = await call(f, 'read_inbox', {}, f.token);
+    expect(inbox.structuredContent).toMatchObject({ messages: [{ text: 'Try another approach', kind: 'steer' }],
+      cursor: expect.any(Number), run: { id: f.runId, state: 'running' }, inbox: { unread: 0 } });
+    expect((await call(f, 'get_task', {}, f.token)).structuredContent.inbox.unread).toBe(0);
+  });
+
+  it('rejoins an explicit run through the shared join rules', async () => {
+    const f = await joined();
+    await f.manager.start(f.runId);
+    const prompts = () => f.journal.after(f.runId, 0).filter((event) => event.source === f.entrantId && event.type === 'entrant.prompt');
+    const before = prompts().length;
+    const rejoin = await call(f, 'enter_run', { runId: f.runId, name: 'Updated', harness: 'codex', model: 'new-model' }, f.token);
+    expect(rejoin.structuredContent.entrantId).toBe(f.entrantId);
+    expect(rejoin.structuredContent.run.state).toBe('running');
+    expect(prompts()).toHaveLength(before);
+    expect(f.manager.snapshot(f.runId).entrants.find((entrant) => entrant.id === f.entrantId)).toMatchObject({
+      name: 'Updated', model: 'new-model',
+    });
+  });
+
+  it('shares event, progress, and inbox limits across HTTP and MCP', async () => {
+    const f = await joined();
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+    const headers = { authorization: `Bearer ${f.token}` };
+    for (let seq = 0; seq < 29; seq++) {
+      expect((await f.app.inject({ method: 'POST', url: '/agent/events', headers,
+        payload: { events: [{ seq, type: 'agent.message', text: 'attempt' }] } })).statusCode).toBe(200);
+    }
+    expect((await call(f, 'post_note', { text: 'last allowed' }, f.token)).isError).toBeUndefined();
+    expect((await call(f, 'post_note', { text: 'too fast' }, f.token)).structuredContent.error).toBe('Too fast. Try again in 10 seconds.');
+    expect((await f.app.inject({ method: 'GET', url: '/agent/inbox', headers })).statusCode).toBe(200);
+    const poll = await call(f, 'read_inbox', {}, f.token);
+    expect(poll.isError).toBe(true);
+    expect(poll.structuredContent.error).toBe('Too fast. Try again in 1 seconds.');
+    await call(f, 'set_current_challenge', { challengeId: 3 }, f.token);
+    expect((await f.app.inject({ method: 'POST', url: '/agent/progress', headers, payload: { challengeId: 4 } })).statusCode).toBe(429);
+    const progress = await call(f, 'set_current_challenge', { challengeId: 4 }, f.token);
+    expect(progress.isError).toBe(true);
+    expect(progress.structuredContent.error).toBe('Too fast. Try again in 1 seconds.');
+  });
+
+  it('keeps MCP notes out of HTTP sequence dedupe', async () => {
+    const f = await joined();
+    for (let i = 0; i < 2; i++) {
+      expect((await call(f, 'post_note', { text: 'MCP note', status: 'idle' }, f.token)).structuredContent.accepted).toBe(2);
+    }
+    const batch = () => f.app.inject({ method: 'POST', url: '/agent/events',
+      headers: { authorization: `Bearer ${f.token}` },
+      payload: { events: [-1, -2, 0, 1].map((seq) => ({ seq, type: 'agent.message', text: 'HTTP note' })) } });
+    expect((await batch()).json()).toEqual({ accepted: 4, duplicates: 0 });
+    expect((await batch()).json()).toEqual({ accepted: 0, duplicates: 4 });
+    expect(f.journal.after(f.runId, 0).filter((event) => event.type === 'agent.message')).toHaveLength(6);
+  });
+
+  it('tells a wallet in another live run to finish or leave that race', async () => {
+    const f = await joined();
+    const { run } = await f.manager.create({ preset: 'fake-duel' });
+    const response = await call(f, 'enter_run', {
+      runId: run.id, name: 'Agent', harness: 'codex', model: 'model',
+    }, f.token);
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent.error).toBe(`Already racing in run ${f.runId}. Finish or leave that race first.`);
+  });
+
+  it.each([0, 13, Number.MAX_SAFE_INTEGER + 1])('checks lane membership before challenge bounds for %s', async (challengeId) => {
+    const f = setup();
+    const response = await call(f, 'set_current_challenge', { challengeId }, f.token);
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent.error).toBe(tokenText);
+  });
+
+  it('includes the validation issue in post_note errors', async () => {
+    const f = await joined();
+    const response = await modern(f, 'tools/call', { name: 'post_note', arguments: { text: '' } }, f.token);
+    expect(response.json().error).toMatchObject({
+      code: -32602, message: expect.stringMatching(/^Invalid arguments for post_note: .+/),
+    });
+  });
+
+  it('names an invalid configured origin in the startup error', () => {
+    expect(() => agentMcpOriginGuard([publicUrl, 'bad origin']))
+      .toThrow('Invalid MCP CORS origin: "bad origin". Configure a valid URL.');
+  });
+
+  it.each([
+    ['enter_run', { name: 'Agent', harness: '', model: 'model' }],
+    ['enter_run', { harness: 'codex' }],
+    ['enter_run', { name: 'Agent', harness: 'codex', model: 'model', url: 'file:///tmp/x' }],
+    ['enter_run', { name: 'Agent', harness: 'codex', model: 'model', url: 'https://' }],
+    ['get_task', { credential: 'secret' }],
+    ['set_current_challenge', { challengeId: '3' }],
+    ['set_current_challenge', { challengeId: 1.5 }],
+    ['set_current_challenge', { challengeId: 13, extra: true }],
+    ['post_note', { text: '' }],
+    ['post_note', { text: 'a'.repeat(4001) }],
+    ['post_note', { text: 'note', status: 'unknown' }],
+    ['read_inbox', { after: -1 }],
+    ['read_inbox', { after: 1.5 }],
+    ['read_inbox', { after: Number.MAX_SAFE_INTEGER + 1 }],
+  ])('rejects invalid %s arguments at runtime', async (name, args) => {
+    const f = await joined();
+    const before = f.journal.after(f.runId, 0);
+    const response = await modern(f, 'tools/call', { name, arguments: args }, f.token);
+    expect(response.json().error.code).toBe(-32602);
+    expect(f.journal.after(f.runId, 0)).toEqual(before);
+  });
+
+  it.each([0, 13, Number.MAX_SAFE_INTEGER + 1])('returns the fixed unknown-challenge text for %s', async (challengeId) => {
+    const f = await joined();
+    const response = await call(f, 'set_current_challenge', { challengeId }, f.token);
+    expect(response.isError).toBe(true);
+    expect(response.structuredContent.error).toBe(`Challenge ${challengeId} is not in this race. Call get_task for the valid ids.`);
+  });
+
+  it('keeps unexpected failures as server errors without leaking details', async () => {
+    const f = await joined();
+    vi.spyOn(f.manager, 'agentTask').mockImplementation(() => { throw new Error('private backend detail'); });
+    const response = await modern(f, 'tools/call', { name: 'get_task' }, f.token);
+    expect(response.json().error).toMatchObject({ code: -32603, message: 'Internal server error' });
+    expect(response.body).not.toContain('private backend detail');
+  });
+
+  it('allows no Origin and exact configured Origins, rejects others, and preserves CORS headers', async () => {
+    const f = setup();
+    expect((await modern(f, 'tools/list')).statusCode).toBe(200);
+    const allowed = await modern(f, 'tools/list', {}, undefined, { origin: publicUrl });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.headers['access-control-allow-origin']).toBe(publicUrl);
+    for (const origin of ['https://evil.test', 'http://arena.test', 'https://arena.test:8443', 'null', 'bad origin']) {
+      expect((await modern(f, 'tools/list', {}, undefined, { origin })).statusCode).toBe(403);
+    }
+    const preflight = await f.app.inject({ method: 'OPTIONS', url: '/mcp', headers: { origin: publicUrl,
+      'access-control-request-method': 'POST', 'access-control-request-headers': 'MCP-Protocol-Version,Mcp-Method,Mcp-Name' } });
+    const deniedPreflight = await f.app.inject({ method: 'OPTIONS', url: '/mcp', headers: { origin: 'https://evil.test',
+      'access-control-request-method': 'POST' } });
+    expect(deniedPreflight.statusCode).toBe(403);
+    expect(preflight.statusCode).toBe(204);
+    expect(preflight.headers['access-control-allow-headers']).toContain('Mcp-Name');
+  });
+
+  it('rejects a mismatched modern method header with 400', async () => {
+    const response = await modern(setup(), 'tools/list', {}, undefined, { 'mcp-method': 'tools/call' });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe(-32020);
+  });
+
+  it('keeps concurrent callers in their own lanes', async () => {
+    const f = await joined();
+    const otherAccount = privateKeyToAccount(`0x${'02'.repeat(32)}`);
+    const other = await call(f, 'enter_run', { name: 'Other', ...await proof(f, otherAccount) });
+    const token = other.structuredContent.token as string;
+    await Promise.all([
+      call(f, 'post_note', { text: 'first wallet' }, f.token),
+      call(f, 'post_note', { text: 'second wallet' }, token),
+    ]);
+    const messages = f.journal.after(f.runId, 0).filter((event) => event.type === 'agent.message');
+    expect(messages.find((event) => event.payload.text === 'first wallet')?.source).toBe(f.entrantId);
+    expect(messages.find((event) => event.payload.text === 'second wallet')?.source).toBe(other.structuredContent.entrantId);
+  });
+
+  it('uses the argument arena token and shared inbox limit on the legacy path', async () => {
+    const f = await joined();
+    const response = await f.app.inject({ method: 'POST', url: '/mcp', headers: {
+      accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2025-06-18',
+      authorization: `Bearer ${f.token}`,
+    }, payload: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'read_inbox', arguments: { token: f.token } } } });
+    expect(response.statusCode).toBe(200);
+    const result = legacyBody(response.body).result;
+    expect(result.structuredContent).toEqual({ messages: [], cursor: 0,
+      run: { id: f.runId, state: 'created' }, inbox: { unread: 0 } });
+    expect(result.content).toEqual([{ type: 'text', text: JSON.stringify(result.structuredContent) }]);
+    expect((await call(f, 'read_inbox', {}, f.token)).structuredContent.error).toBe('Too fast. Try again in 1 seconds.');
+  });
+
+  it('serves a raw 2025-06-18 initialize and tool list without a method header or session', async () => {
+    const f = setup();
+    const headers = { accept: 'application/json, text/event-stream' };
+    const initialized = await f.app.inject({ method: 'POST', url: '/mcp', headers, payload: {
+      jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18',
+        capabilities: {}, clientInfo: { name: 'raw-test', version: '1.0.0' } },
+    } });
+    expect(initialized.statusCode).toBe(200);
+    expect(initialized.headers['mcp-session-id']).toBeUndefined();
+    expect(legacyBody(initialized.body).result.instructions).toBe(serverInstructions);
+    expect(legacyBody(initialized.body).result.protocolVersion).toBe('2025-06-18');
+    const listed = await f.app.inject({ method: 'POST', url: '/mcp', headers: { ...headers, 'mcp-protocol-version': '2025-06-18' },
+      payload: { jsonrpc: '2.0', id: 2, method: 'tools/list' } });
+    expect(listed.statusCode).toBe(200);
+    expect(legacyBody(listed.body).result.tools).toEqual((await modern(f, 'tools/list')).json().result.tools);
+    const noToken = await f.app.inject({ method: 'POST', url: '/mcp', headers: { ...headers, 'mcp-protocol-version': '2025-06-18' },
+      payload: { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_task', arguments: {} } } });
+    expect(legacyBody(noToken.body).result).toMatchObject({ isError: true, structuredContent: { error: tokenText } });
+    for (const method of ['GET', 'DELETE'] as const) expect((await f.app.inject({ method, url: '/mcp' })).statusCode).toBe(405);
+  });
+});

@@ -55,7 +55,7 @@ export async function runLocalDevFaucet(
 }
 
 function fundingEntries(runEntrants: readonly EntrantRecord[]): FundingEntry[] {
-  return runEntrants.map<FundingEntry>((entrant) => {
+  return runEntrants.filter((entrant) => entrant.kind === 'hosted').map<FundingEntry>((entrant) => {
     if (entrant.address === null) {
       throw new Error(`Entrant ${entrant.id} has no wallet address`);
     }
@@ -68,7 +68,7 @@ async function fundLocalEntrants(
   entries: readonly FundingEntry[],
   signal?: AbortSignal,
 ): Promise<void> {
-  if (profile.name !== 'local' || profile.chainId !== 31337) {
+  if (entries.length === 0 || profile.name !== 'local' || profile.chainId !== 31337) {
     return;
   }
   if (signal?.aborted) {

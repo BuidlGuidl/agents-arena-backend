@@ -31,7 +31,7 @@ One process owns a run: lifecycle, containers, credentials, the event journal, a
 - **Ready barrier** — all entrants prepare and hold. The run releases them together on one recorded start time, so boot time never decides the race.
 - **Steer** — an operator injects a free-text turn into a live agent mid-race. The idle auto-nudge from on-chain truth is designed but not wired; when it lands it will use the same injection path.
 - **Journal** — every fact is one append-only row with a global `id` and a per-source `seq`. The feed is a projection; a reconnect replays it.
-- **Chain profile** — selects addresses, RPC, confirmation depth, funding threshold, and funding timeout for the active chain.
+- **Chain profile** — selects addresses, RPC, confirmation depth, and funding threshold for the active chain.
 
 Transport is each CLI's line-JSON stdout (`codex --json`, `opencode --format json`, `claude --output-format stream-json`), normalized into one `ArenaEvent` stream. SSE, not websockets — `Last-Event-ID` replay is native and the traffic is asymmetric (a steer is a plain POST).
 
@@ -119,6 +119,13 @@ Set `AI_CTF_REPO` to the absolute path of your ai-ctf checkout, then fill in the
 credentials. Every variable is documented in that file. `ARENA_OPERATOR_TOKEN` is required
 and the server exits without it; any non-empty string works locally.
 
+`ARENA_PUBLIC_URL` sets the API URL that external entrants use to report progress.
+Outside the `local` chain profile, startup requires a valid HTTP(S) URL.
+Use an address that external entrants can reach. Local defaults to `http://localhost:<PORT>` (port 4177 unless set).
+
+`ARENA_SITE_URL` sets the website URL for `/arena/join` and accepts HTTP(S) URLs with the trailing slash stripped. An outside agent also reads its briefing from `<site>/llms.txt`, so a local tester needs the frontend running.
+When unset, it defaults to the first `ARENA_CORS_ORIGINS` entry, then to `ARENA_PUBLIC_URL`.
+
 `.env` at the repo root is loaded by `dev` and `start` through Node's own `--env-file`, so
 the operator token and the credentials live in one gitignored file instead of a shell
 prompt. A variable already exported in the shell wins over the file, which keeps one-off
@@ -194,8 +201,12 @@ when the host you are on is missing.
 
 "sign in with wallet" then appears in the mock frontend's header. Once you are signed
 in the dev proxy stops adding the token, so the buttons run on the session cookie and
-you are exercising the real path rather than a masked one. Without an allowlist the
-`/auth` routes answer `503` and the arena stays token-only.
+you are exercising the real path rather than a masked one. Without an allowlist, `/auth/verify` answers `503`.
+`/auth/nonce` always answers because external entrants also need a nonce to join.
+
+A wallet that already holds flags from before the run cannot enter; use a fresh wallet.
+The server checks outside wallets at join and again at the start. It removes lobby minters and shows the reason on the board. The poller ignores mints before the run's stored start block.
+`/auth/session` and `/auth/logout` still answer with `configured: false` when wallet login is off.
 
 ### Smoke tests
 

@@ -1,13 +1,30 @@
 import fastifyCors from '@fastify/cors';
 import { and, eq } from 'drizzle-orm';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
-import type { Hex } from 'viem';
+import { getAddress, type Address, type Hex } from 'viem';
 import { z } from 'zod';
 
+import { httpEnterSchema as enterSchema } from './agent-input.js';
+import { agentMcpOriginGuard, mountAgentMcp } from './agent-mcp.js';
+import { AgentIngest } from './agent-ingest.js';
+import { AgentProgress } from './agent-progress.js';
+import { JoinAuthenticationError, verifySignedMessage } from './signed-message.js';
+import { AgentInputError, AgentBatchTooLargeError, AgentRateLimitError, AGENT_BODY_LIMIT } from './agent-limits.js';
+import { AgentInbox } from './inbox.js';
+import { ExternalStatus } from './adapters/external-status.js';
+import { createChallengePackResolver, type ChallengePackAccess } from './ctf/resolve.js';
+import { declaredFields } from './external-entrants.js';
+import { flagsHeld } from './chain/flags-held.js';
+import { currentBlockNumber } from './chain/block-number.js';
+import { activeChainProfile } from './chain/profile.js';
+import { buildTaskText } from './ctf/prompt.js';
 import {
+  enterMessage,
   HARNESS_IDS,
   ROSTER_EFFORTS,
   type ArenaEvent,
+  type AgentTaskResponse,
+  type EnterRequest,
   type BroadcastResponse,
   type CreateRunRequest,
   type RestartResponse,
@@ -18,8 +35,8 @@ import {
 } from './contract.js';
 import { OpenRouterUnavailableError, createAgentRegistry, rosterIssues, type AgentRegistry } from './agents/registry.js';
 import type { Schedule } from './adapters/fake.js';
-import { resolveAgentToken } from './agent-auth.js';
-import { mayMove, recordCurrentChallenge, useSolvedLookup } from './ctf/challenge-tracker.js';
+import { ArenaTokens, mintArenaToken, arenaTokenHash, resolveAgentToken } from './agent-auth.js';
+import { useSolvedLookup } from './ctf/challenge-tracker.js';
 import {
   bearerToken,
   isSecureRequest,
@@ -28,8 +45,9 @@ import {
   sessionCookie,
 } from './auth.js';
 import { SiweLogin, type SiweLoginOptions } from './siwe.js';
+import { DEFAULT_PUBLIC_URL, resolveSiteUrl } from './config.js';
 import { RegisteredEntrantDriver } from './adapters/registered.js';
-import { EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
+import { EntrantOperationError, EntrantUnavailableError, type EntrantDriver } from './adapters/types.js';
 import { eventTypes, scores } from './db/schema.js';
 import { capEvent, EventJournal } from './journal.js';
 import {
@@ -39,6 +57,10 @@ import {
 import type { Narrate } from './narration/openrouter.js';
 import { createNarrationWatch } from './narration/watch.js';
 import {
+  JoinConflictError,
+  JoinRejectedError,
+  RemovedWalletError,
+  presetSubstrate,
   ActiveRunConflictError,
   type FundingGate,
   EntrantNotFoundError,
@@ -56,23 +78,24 @@ import {
 } from './run-manager.js';
 import type { NativeSweepChain } from './chain/native-sweep.js';
 
-const rosterEntrySchema = z.object({
+const rosterEntrySchema = z.strictObject({
   id: z.string()
     .max(20)
     .regex(/^[a-z][a-z0-9-]*$/)
+    .refine((id) => !id.startsWith('ext-'), { message: 'entrant id prefix ext- is reserved for external entrants' })
     .refine((id) => id !== 'run', {
       message: 'entrant id "run" is reserved for run-level feed events',
     }),
   harness: z.enum(HARNESS_IDS),
   model: z.string().min(1),
   effort: z.enum(ROSTER_EFFORTS),
-}).strict();
+});
 
-const createRunSchema = z.object({
+const createRunSchema = z.strictObject({
   preset: z.string().min(1),
   autoStart: z.boolean().optional(),
   idempotencyKey: z.string().min(1).optional(),
-  durationMs: z.number().int().min(60_000).max(86_400_000).optional(),
+  durationMs: z.int().min(60_000).max(86_400_000).optional(),
   roster: z.array(rosterEntrySchema)
     .min(1)
     .max(10)
@@ -80,50 +103,49 @@ const createRunSchema = z.object({
       message: 'entrant ids must be unique within the roster',
     })
     .optional(),
-}).strict();
+});
 
 // Steer and broadcast carry the same body; only the fan-out differs.
-const textSchema = z.object({ text: z.string().min(1) }).strict();
-const agentProgressSchema = z.object({
-  challengeId: z.number().int().min(1).max(12),
-}).strict();
-// Journalled announcements are rate limited; repeats of the same value are
-// deduped before the limit so they stay cheap instead of burning the budget.
-const AGENT_ANNOUNCE_INTERVAL_MS = 1_000;
-const seedSchema = z.object({
+const textSchema = z.strictObject({ text: z.string().min(1) });
+const seedSchema = z.strictObject({
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
-}).strict();
-const verifySchema = z.object({
+});
+const verifySchema = z.strictObject({
   message: z.string().min(1),
   signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
-}).strict();
-const agentSearchQuerySchema = z.object({
+});
+const agentSearchQuerySchema = z.strictObject({
   harness: z.enum(HARNESS_IDS),
   q: z.string().trim().min(2),
-}).strict();
-const eventsQuerySchema = z.object({ after: z.coerce.number().int().nonnegative().optional() });
+});
+const eventsQuerySchema = z.object({ after: z.coerce.number().refine(Number.isInteger).nonnegative().optional() });
 const decimalIntegerSchema = z.string()
   .regex(/^\d+$/)
   .transform(Number)
   .refine(Number.isSafeInteger);
 const runsQuerySchema = z.object({
-  limit: decimalIntegerSchema.pipe(z.number().int().min(1).max(200)).default('50'),
+  limit: decimalIntegerSchema.pipe(z.int().min(1).max(200)).default(50),
 });
-const historyQuerySchema = z.object({
-  limit: decimalIntegerSchema.pipe(z.number().int().min(1).max(200)).default('50'),
-  before: decimalIntegerSchema.pipe(z.number().int().min(1)).optional(),
+const historyQuerySchema = z.strictObject({
+  limit: decimalIntegerSchema.pipe(z.int().min(1).max(200)).default(50),
+  before: decimalIntegerSchema.pipe(z.int().min(1)).optional(),
   types: z.string().optional(),
   source: z.string().optional(),
-}).strict();
+});
 
 export interface ServerOptions {
+  getBlockNumber?: () => Promise<bigint>;
+  flagsHeld?: (address: Address) => Promise<number>;
+  publicUrl?: string;
+  siteUrl?: string;
   /** Required: every mutating route rejects a request that does not carry it. */
   operatorToken: string;
   /** Operator allowlist for wallet login and seed signing. */
   siwe?: SiweLoginOptions;
   dbPath?: string;
   schedule?: Schedule;
-  driverFactory?: (journal: EventJournal) => EntrantDriver;
+  challengePack?: ChallengePackAccess;
+  driverFactory?: (journal: EventJournal, status: ExternalStatus) => EntrantDriver;
   fundingGateFactory?: (journal: EventJournal) => FundingGate;
   solveWatchFactory?: (journal: EventJournal) => SolveWatch;
   sweepChain?: NativeSweepChain;
@@ -143,14 +165,17 @@ export interface ArenaServer {
 }
 
 export function createServer(options: ServerOptions): ArenaServer {
+  const publicUrl = options.publicUrl ?? DEFAULT_PUBLIC_URL;
+  const siteUrl = resolveSiteUrl(publicUrl, options.corsOrigins, options.siteUrl);
   const registry = options.agentRegistry ?? createAgentRegistry();
   const app = Fastify({ logger: options.logger ?? false });
+  app.addHook('onRequest', agentMcpOriginGuard(options.corsOrigins ?? []));
   if (options.corsOrigins !== undefined && options.corsOrigins.length > 0) {
     void app.register(fastifyCors, {
       origin: [...options.corsOrigins],
       credentials: true,
       methods: ['GET', 'POST', 'HEAD', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'MCP-Protocol-Version', 'Mcp-Method', 'Mcp-Name'],
     });
   }
   const login = new SiweLogin(options.siwe ?? { operatorAddresses: [] });
@@ -162,8 +187,19 @@ export function createServer(options: ServerOptions): ArenaServer {
     .where(and(eq(scores.runId, runId), eq(scores.entrantId, entrantId)))
     .all()
     .map((row) => row.challengeId)));
-  const driver = options.driverFactory?.(journal) ?? new RegisteredEntrantDriver(journal, options.schedule);
+  const arenaTokens = new ArenaTokens(journal.database);
+  const externalStatus = new ExternalStatus(journal);
+  const pack = options.challengePack ?? createChallengePackResolver(activeChainProfile);
+  const ingest = new AgentIngest(journal, externalStatus, pack.addressesFor);
+  const inbox = new AgentInbox(journal);
+  const progress = new AgentProgress(journal, externalStatus);
+  const driver = options.driverFactory?.(journal, externalStatus) ?? new RegisteredEntrantDriver(
+    journal, { status: externalStatus, schedule: options.schedule, pack },
+  );
   const runManagerOptions: RunManagerOptions = {
+    flagsHeld: options.flagsHeld ?? flagsHeld,
+    getBlockNumber: options.getBlockNumber ?? currentBlockNumber,
+    promptBuilder: (entrant) => buildTaskText(entrant, activeChainProfile, { publicUrl, siteUrl }),
     operatorAddresses: options.siwe?.operatorAddresses ?? [],
     ...(options.solveWatchFactory === undefined
       ? {}
@@ -190,6 +226,27 @@ export function createServer(options: ServerOptions): ArenaServer {
   );
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof AgentRateLimitError) {
+      return reply.status(429).header('Retry-After', error.retryAfter).send({ error: error.message });
+    }
+    if (error instanceof AgentBatchTooLargeError) {
+      return reply.status(413).send({ error: error.message });
+    }
+    if (error instanceof AgentInputError) {
+      return reply.status(400).send({ error: error.message });
+    }
+    if (error instanceof JoinAuthenticationError) {
+      return reply.status(401).send({ error: error.message });
+    }
+    if (error instanceof JoinConflictError || error instanceof JoinRejectedError) {
+      return reply.status(409).send({ error: error.message });
+    }
+    if (error instanceof RemovedWalletError) {
+      return reply.status(403).send({ error: error.message });
+    }
+    if (error instanceof EntrantOperationError) {
+      return reply.status(400).send({ error: error.message });
+    }
     if (error instanceof RunNotFoundError || error instanceof EntrantNotFoundError) {
       void reply.status(404).send({ error: error.message });
       return;
@@ -241,10 +298,46 @@ export function createServer(options: ServerOptions): ArenaServer {
   });
 
   app.get('/auth/nonce', async (_request, reply) => {
-    if (!login.enabled) return siweDisabled(reply);
     // A nonce is one-shot and short-lived, so it must never sit in a cache.
     return reply.header('Cache-Control', 'no-store').send({ nonce: login.issueNonce() });
   });
+
+  async function enterAgent(body: EnterRequest) {
+    await verifySignedMessage(login, body.nonce, enterMessage(body), body.signature as Hex, body.address as Address);
+    const address = getAddress(body.address);
+    const run = manager.selectJoinRun(body.runId, address);
+    if (!manager.hasLane(run.id, address)) {
+      let held: number;
+      try {
+        held = presetSubstrate(run.preset) === 'fake' ? 0 : await (options.flagsHeld ?? flagsHeld)(address);
+      } catch {
+        app.log.warn('Could not read flags held at entry');
+        throw new JoinRejectedError("Could not read this wallet's flags. Try again in a moment.");
+      }
+      if (held > 0) {
+        throw new JoinRejectedError('This wallet already holds flags from before this run. Enter with a wallet that holds none.');
+      }
+    }
+    const token = mintArenaToken();
+    const result = await manager.join({
+      runId: run.id, address, name: body.name, ...declaredFields(body), arenaTokenHash: arenaTokenHash(token),
+      claim: () => {
+        if (!login.consumeNonce(body.nonce)) throw new JoinAuthenticationError('Unknown or already used nonce');
+      },
+    });
+    return { ...result, token };
+  }
+
+  app.post('/agent/enter', async (request, reply) => {
+    const body = parseBody(enterSchema, request.body, reply);
+    if (body === undefined) return;
+    const result = await enterAgent({ address: body.address, nonce: body.nonce, signature: body.signature,
+      name: body.name, ...declaredFields(body), ...(body.runId === undefined ? {} : { runId: body.runId }) });
+    return reply.status(result.created ? 201 : 200).header('Cache-Control', 'no-store')
+      .send({ entrantId: result.entrantId, run: result.run, token: result.token });
+  });
+
+  mountAgentMcp(app, { arenaTokens, login, manager, ingest, inbox, progress, enter: enterAgent });
 
   app.post('/auth/verify', async (request, reply) => {
     if (!login.enabled) return siweDisabled(reply);
@@ -385,6 +478,12 @@ export function createServer(options: ServerOptions): ArenaServer {
     return { run: await manager.stop(id) };
   });
 
+  app.post('/runs/:id/entrants/:entrantId/remove', async (request, reply) => {
+    const { id, entrantId } = request.params as { id: string; entrantId: string };
+    await manager.remove(id, entrantId);
+    return reply.status(202).send({ accepted: true });
+  });
+
   app.post('/runs/:id/entrants/:entrantId/steer', async (request, reply) => {
     const body = parseBody(textSchema, request.body, reply);
     if (body === undefined) return;
@@ -412,45 +511,37 @@ export function createServer(options: ServerOptions): ArenaServer {
     return reply.status(202).send(response);
   });
 
+  function agentIdentity(request: FastifyRequest) {
+    const token = bearerToken(request.headers.authorization);
+    const identity = token === undefined ? undefined : resolveAgentToken(token, arenaTokens);
+    if (identity === undefined) throw new JoinAuthenticationError(
+      (token === undefined ? undefined : arenaTokens.removalMessage(token)) ?? 'Arena token required');
+    return identity;
+  }
+
+  app.get('/agent/task', async (request): Promise<AgentTaskResponse> => {
+    const identity = agentIdentity(request);
+    return manager.agentTask(identity.runId, identity.entrantId);
+  });
+
+  app.post('/agent/events', { bodyLimit: AGENT_BODY_LIMIT }, async (request) =>
+    ingest.events(agentIdentity(request), request.body));
+
+  app.get('/agent/inbox', async (request) => inbox.read(agentIdentity(request), request.query));
+
   // The agent-facing channel: authenticated by the per-entrant token the driver
   // injects as ARENA_AGENT_TOKEN, never by the operator credential. The agent's
   // announcement of the challenge it works on journals as entrant.challenge.
   app.post('/agent/progress', async (request, reply) => {
     const token = bearerToken(request.headers.authorization);
-    const identity = token === undefined ? undefined : resolveAgentToken(token);
+    const identity = token === undefined ? undefined : resolveAgentToken(token, arenaTokens);
     if (identity === undefined) {
       return reply
         .status(401)
         .header('WWW-Authenticate', 'Bearer realm="agents-arena-agent"')
-        .send({ error: 'Agent token required' });
+        .send({ error: (token === undefined ? undefined : arenaTokens.removalMessage(token)) ?? 'Arena token required' });
     }
-    const body = agentProgressSchema.safeParse(request.body);
-    if (!body.success) {
-      return reply.status(400).send({ error: 'challengeId must be an integer from 1 to 12' });
-    }
-
-    const { challengeId } = body.data;
-    if (!mayMove(identity.runId, identity.entrantId, challengeId, 'self')) {
-      return { ok: true, changed: false };
-    }
-    const now = Date.now();
-    if (
-      identity.lastAnnouncedAtMs !== undefined
-      && now - identity.lastAnnouncedAtMs < AGENT_ANNOUNCE_INTERVAL_MS
-    ) {
-      return reply.status(429).send({ error: 'Announcing too fast; try again in a second' });
-    }
-    // State moves only after the journal accepts the event: an append that
-    // throws must leave the retry journalling, not deduping into silence.
-    journal.append(identity.runId, identity.entrantId, 'entrant.challenge', {
-      entrantId: identity.entrantId,
-      challengeId,
-      via: 'self',
-      evidence: 'announced',
-    });
-    recordCurrentChallenge(identity.runId, identity.entrantId, challengeId, 'self');
-    identity.lastAnnouncedAtMs = now;
-    return { ok: true, changed: true };
+    return progress.announce(identity, request.body);
   });
 
   app.get('/runs/:id/events', async (request, reply) => {

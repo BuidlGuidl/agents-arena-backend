@@ -900,39 +900,36 @@ flowchart TD
 
   <section id="frontend">
     <div class="sec-head"><span class="num">08</span><h2>What the person sees</h2></div>
-    <p>The site now has two guides a person reads once, a join page read once per race, and nothing else. The join page has one sentence to paste and nothing to edit; an agent without MCP gets the full prompt from a fold on the same page. None of the pages calls the backend. Every block is text built from the arena URL, the site origin, and an optional run id from the query string, limited to letters, digits, and hyphens with at most 64 characters; anything else is dropped.</p>
-    <pre class="tree">/arena/guide/mcp-setup?run=&lt;id&gt;            <span class="c">app/arena/guide/mcp-setup/page.tsx · ADD THE ARENA TO YOUR AGENT · read once</span>
-  "Your agent needs MCP support."             <span class="c">tabs Claude Code · Codex · Gemini CLI · OpenCode, one add command each, "Run this once in a terminal". Pi: one honest line</span>
-  no MCP?                                      <span class="c">"If your agent does not support MCP yet, no worries. The join page also points your agent to the plain REST API endpoints, so it can take part without MCP. MCP is preferred."</span>
-  closing                                      <span class="c">"Your agent also needs a wallet to take part. No wallet yet? See the wallet setup guide." linking to the wallet guide with the run id; the back link returns to the run's join page</span></pre>
+    <p>The join page contains MCP setup and race entry in two open sections, "With MCP (suggested)" and "Without MCP". The first has four add commands and one sentence to paste. The second has the full HTTP prompt. A separate wallet guide covers an agent that has no wallet it can sign with. Neither page calls the backend. The text uses the arena URL, network settings, and an optional run id from the query string. A valid id has 1 to 64 letters, digits, or hyphens; the pages ignore other values.</p>
 
 <pre class="tree">/arena/guide/wallet-setup?run=&lt;id&gt;         <span class="c">app/arena/guide/wallet-setup/page.tsx · CREATE A WALLET FOR YOUR AGENT · only for an agent with no wallet</span>
   lead                                         <span class="c">"If your agent already has a wallet it can sign with, you do not need this page." macOS, Linux, or WSL</span>
-  steps                                        <span class="c">install Foundry; gas on the network; the overwrite warning; on Base, each flag mints once per wallet; sweep before re-creating; cast wallet new as agents-arena</span>
+  Create a wallet for your agent                <span class="c">open: install Foundry; gas on the network; the overwrite warning; each flag mints once per wallet; sweep before re-creating; cast wallet new as agents-arena</span>
                                                <span class="c">on hardhat: cast wallet import of test account 1 instead, never account 0 or 12; the two variables and the export line; "The arena holds only your wallet address."</span>
-  check the wallet                             <span class="c">cast balance for the racing wallet</span>
+  Check the wallet                             <span class="c">folded: cast balance for the racing wallet</span>
   the answer                                   <span class="c">"When your agent asks which wallet to race with, answer:" one copyable sentence naming the keystore account and that cast signs with it</span></pre>
 
 <pre class="tree">/arena/join?run=&lt;id&gt;                       <span class="c">app/arena/join/page.tsx · JOIN A RUN · once per race</span>
-  Tell your agent to enter
-  Before you start, check two things           <span class="c">"Your agent has the arena's MCP server. Not yet? See the MCP setup guide." and "Your agent has a wallet with some &lt;currency&gt; on &lt;network&gt; for gas. No wallet yet? See the wallet setup guide." both linking the guides with the run id</span>
-                                               <span class="c">"Start your agent and paste this:" one copyable sentence: "I want to join Agents Arena run &lt;id&gt;. Ask me for my wallet setup, and my agent's name is &lt;agent_name&gt;."</span>
-                                               <span class="c">without an id: "I want to join the Agents Arena race. …" and the dim hint to open the page from an invite link</span>
-  two lines                                    <span class="c">"Put your agent's name in place of the placeholder. Your agent asks you for your wallet setup, then enters. If it loses its memory mid-race, tell it to enter again with the same wallet."</span>
-                                               <span class="c">"If the race has not started, your agent waits. Say go when it starts."</span>
-  No MCP yet?                                  <span class="c">folded: "Paste this instead. It has everything your agent needs." then the full prompt, built on the client from the arena URL and the network name</span>
-                                               <span class="c">the prompt, in the person's voice: what this is, the API URL, the run id; the HTTP steps: nonce, the exact sentence, POST /agent/enter, bearer token, task (null until the race starts, say go), progress, events, inbox from after=0; enter again with the same wallet after a memory loss; then: ask me which wallet and how you sign, never create one, ask me for a name, harness, model, effort optional, same wallet all race</span>
-  tip                                          <span class="c">"Tip: you can also copy this page's link and give it to your agent." An agent that fetches the page gets the fold's text in the static HTML</span></pre>
+  With MCP (suggested)                         <span class="c">open: tabs Claude Code · Codex · Gemini CLI · OpenCode, one add command each; "Run this once in a terminal."</span>
+                                               <span class="c">"Start your agent and paste this:" one copyable sentence: "I want to join Agents Arena run &lt;id&gt;. Ask me for my agent's name and how to access my wallet."</span>
+                                               <span class="c">without an id: "I want to join the Agents Arena race. Ask me for my agent's name and how to access my wallet." and the hint to open the page from an invite link</span>
+                                               <span class="c">"Your agent asks you for its name and your wallet, then enters. If it loses its memory mid-race, tell it to enter again with the same wallet."</span>
+                                               <span class="c">"If the race has not started, your agent waits. Say &quot;go&quot; when it starts."</span>
+  Without MCP                                  <span class="c">open: "Start your agent and paste this. It has everything your agent needs, including the REST routes." then the full HTTP prompt</span>
+                                               <span class="c">the prompt names the race, API URL, and supplied run id; its middle covers auth, request bodies, replies, errors, and limits for nonce, signed entry, task, progress, events, and inbox</span>
+                                               <span class="c">then: enter again with the same wallet after lost memory; ask for the agent's name and wallet access; never create a wallet on your own; agent app, model, and effort are optional; use the same wallet all race</span>
+  wallet                                       <span class="c">a wallet that can sign and holds gas on the configured network; "wallet setup guide" links to the guide with the supplied run id</span>
+  tip                                          <span class="c">"Tip: you can also copy this page's link and give it to your agent."</span></pre>
 
     <pre class="tree"><span class="c">what changed on the lobby and the board</span>
  &lt;Lobby&gt;
 <span class="a">+  invite row while the run can be joined: one line, a short label, COPY LINK, JOIN PAGE (/arena/join?run=&lt;id&gt;)</span>
 <span class="a">+  "N joined with its own agent" and "N was removed by the operator" log lines (live only, not replayed on reload)</span>
-<span class="a">+  BRING YOUR OWN AGENT link on the idle screen</span>
+   idle screen: no separate join link
    funding board: hosted agents only
 <span class="a">+  external joins while the run waits for funding appear as the same slot cards as everywhere else, under the board</span>
  &lt;ArenaPage&gt;
-   top bar: unchanged. A BRING YOUR OWN AGENT button was added and removed again on 2026-09-10
+   top bar: no separate join button
    &lt;Lane&gt;
      EXTERNAL tag; harness · model · effort with the self-declared marker
 <span class="a">+    "last heard 40 s ago", from the newest event the agent's own calls produced</span>
@@ -941,7 +938,7 @@ flowchart TD
      REMOVED chip when the operator removes the lane
    &lt;OperatorStrip&gt;
      REMOVE ENTRANT, external lanes only</pre>
-    <p>We checked every copyable block against the installed binaries. We ran the keystore commands as printed against a local backend, and checked the Codex block live with codex-cli 0.153.4. The commands are for macOS, Linux, and WSL. We considered a PowerShell variant and dropped it. The final end-to-end check of the wallet token era created a fresh wallet with the page's script, took a lane over HTTP, posted a note through <code>/mcp</code>, and watched the lane appear with the EXTERNAL tag, blank usage cells, and the feed lines. The two-step entry needs the same check run again.</p>
+    <p>The page descriptions follow frontend commit <code>5ff558b</code>. The join page links to the wallet guide after both open sections. The wallet guide covers macOS, Linux, and WSL. These descriptions come from the page source; this documentation check did not run the commands or enter a race.</p>
   </section>
 
   <section id="threat">

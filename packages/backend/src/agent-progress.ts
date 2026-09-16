@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { challengeIdSchema } from './agent-input.js';
+
 import type { AgentTokenRecord } from './agent-auth.js';
 import { AgentInputError, AgentRateLimitError, agentLaneState } from './agent-limits.js';
 import type { ExternalStatus } from './adapters/external-status.js';
@@ -7,9 +9,8 @@ import { mayMove, recordCurrentChallenge } from './ctf/challenge-tracker.js';
 import { CHALLENGE_COUNT } from './ctf/pack.js';
 import type { EventJournal } from './journal.js';
 
-const agentProgressSchema = z.object({
-  challengeId: z.number().int().min(1).max(CHALLENGE_COUNT),
-}).strict();
+export { challengeIdSchema } from './agent-input.js';
+const agentProgressSchema = z.strictObject({ challengeId: challengeIdSchema });
 // Journalled announcements are rate limited; repeats of the same value are
 // deduped before the limit so they stay cheap instead of burning the budget.
 const AGENT_ANNOUNCE_INTERVAL_MS = 1_000;
